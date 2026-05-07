@@ -82,18 +82,27 @@ const ProblemRow = ({ problem, globalIndex, isSolved, toggleSolved }) => {
             {problem.difficulty.toUpperCase()}
           </span>
 
-          {/* Solve Link */}
-          <a
-            href={problem.link}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 font-mono text-sm text-neon-cyan hover:text-white transition-colors hover:drop-shadow-[0_0_8px_#00d4ff] ml-2"
-          >
-            SOLVE
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-            </svg>
-          </a>
+          {/* Solve Links */}
+          <div className="flex items-center gap-2 ml-2">
+            <a
+              href={problem.link}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Solve on LeetCode"
+              className="flex items-center gap-1 font-mono text-xs md:text-sm text-neon-cyan border border-neon-cyan/20 bg-neon-cyan/5 px-2 py-1 rounded hover:bg-neon-cyan/20 hover:text-white transition-all hover:drop-shadow-[0_0_5px_#00d4ff]"
+            >
+              LC [↗]
+            </a>
+            <a
+              href={`https://www.google.com/search?q=site:takeuforward.org+${encodeURIComponent(problem.title)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Find on TakeUForward (TUF+)"
+              className="flex items-center gap-1 font-mono text-xs md:text-sm text-neon-red border border-neon-red/20 bg-neon-red/5 px-2 py-1 rounded hover:bg-neon-red/20 hover:text-white transition-all hover:drop-shadow-[0_0_5px_#ff003c]"
+            >
+              TUF+ [↗]
+            </a>
+          </div>
         </div>
       </div>
     </div>
