@@ -1,48 +1,41 @@
 import React, { Suspense } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import Navbar from './components/Navbar';
+import MatrixRain from './components/MatrixRain';
 import Notes from './pages/Notes';
 import CppStlNotes from './pages/CppStlNotes';
 import DsaPdfNotes from './pages/DsaPdfNotes';
 import SqlNotes from './pages/SqlNotes';
 import SystemDesignNotes from './pages/SystemDesignNotes';
-import './App.css';
 import WebdevNotes from './pages/WebdevNotes';
 import DSAProblemsPage from './pages/DSAProblemsPage';
+import CodeEditorPage from './pages/CodeEditorPage';
+import SystemDesignMasterclass from './pages/SystemDesignMasterclass';
+import AiEngineeringNotes from './pages/AiEngineeringNotes';
+import BackendConceptsNotes from './pages/BackendConceptsNotes';
+import JavaNotes from './pages/JavaNotes';
 
 const CoreSubjectsNotes = React.lazy(() => import('./pages/CoreSubjectsNotes'));
 
 const App = () => {
   return (
     <Router>
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-        <nav className="bg-white dark:bg-gray-800 shadow-sm">
-          <div className="container mx-auto px-4">
-            <div className="flex justify-between items-center h-16">
-              <Link to="/" className="flex items-center gap-2 text-xl font-bold text-primary-600 dark:text-primary-400">
-                <span className="text-2xl">🎯</span>
-                <span>DSA Mastery</span>
-              </Link>
-            
-              <div className="flex space-x-4">
-                <Link
-                  to="/"
-                  className="text-gray-600 hover:text-primary-600 dark:text-gray-300 dark:hover:text-primary-400">
-                  Home
-                </Link>
+      <div className="min-h-screen relative font-sans text-gray-100 overflow-x-hidden">
+        {/* Global Matrix Rain Background */}
+        <MatrixRain />
+        
+        {/* Global Navigation */}
+        <Navbar />
 
-                <Link
-                  to="/notes"
-                  className="text-gray-600 font-bold hover:text-primary-600 dark:text-gray-300 dark:hover:text-primary-400">
-                  Learning Resources
-                </Link>
-              </div>
+        {/* Main Content Area */}
+        <main className="relative z-10">
+          <Suspense fallback={
+            <div className="min-h-screen flex items-center justify-center font-mono text-neon-green">
+              <span className="animate-pulse-neon text-xl">{'>'} Loading system components...</span>
             </div>
-          </div>
-        </nav>
-
-        <main>
-          <Suspense fallback={<div>Loading...</div>}>
+          }>
             <Routes>
+              <Route path="/" element={<DSAProblemsPage />} />
               <Route path="/notes" element={<Notes />} />
               <Route path="/cpp-stl-notes" element={<CppStlNotes />} />
               <Route path="/dsa-pdf-notes" element={<DsaPdfNotes />} />
@@ -50,7 +43,11 @@ const App = () => {
               <Route path="/system-design-notes" element={<SystemDesignNotes />} />
               <Route path="/core-subjects-notes" element={<CoreSubjectsNotes />} />
               <Route path="/webdev-notes" element={<WebdevNotes />} />
-              <Route path="/" element={<DSAProblemsPage />} />
+              <Route path="/code-editor" element={<CodeEditorPage />} />
+              <Route path="/system-design-masterclass" element={<SystemDesignMasterclass />} />
+              <Route path="/ai-engineering-notes" element={<AiEngineeringNotes />} />
+              <Route path="/backend-concepts-notes" element={<BackendConceptsNotes />} />
+              <Route path="/java-notes" element={<JavaNotes />} />
             </Routes>
           </Suspense>
         </main>

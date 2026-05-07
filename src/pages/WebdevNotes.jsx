@@ -64,54 +64,59 @@ const resources = [
 ];
 
 const WebdevNotes = () => (
-	<div className="max-w-4xl mx-auto px-4 py-10">
-		<h1 className="text-3xl font-bold mb-8 text-center text-gray-900 dark:text-white">
-			Web Development Learning
-		</h1>
-		<p className="mb-10 text-center text-base text-gray-600 dark:text-gray-300">
-			Complete web development resources - Frontend, Backend, Full Stack, and more! All
-			materials are curated from my personal learning journey.
-		</p>
-		<ul className="space-y-4 mb-10">
-			{resources.map((res) => (
-				<li
-					key={res.name}
-					className="border-b pb-4"
-				>
-					<div className="flex items-start justify-between gap-4">
-						<div className="flex-1">
-							<span className="font-bold text-lg text-gray-900 dark:text-gray-100 block mb-1">
-								{res.name}
-							</span>
-							{res.description && (
-								<p className="text-sm text-gray-600 dark:text-gray-400">
-									{res.description}
-								</p>
-							)}
-						</div>
-						<a
-							href={res.url}
-							target="_blank"
-							rel="noopener noreferrer"
-							className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-semibold whitespace-nowrap transition-colors"
-						>
-							View →
-						</a>
-					</div>
-				</li>
-			))}
-		</ul>
-		<p className="mt-12 text-center text-gray-400 text-xs">
-			All resources are curated for university learning, practical skills, and
-			deep understanding.
-		</p>
-		<p className="mt-16 text-center text-primary-500 text-base font-semibold">
-			More web development resources coming soon. Stay curious and keep learning!
-		</p>
-		<p className="mt-2 text-center text-gray-500 text-sm">
-			I'm also a learner—let's keep growing together!
-		</p>
-	</div>
+  <div className="pt-24 pb-16 min-h-screen">
+    <div className="container mx-auto px-4 max-w-4xl">
+      <div className="mb-12 border-b border-gray-800 pb-6">
+        <div className="flex items-center gap-2 mb-4">
+          <span className="text-neon-green font-mono">{'>'}</span>
+          <h1 className="text-4xl font-bold font-mono text-white tracking-tight">
+            /web_development
+          </h1>
+          <span className="animate-pulse-neon w-3 h-8 bg-neon-green inline-block ml-2"></span>
+        </div>
+        <p className="text-gray-400 font-mono pl-6">
+          Complete web development resources - Frontend, Backend, Full Stack, and more! All
+          materials are curated from my personal learning journey.
+        </p>
+      </div>
+
+      <ul className="space-y-4 mb-10 font-mono">
+        {resources.map((res) => (
+          <li key={res.name} className="glass-card border border-gray-800 p-5 rounded-lg hover:border-neon-green transition-colors">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+              <div className="flex-1">
+                <span className="font-bold text-lg text-gray-200 block mb-2">
+                  {res.name}
+                </span>
+                {res.description && (
+                  <p className="text-sm text-gray-400">
+                    {res.description}
+                  </p>
+                )}
+              </div>
+              <a
+                href={res.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-neon-cyan hover:text-white hover:underline text-sm font-semibold mt-2 sm:mt-0 whitespace-nowrap"
+              >
+                [VIEW]
+              </a>
+            </div>
+          </li>
+        ))}
+      </ul>
+      
+      <div className="mt-16 text-center border-t border-gray-800 pt-8">
+        <p className="text-neon-green font-mono text-sm mb-2">
+          {'// More web development resources coming soon. Stay curious!'}
+        </p>
+        <p className="text-gray-500 font-mono text-xs">
+          I'm also a learner—let's keep growing together!
+        </p>
+      </div>
+    </div>
+  </div>
 );
 
 export default WebdevNotes;
