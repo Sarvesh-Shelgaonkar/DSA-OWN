@@ -94,10 +94,10 @@ const ProblemRow = ({ problem, globalIndex, isSolved, toggleSolved }) => {
               LC [↗]
             </a>
             <a
-              href={`https://www.google.com/search?q=site:takeuforward.org+${encodeURIComponent(problem.title)}`}
+              href={`https://takeuforward.org/plus/dsa/problems/${problem.id}`}
               target="_blank"
               rel="noopener noreferrer"
-              title="Find on TakeUForward (TUF+)"
+              title="Solve on TakeUForward (TUF+)"
               className="flex items-center gap-1 font-mono text-xs md:text-sm text-neon-red border border-neon-red/20 bg-neon-red/5 px-2 py-1 rounded hover:bg-neon-red/20 hover:text-white transition-all hover:drop-shadow-[0_0_5px_#ff003c]"
             >
               TUF+ [↗]
