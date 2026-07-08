@@ -1,7 +1,42 @@
 import React, { useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 
 const MatrixRain = () => {
   const canvasRef = useRef(null);
+  const location = useLocation();
+  const colorRef = useRef('#00ff41'); // default green
+
+  // Track path changes and update color smoothly without re-initializing canvas
+  useEffect(() => {
+    const path = location.pathname;
+    let color = '#00ff41'; // default green
+    
+    if (path === '/notes') {
+      color = '#00d4ff'; // neon cyan
+    } else if (path === '/cpp-stl-notes') {
+      color = '#00d4ff'; // neon cyan
+    } else if (path === '/sql-notes') {
+      color = '#ffff00'; // neon yellow
+    } else if (path === '/system-design-notes' || path === '/system-design-masterclass') {
+      color = '#ff3131'; // neon red
+    } else if (path === '/core-subjects-notes') {
+      color = '#00d4ff'; // neon cyan
+    } else if (path === '/webdev-notes') {
+      color = '#00ff41'; // neon green
+    } else if (path === '/ai-engineering-notes') {
+      color = '#ffff00'; // neon yellow
+    } else if (path === '/java-notes') {
+      color = '#00d4ff'; // neon cyan
+    } else if (path === '/backend-concepts-notes') {
+      color = '#00d4ff'; // neon cyan
+    } else if (path === '/other-concepts-notes') {
+      color = '#ff3131'; // neon red
+    } else if (path === '/code-editor') {
+      color = '#00d4ff'; // neon cyan
+    }
+    
+    colorRef.current = color;
+  }, [location.pathname]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -31,7 +66,7 @@ const MatrixRain = () => {
       ctx.fillStyle = 'rgba(10, 10, 10, 0.05)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      ctx.fillStyle = '#00ff41'; // Matrix neon green
+      ctx.fillStyle = colorRef.current; // Dynamic neon color
       ctx.font = fontSize + 'px monospace';
 
       for (let i = 0; i < drops.length; i++) {
@@ -66,7 +101,7 @@ const MatrixRain = () => {
   return (
     <canvas
       ref={canvasRef}
-      className="fixed top-0 left-0 w-full h-full -z-10 pointer-events-none opacity-20"
+      className="fixed top-0 left-0 w-full h-full -z-10 pointer-events-none opacity-35"
     />
   );
 };
