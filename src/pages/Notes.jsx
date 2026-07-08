@@ -76,6 +76,14 @@ const Notes = () => {
       tag: "BACKEND"
     },
     {
+      title: "Other SWE Concepts",
+      description: "Dependency injection, design patterns, JWT security, CORS, Vite migration, and tool guides",
+      link: "/other-concepts-notes",
+      emoji: "🧠",
+      color: "neon-red",
+      tag: "SWE"
+    },
+    {
       title: "Dream Company Prep",
       description: "Targeted preparation for top companies like Amazon",
       link: "https://github.com/Sarvesh-Shelgaonkar/Placement-Materials/tree/main/Dream%20Company%20Prep",

@@ -14,6 +14,7 @@ import SystemDesignMasterclass from './pages/SystemDesignMasterclass';
 import AiEngineeringNotes from './pages/AiEngineeringNotes';
 import BackendConceptsNotes from './pages/BackendConceptsNotes';
 import JavaNotes from './pages/JavaNotes';
+import OtherConceptsNotes from './pages/OtherConceptsNotes';
 
 const CoreSubjectsNotes = React.lazy(() => import('./pages/CoreSubjectsNotes'));
 
@@ -48,6 +49,7 @@ const App = () => {
               <Route path="/ai-engineering-notes" element={<AiEngineeringNotes />} />
               <Route path="/backend-concepts-notes" element={<BackendConceptsNotes />} />
               <Route path="/java-notes" element={<JavaNotes />} />
+              <Route path="/other-concepts-notes" element={<OtherConceptsNotes />} />
             </Routes>
           </Suspense>
         </main>
