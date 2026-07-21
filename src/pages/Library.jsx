@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Icon from '../components/ui/Icon';
 import { SectionHeading, Skeleton } from '../components/ui/index.jsx';
 
-// Reads a manifest of PDFs placed in the (gitignored) public/library/ folder.
-// Nothing here is published — the folder stays on your machine.
+// Reads a manifest of PDFs placed in the public/library/ folder.
+// Only add materials you own or have the right to distribute.
 const MANIFEST_URL = '/library/manifest.json';
 
 const Library = () => {
@@ -56,9 +56,9 @@ const Library = () => {
   return (
     <div className="container-page pt-24 pb-16">
       <SectionHeading
-        eyebrow="Personal"
+        eyebrow="Reading room"
         title="My Library"
-        description="Read your own study PDFs inside MyDSA. Files live in a private, local-only folder and are never uploaded or published."
+        description="Read study PDFs directly inside MyDSA. Add files to public/library/ with a manifest. Only include materials you own or have the right to distribute."
       />
 
       {status === 'loading' && (
@@ -76,10 +76,10 @@ const Library = () => {
               <Icon name="book" size={20} />
             </span>
             <div className="min-w-0">
-              <h2 className="text-lg font-bold text-fg">Set up your local library</h2>
+              <h2 className="text-lg font-bold text-fg">Set up your library</h2>
               <p className="mt-1 text-sm text-fg-muted">
-                Your PDFs stay on your machine — the <code className="rounded bg-surface-2 px-1.5 py-0.5 text-xs">public/library/</code>{' '}
-                folder is gitignored, so nothing here is ever committed or published.
+                Add PDFs to the <code className="rounded bg-surface-2 px-1.5 py-0.5 text-xs">public/library/</code>{' '}
+                folder and list them in a manifest. Only add materials you own or have the right to distribute.
               </p>
               <ol className="mt-4 space-y-2 text-sm text-fg-muted">
                 <li className="flex gap-2">
