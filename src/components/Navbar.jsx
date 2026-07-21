@@ -27,6 +27,7 @@ const MORE_LINKS = [
   { name: 'Sheets', path: '/sheets', icon: 'route' },
   { name: 'Companies', path: '/companies', icon: 'grid' },
   { name: 'Resources', path: '/resources', icon: 'book' },
+  { name: 'My Library', path: '/library', icon: 'book' },
   { name: 'Revision', path: '/revision', icon: 'reset' },
   { name: 'Topics', path: '/topics', icon: 'grid' },
   { name: 'Challenges', path: '/contests', icon: 'trophy' },

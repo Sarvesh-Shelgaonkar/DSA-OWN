@@ -12,6 +12,7 @@ const NAV_COMMANDS = [
   { id: 'nav-sheets', label: 'Practice Sheets', hint: 'A2Z, Blind 75, TUF+ revision', icon: 'route', to: '/sheets' },
   { id: 'nav-companies', label: 'Company-wise Problems', hint: 'Top asked problems at 240+ companies', icon: 'grid', to: '/companies' },
   { id: 'nav-resources', label: 'Study Resources', hint: 'Curated sheets, notes & prep with credits', icon: 'book', to: '/resources' },
+  { id: 'nav-library', label: 'My Library', hint: 'Read your own PDFs (local-only)', icon: 'book', to: '/library' },
   { id: 'nav-interview', label: 'Interview Session', hint: 'AI resume coach & question banks', icon: 'sparkles', to: '/interview' },
   { id: 'nav-system-design', label: 'System Design', hint: 'Framework, concepts, HLD & LLD checklist', icon: 'layers', to: '/system-design' },
   { id: 'nav-interview-resume', label: 'Resume & HR Questions', hint: 'Interview bank', icon: 'user', to: '/interview/resume' },

@@ -24,6 +24,7 @@ const Sheets = lazy(() => import('./pages/Sheets'));
 const Companies = lazy(() => import('./pages/Companies'));
 const CompanyDetail = lazy(() => import('./pages/CompanyDetail'));
 const Resources = lazy(() => import('./pages/Resources'));
+const Library = lazy(() => import('./pages/Library'));
 const Revision = lazy(() => import('./pages/Revision'));
 const InterviewHub = lazy(() => import('./pages/InterviewHub'));
 const InterviewBankPage = lazy(() => import('./pages/InterviewBankPage'));
@@ -89,6 +90,7 @@ const App = () => {
             <Route path="/companies" element={<Companies />} />
             <Route path="/companies/:slug" element={<CompanyDetail />} />
             <Route path="/resources" element={<Resources />} />
+            <Route path="/library" element={<Library />} />
             <Route path="/revision" element={<Revision />} />
             <Route path="/interview" element={<InterviewHub />} />
             <Route path="/interview/:bankId" element={<InterviewBankPage />} />
