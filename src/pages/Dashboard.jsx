@@ -191,6 +191,7 @@ const Dashboard = () => {
                 { to: '/interview', label: 'Interview', icon: 'sparkles', desc: 'AI resume coach' },
                 { to: '/system-design', label: 'System Design', icon: 'layers', desc: 'HLD & LLD' },
                 { to: '/companies', label: 'Companies', icon: 'grid', desc: 'Top asked Qs' },
+                { to: '/resources', label: 'Resources', icon: 'book', desc: 'Sheets & notes' },
                 { to: '/revision', label: 'Revision', icon: 'reset', desc: 'Revisit solved' },
                 { to: '/puzzles', label: 'Puzzles', icon: 'bolt', desc: 'Logical warm-ups' },
               ].map((q) => (

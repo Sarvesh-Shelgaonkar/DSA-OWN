@@ -10,6 +10,7 @@ const COLUMNS = [
       { label: 'Patterns', to: '/patterns' },
       { label: 'Practice Sheets', to: '/sheets' },
       { label: 'Company Problems', to: '/companies' },
+      { label: 'Study Resources', to: '/resources' },
       { label: 'Topics', to: '/topics' },
       { label: 'Problems', to: '/problems' },
       { label: 'Notes & Resources', to: '/notes' },
