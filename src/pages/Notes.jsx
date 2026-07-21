@@ -1,11 +1,20 @@
 import React from 'react';
 import NoteCard from '../components/NoteCard';
+import { SectionHeading } from '../components/ui/index.jsx';
 
 const Notes = () => {
   const resources = [
     {
+      title: "DSA Topic-wise Notes",
+      description: "Arrays, Strings, Linked Lists, Trees, DP & more — read in-app with theory and worked problems",
+      link: "/dsa-notes",
+      emoji: "📚",
+      color: "neon-cyan",
+      tag: "NOTES"
+    },
+    {
       title: "DSA PDFs & Sheets",
-      description: "DSA question sheets, handwritten notes, and topic-wise questions",
+      description: "DSA question sheets and handwritten notes for offline study",
       link: "/dsa-pdf-notes",
       emoji: "📁",
       color: "neon-green",
@@ -110,40 +119,21 @@ const Notes = () => {
   ];
 
   return (
-    <div className="pt-24 pb-16 min-h-screen">
-      <div className="container mx-auto px-4 max-w-6xl">
-        
-        <div className="mb-12 border-b border-gray-800 pb-6">
-          <div className="flex items-center gap-2 mb-4">
-            <span className="text-neon-cyan font-mono">{'>'}</span>
-            <h1 className="text-4xl font-bold font-mono text-white tracking-tight">
-              /learning_resources
-            </h1>
-            <span className="animate-pulse-neon w-3 h-8 bg-neon-cyan inline-block ml-2"></span>
-          </div>
-          <p className="text-gray-400 font-mono pl-6">
-            Explore curated learning materials, notes, and resources for interview preparation
-            <br/>
-            <span className="text-gray-600 text-sm">Including imported Placement files.</span>
-          </p>
-        </div>
+    <div className="container-page pt-24 pb-16">
+      <SectionHeading
+        eyebrow="Learn"
+        title="Learning Resources"
+        description="Curated notes, sheets, and references for interview prep — from DSA and core subjects to web, backend, and system design."
+      />
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {resources.map((resource, index) => (
-            <div key={resource.link} className="animate-fade-slide-up" style={{ animationDelay: `${index * 100}ms` }}>
-              <NoteCard resource={resource} index={index} />
-            </div>
-          ))}
-        </div>
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        {resources.map((resource) => (
+          <NoteCard key={resource.link} resource={resource} />
+        ))}
+      </div>
 
-        <div className="mt-20 text-center glass-card p-8 rounded-lg max-w-2xl mx-auto border-t-2 border-neon-yellow shadow-[0_0_15px_rgba(255,255,0,0.05)]">
-          <p className="text-neon-yellow font-mono text-lg mb-2">
-            {'/* More resources compiling... */'}
-          </p>
-          <p className="text-gray-500 font-mono text-sm">
-            I'm also a learner—let's keep growing together!
-          </p>
-        </div>
+      <div className="mt-16 rounded-2xl border border-dashed border-border bg-surface/50 p-8 text-center">
+        <p className="text-fg-muted">More resources are added regularly — I'm also a learner, so let's keep growing together.</p>
       </div>
     </div>
   );

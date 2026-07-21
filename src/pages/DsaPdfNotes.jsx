@@ -1,4 +1,7 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
+import Icon from '../components/ui/Icon';
+import { SectionHeading } from '../components/ui/index.jsx';
 
 const resources = [
   {
@@ -16,68 +19,61 @@ const resources = [
   {
     name: "DSA README & Notes",
     url: "https://github.com/Sarvesh-Shelgaonkar/Placement-Materials/blob/main/DSA/README.md"
-  },
-  {
-    name: "Topic-wise Questions & Theory",
-    url: "https://github.com/Sarvesh-Shelgaonkar/Placement-Materials/blob/main/DSA/TOPIC%20WISE%20QUE%20AND%20NOTES"
-  },
-  {
-    name: "Array Problems",
-    url: "https://github.com/Sarvesh-Shelgaonkar/Placement-Materials/blob/main/DSA/TOPIC%20WISE%20QUE%20AND%20NOTES/array.md"
-  },
-  {
-    name: "Linked List Problems",
-    url: "https://github.com/Sarvesh-Shelgaonkar/Placement-Materials/blob/main/DSA/TOPIC%20WISE%20QUE%20AND%20NOTES/linkedlist.md"
-  },
-  {
-    name: "DP Questions & Theory",
-    url: "https://github.com/Sarvesh-Shelgaonkar/Placement-Materials/blob/main/DSA/TOPIC%20WISE%20QUE%20AND%20NOTES/DP_QUES%20AND%20THOERY.md"
   }
 ];
 
 const DsaPdfNotes = () => (
-  <div className="pt-24 pb-16 min-h-screen">
-    <div className="container mx-auto px-4 max-w-4xl">
-      <div className="mb-12 border-b border-gray-800 pb-6">
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-neon-cyan font-mono">{'>'}</span>
-          <h1 className="text-4xl font-bold font-mono text-white tracking-tight">
-            /dsa_resources
-          </h1>
-          <span className="animate-pulse-neon w-3 h-8 bg-neon-cyan inline-block ml-2"></span>
+  <div className="container-page max-w-4xl pt-24 pb-16">
+    <SectionHeading
+      eyebrow="DSA resources"
+      title="DSA PDFs & Sheets"
+      description="Question sheets, handwritten notes, and references for offline study and deep understanding."
+    />
+
+    {/* Read topic-wise notes in-app */}
+    <Link
+      to="/dsa-notes"
+      className="card group mb-8 flex items-center justify-between gap-4 border-primary/30 bg-primary/5 p-5 transition-all hover:-translate-y-0.5 hover:border-primary/50"
+    >
+      <div className="flex items-center gap-3">
+        <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-primary/10 text-2xl">📚</span>
+        <div>
+          <p className="font-semibold text-fg">Topic-wise Questions &amp; Theory</p>
+          <p className="text-sm text-fg-muted">
+            Arrays, Strings, Linked Lists, Trees, DP &amp; more — read in-app, beautifully formatted.
+          </p>
         </div>
-        <p className="text-gray-400 font-mono pl-6">
-          Here are all DSA PDF and markdown resources available for your learning. Download and use these for offline study and deep understanding.
-        </p>
       </div>
-      
-      <ul className="space-y-4 mb-10 font-mono">
-        {resources.map((res) => (
-          <li key={res.name} className="glass-card flex items-center justify-between border border-gray-800 p-4 rounded-lg hover:border-neon-cyan transition-colors">
+      <span className="inline-flex shrink-0 items-center gap-1.5 text-sm font-semibold text-primary">
+        Read <Icon name="arrowRight" size={16} />
+      </span>
+    </Link>
+
+    <ul className="space-y-3">
+      {resources.map((res) => (
+        <li key={res.name}>
+          <a
+            href={res.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="card group flex items-center justify-between gap-4 p-4 transition-colors hover:border-primary/40"
+          >
             <div className="flex items-center gap-3">
-              <span className="text-neon-yellow">📄</span>
-              <span className="font-medium text-lg text-gray-200">{res.name}</span>
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-surface-2 text-fg-muted">
+                <Icon name="book" size={18} />
+              </span>
+              <span className="font-medium text-fg">{res.name}</span>
             </div>
-            <a
-              href={res.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-neon-cyan hover:text-white hover:underline text-sm font-semibold flex items-center gap-1"
-            >
-              [VIEW]
-            </a>
-          </li>
-        ))}
-      </ul>
-      
-      <div className="mt-16 text-center border-t border-gray-800 pt-8">
-        <p className="text-neon-green font-mono text-sm mb-2">
-          {'// More DSA sheets and PDFs will be added soon. Stay curious and keep learning!'}
-        </p>
-        <p className="text-gray-500 font-mono text-xs">
-          I'm also a learner—let's keep growing together!
-        </p>
-      </div>
+            <span className="inline-flex shrink-0 items-center gap-1.5 text-sm font-medium text-primary">
+              View <Icon name="external" size={15} />
+            </span>
+          </a>
+        </li>
+      ))}
+    </ul>
+
+    <div className="mt-14 rounded-2xl border border-dashed border-border bg-surface/50 p-8 text-center">
+      <p className="text-fg-muted">More DSA sheets and PDFs will be added soon — stay curious and keep learning.</p>
     </div>
   </div>
 );

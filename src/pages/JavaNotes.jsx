@@ -1,82 +1,104 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
+import Icon from '../components/ui/Icon';
+import NotesBlock from '../components/ui/NotesBlock';
+import { SectionHeading } from '../components/ui/index.jsx';
+import { javaNotes } from '../data/javaNotes';
 
-const resources = [
-  { name: "Java Practice (javapractise.md)", file: "javapractise.md", emoji: "☕" },
-  { name: "Learning Guide (learning.md)", file: "learning.md", emoji: "📖" }
-];
+/* --------------------------------- Page --------------------------------- */
+const JavaNotes = () => {
+  const [query, setQuery] = useState('');
 
-const baseUrl = "https://github.com/Sarvesh-Shelgaonkar/Placement-Materials/blob/main/java";
+  const sections = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return javaNotes;
+    return javaNotes.filter((s) => {
+      if (s.title.toLowerCase().includes(q)) return true;
+      return JSON.stringify(s.blocks).toLowerCase().includes(q);
+    });
+  }, [query]);
 
-const JavaNotes = () => (
-  <div className="pt-24 pb-16 min-h-screen">
-    <div className="container mx-auto px-4 max-w-5xl">
-      <div className="mb-12 border-b border-gray-800 pb-6 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-4">
-            <span className="text-neon-cyan font-mono">{'>'}</span>
-            <h1 className="text-4xl md:text-5xl font-bold font-mono text-white tracking-tight">
-              /java_core
-            </h1>
-            <span className="animate-pulse-neon w-3 h-10 bg-neon-cyan inline-block ml-2"></span>
+  return (
+    <div className="container-page pt-24 pb-16">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <SectionHeading
+          eyebrow="Interview prep"
+          title="Java Interview Notes"
+          description="Core Java, OOP, exceptions, multithreading, collections and more — each concept with a crisp definition, an interview-ready answer, tables, code, and the tricky follow-ups interviewers actually ask."
+        />
+        <div className="flex shrink-0 flex-wrap items-center gap-2" data-no-print>
+          <a href="/interview/java-interviewbit.pdf" download className="btn-primary btn-sm">
+            <Icon name="book" size={16} /> InterviewBit PDF
+          </a>
+          <button type="button" onClick={() => window.print()} className="btn-secondary btn-sm">
+            <Icon name="book" size={16} /> Save as PDF
+          </button>
+          <a
+            href="https://github.com/Sarvesh-Shelgaonkar/Placement-Materials/tree/main/java"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn-secondary btn-sm"
+          >
+            <Icon name="github" size={16} /> Source repo
+          </a>
+        </div>
+      </div>
+
+      <div className="grid gap-8 lg:grid-cols-[240px_1fr]">
+        {/* Table of contents */}
+        <aside className="lg:sticky lg:top-24 lg:self-start" data-no-print>
+          <div className="relative mb-4">
+            <Icon name="search" size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-subtle" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search notes…"
+              aria-label="Search Java notes"
+              className="input pl-9"
+            />
           </div>
-          <p className="text-gray-400 font-mono md:pl-6 text-sm md:text-base max-w-2xl">
-            Deep dive into Java Core and Practice notes. Hosted directly from your Placement-Materials repository.
-          </p>
-        </div>
-        <a 
-          href="https://github.com/Sarvesh-Shelgaonkar/Placement-Materials/tree/main/java"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="px-4 py-2 border border-neon-yellow rounded-lg bg-neon-yellow/10 text-neon-yellow font-mono text-sm hover:bg-neon-yellow/20 transition-colors flex items-center gap-2 whitespace-nowrap"
-        >
-          <span>📁</span> VIEW ROOT REPO
-        </a>
-      </div>
+          <nav className="hidden max-h-[70vh] overflow-y-auto lg:block" aria-label="Contents">
+            <ul className="space-y-0.5">
+              {javaNotes.map((s) => (
+                <li key={s.id}>
+                  <a
+                    href={`#${s.id}`}
+                    className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+                  >
+                    <Icon name={s.icon} size={15} className="shrink-0 text-fg-subtle" />
+                    <span className="truncate">{s.title}</span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        </aside>
 
-      <div className="mb-16">
-        <div className="flex items-center gap-3 mb-6">
-          <h2 className="text-2xl font-bold text-white font-mono border-b-2 border-neon-cyan pb-1 inline-block">
-            /Java_Files
-          </h2>
-          <div className="flex-1 border-b border-gray-800 border-dashed"></div>
-        </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {resources.map((res, index) => (
-            <a
-              key={res.file}
-              href={`${baseUrl}/${res.file}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="glass-card flex flex-col justify-between border border-gray-800 p-5 rounded-lg hover:border-neon-cyan transition-all duration-300 group hover:shadow-[0_0_15px_rgba(0,255,255,0.15)] hover:-translate-y-1"
-              style={{ animationDelay: `${index * 50}ms` }}
-            >
-              <div className="flex items-start gap-4 mb-4">
-                <div className="w-10 h-10 rounded bg-[#1a1a1a] border border-gray-700 flex items-center justify-center flex-shrink-0 group-hover:border-neon-cyan group-hover:bg-neon-cyan/10 transition-colors">
-                  <span className="text-xl">{res.emoji}</span>
+        {/* Content */}
+        <div className="min-w-0 space-y-6">
+          {sections.length === 0 ? (
+            <p className="text-sm text-fg-muted">No notes match “{query}”.</p>
+          ) : (
+            sections.map((section) => (
+              <section key={section.id} id={section.id} className="card scroll-mt-24 p-6">
+                <header className="mb-4 flex items-center gap-3 border-b border-border pb-4">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+                    <Icon name={section.icon} size={20} />
+                  </span>
+                  <h2 className="text-lg font-bold text-fg">{section.title}</h2>
+                </header>
+                <div className="space-y-4">
+                  {section.blocks.map((block, i) => (
+                    <NotesBlock key={i} block={block} />
+                  ))}
                 </div>
-                <div>
-                  <h3 className="font-bold text-gray-200 group-hover:text-white line-clamp-2 leading-tight">
-                    {res.name}
-                  </h3>
-                  <p className="text-xs text-gray-500 mt-1 font-mono">
-                    java/{res.file}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center justify-between mt-auto pt-4 border-t border-gray-800/50">
-                <span className="text-xs font-mono text-gray-500">Markdown</span>
-                <span className="text-neon-cyan text-xs font-mono font-bold flex items-center gap-1 group-hover:translate-x-1 transition-transform">
-                  READ [↗]
-                </span>
-              </div>
-            </a>
-          ))}
+              </section>
+            ))
+          )}
         </div>
       </div>
-      
     </div>
-  </div>
-);
+  );
+};
 
 export default JavaNotes;
