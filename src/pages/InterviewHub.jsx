@@ -7,6 +7,14 @@ import { interviewBanks, countQuestions } from '../data/interview';
 
 const EXTRA_TRACKS = [
   {
+    to: '/system-design',
+    title: 'System Design',
+    short: 'SD',
+    icon: 'layers',
+    accent: 'text-primary',
+    description: 'Framework, core concepts, reliability/SPOFs & a full HLD + LLD checklist.',
+  },
+  {
     to: '/java-notes',
     title: 'Java Interview Notes',
     short: 'Java',

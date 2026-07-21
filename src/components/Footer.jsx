@@ -9,6 +9,7 @@ const COLUMNS = [
       { label: 'Roadmap', to: '/roadmap' },
       { label: 'Patterns', to: '/patterns' },
       { label: 'Practice Sheets', to: '/sheets' },
+      { label: 'Company Problems', to: '/companies' },
       { label: 'Topics', to: '/topics' },
       { label: 'Problems', to: '/problems' },
       { label: 'Notes & Resources', to: '/notes' },
@@ -29,6 +30,7 @@ const COLUMNS = [
     title: 'Interview',
     links: [
       { label: 'Interview Session', to: '/interview' },
+      { label: 'System Design', to: '/system-design' },
       { label: 'Resume & HR', to: '/interview/resume' },
       { label: 'SQL', to: '/interview/sql' },
       { label: 'Operating Systems', to: '/interview/os' },
@@ -86,10 +88,19 @@ const Footer = () => (
 
       <div className="mt-12 flex flex-col items-center justify-between gap-4 border-t border-border pt-6 sm:flex-row">
         <p className="text-sm text-fg-subtle">
-          © {new Date().getFullYear()} MyDSA. Built for learners, by a learner.
+          © {new Date().getFullYear()}{' '}
+          <a
+            href="https://github.com/Sarvesh-Shelgaonkar"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-fg-muted transition-colors hover:text-primary"
+          >
+            Sarvesh Shelgaonkar
+          </a>
+          . All rights reserved.
         </p>
         <p className="text-sm text-fg-subtle">
-          Your progress is stored locally in your browser.
+          MyDSA — built &amp; owned by Sarvesh Shelgaonkar.
         </p>
       </div>
     </div>

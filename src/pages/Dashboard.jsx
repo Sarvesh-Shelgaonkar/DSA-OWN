@@ -189,6 +189,8 @@ const Dashboard = () => {
                 { to: '/patterns', label: 'Patterns', icon: 'grid', desc: 'Recognise & solve' },
                 { to: '/sheets', label: 'Sheets', icon: 'route', desc: 'A2Z, Blind 75' },
                 { to: '/interview', label: 'Interview', icon: 'sparkles', desc: 'AI resume coach' },
+                { to: '/system-design', label: 'System Design', icon: 'layers', desc: 'HLD & LLD' },
+                { to: '/companies', label: 'Companies', icon: 'grid', desc: 'Top asked Qs' },
                 { to: '/revision', label: 'Revision', icon: 'reset', desc: 'Revisit solved' },
                 { to: '/puzzles', label: 'Puzzles', icon: 'bolt', desc: 'Logical warm-ups' },
               ].map((q) => (

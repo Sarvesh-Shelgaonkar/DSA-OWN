@@ -21,9 +21,12 @@ const Leaderboard = lazy(() => import('./pages/Leaderboard'));
 const Puzzles = lazy(() => import('./pages/Puzzles'));
 const Patterns = lazy(() => import('./pages/Patterns'));
 const Sheets = lazy(() => import('./pages/Sheets'));
+const Companies = lazy(() => import('./pages/Companies'));
+const CompanyDetail = lazy(() => import('./pages/CompanyDetail'));
 const Revision = lazy(() => import('./pages/Revision'));
 const InterviewHub = lazy(() => import('./pages/InterviewHub'));
 const InterviewBankPage = lazy(() => import('./pages/InterviewBankPage'));
+const SystemDesign = lazy(() => import('./pages/SystemDesign'));
 const TopicNotes = lazy(() => import('./pages/TopicNotes'));
 
 // Legacy content pages (dark-themed, code-split)
@@ -82,9 +85,12 @@ const App = () => {
             <Route path="/puzzles" element={<Puzzles />} />
             <Route path="/patterns" element={<Patterns />} />
             <Route path="/sheets" element={<Sheets />} />
+            <Route path="/companies" element={<Companies />} />
+            <Route path="/companies/:slug" element={<CompanyDetail />} />
             <Route path="/revision" element={<Revision />} />
             <Route path="/interview" element={<InterviewHub />} />
             <Route path="/interview/:bankId" element={<InterviewBankPage />} />
+            <Route path="/system-design" element={<SystemDesign />} />
             <Route path="/dsa-notes" element={<TopicNotes />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
