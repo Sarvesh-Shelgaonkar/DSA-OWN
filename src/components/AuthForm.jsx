@@ -89,83 +89,83 @@ const AuthForm = ({ mode }) => {
             </>
           )}
 
-        <form onSubmit={onSubmit} className="space-y-4">
-          {error && (
-            <div
-              role="alert"
-              className="flex items-start gap-2 rounded-lg border border-hard/30 bg-hard/10 px-3 py-2.5 text-sm text-hard"
-            >
-              <Icon name="bell" size={16} className="mt-0.5 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          {isSignup && (
-            <div>
-              <label htmlFor="name" className="mb-1.5 block text-sm font-medium text-fg">Name</label>
-              <input
-                id="name"
-                type="text"
-                autoComplete="name"
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="input"
-                placeholder="Ada Lovelace"
-              />
-            </div>
-          )}
-
-          <div>
-            <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-fg">Email</label>
-            <input
-              id="email"
-              type="email"
-              autoComplete="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="input"
-              placeholder="you@example.com"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-fg">Password</label>
-            <div className="relative">
-              <input
-                id="password"
-                type={showPw ? 'text' : 'password'}
-                autoComplete={isSignup ? 'new-password' : 'current-password'}
-                required
-                minLength={6}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="input pr-11"
-                placeholder={isSignup ? 'At least 6 characters' : '••••••••'}
-              />
-              <button
-                type="button"
-                onClick={() => setShowPw((v) => !v)}
-                className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-subtle hover:text-fg"
-                aria-label={showPw ? 'Hide password' : 'Show password'}
+          <form onSubmit={onSubmit} className="space-y-4">
+            {error && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-lg border border-hard/30 bg-hard/10 px-3 py-2.5 text-sm text-hard"
               >
-                <Icon name={showPw ? 'eyeOff' : 'eye'} size={17} />
-              </button>
-            </div>
-          </div>
-
-          <button type="submit" disabled={busy} className="btn-primary btn-md w-full">
-            {busy ? (
-              <>
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                Please wait…
-              </>
-            ) : (
-              <>{isSignup ? 'Create account' : 'Sign in'}</>
+                <Icon name="bell" size={16} className="mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </div>
             )}
-          </button>
-        </form>
+
+            {isSignup && (
+              <div>
+                <label htmlFor="name" className="mb-1.5 block text-sm font-medium text-fg">Name</label>
+                <input
+                  id="name"
+                  type="text"
+                  autoComplete="name"
+                  required
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  className="input"
+                  placeholder="Ada Lovelace"
+                />
+              </div>
+            )}
+
+            <div>
+              <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-fg">Email</label>
+              <input
+                id="email"
+                type="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="input"
+                placeholder="you@example.com"
+              />
+            </div>
+
+            <div>
+              <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-fg">Password</label>
+              <div className="relative">
+                <input
+                  id="password"
+                  type={showPw ? 'text' : 'password'}
+                  autoComplete={isSignup ? 'new-password' : 'current-password'}
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="input pr-11"
+                  placeholder={isSignup ? 'At least 6 characters' : '••••••••'}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw((v) => !v)}
+                  className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-subtle hover:text-fg"
+                  aria-label={showPw ? 'Hide password' : 'Show password'}
+                >
+                  <Icon name={showPw ? 'eyeOff' : 'eye'} size={17} />
+                </button>
+              </div>
+            </div>
+
+            <button type="submit" disabled={busy} className="btn-primary btn-md w-full">
+              {busy ? (
+                <>
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  Please wait…
+                </>
+              ) : (
+                <>{isSignup ? 'Create account' : 'Sign in'}</>
+              )}
+            </button>
+          </form>
         </div>
 
         <p className="mt-5 text-center text-sm text-fg-muted">

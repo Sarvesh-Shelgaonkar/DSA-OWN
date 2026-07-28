@@ -1,7 +1,24 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { api } from '../lib/api';
+import { api, getToken } from '../lib/api';
 
 const AuthContext = createContext(null);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Resolve the current session. A 401 means definitively not logged in, so we
+// stop immediately. Any other failure (network error / server cold start) is
+// retried a few times so a transient blip on startup doesn't sign the user out.
+async function resolveSession() {
+  const maxRetries = getToken() ? 3 : 0;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await api.me();
+    } catch (err) {
+      if (err.status === 401 || attempt >= maxRetries) throw err;
+      await sleep(800 * (attempt + 1));
+    }
+  }
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -10,8 +27,7 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     let alive = true;
-    api
-      .me()
+    resolveSession()
       .then((res) => {
         if (!alive) return;
         setUser(res.user);

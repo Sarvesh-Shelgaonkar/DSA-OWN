@@ -26,10 +26,55 @@ const LEVEL_META = {
   Hardest: 'bg-primary/10 text-primary border-primary/30',
 };
 
+const INLINE_CODE_CLASS =
+  'rounded border border-border bg-surface-2 px-1.5 py-0.5 font-mono text-[0.85em] text-primary';
+
+/** Reusable code block for SQL / code snippets inside answers. */
+const CodeBlock = ({ code }) => (
+  <pre className="mt-2 overflow-x-auto rounded-lg border border-border bg-surface-2 p-3 text-xs leading-relaxed">
+    <code className="font-mono text-fg">{code.trim()}</code>
+  </pre>
+);
+
+/**
+ * Renders a string with lightweight inline formatting:
+ *  - `code` (single backticks)      → inline monospace chip
+ *  - ```code``` (triple backticks)  → block code (SQL snippets etc.)
+ * Anything that isn't a string is returned as-is.
+ */
+const RichText = ({ text }) => {
+  if (typeof text !== 'string') return text ?? null;
+
+  // Split out fenced (triple-backtick) code blocks first.
+  const segments = text.split(/```(?:sql)?\s*([\s\S]*?)```/g);
+
+  return segments.map((segment, i) => {
+    // Odd indices are the captured fenced-code contents.
+    if (i % 2 === 1) return <CodeBlock key={`c${i}`} code={segment} />;
+    if (!segment) return null;
+
+    // Inline `code` within the remaining prose.
+    const inline = segment.split(/`([^`]+)`/g);
+    return inline.map((part, j) =>
+      j % 2 === 1 ? (
+        <code key={`i${i}-${j}`} className={INLINE_CODE_CLASS}>
+          {part}
+        </code>
+      ) : (
+        <React.Fragment key={`t${i}-${j}`}>{part}</React.Fragment>
+      ),
+    );
+  });
+};
+
 const NotesBlock = ({ block }) => {
   switch (block.type) {
     case 'p':
-      return <p className="text-sm leading-relaxed text-fg-muted">{block.text}</p>;
+      return (
+        <p className="text-sm leading-relaxed text-fg-muted">
+          <RichText text={block.text} />
+        </p>
+      );
 
     case 'h':
       return <h3 className="mt-2 text-sm font-bold uppercase tracking-wide text-fg-subtle">{block.text}</h3>;
@@ -40,7 +85,9 @@ const NotesBlock = ({ block }) => {
           <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-primary">
             <Icon name="check" size={13} /> Say this in the interview
           </p>
-          <p className="text-sm leading-relaxed text-fg">{block.text}</p>
+          <div className="text-sm leading-relaxed text-fg">
+            <RichText text={block.text} />
+          </div>
         </div>
       );
 
@@ -50,7 +97,9 @@ const NotesBlock = ({ block }) => {
           <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-medium">
             <Icon name="sparkles" size={13} /> Interview tip
           </p>
-          <p className="text-sm leading-relaxed text-fg">{block.text}</p>
+          <div className="text-sm leading-relaxed text-fg">
+            <RichText text={block.text} />
+          </div>
         </div>
       );
 
@@ -102,7 +151,9 @@ const NotesBlock = ({ block }) => {
               {block.rows.map((row, r) => (
                 <tr key={r} className="border-b border-border last:border-0">
                   {row.map((cell, c) => (
-                    <td key={c} className={`px-3 py-2 align-top ${c === 0 ? 'font-medium text-fg' : 'text-fg-muted'}`}>{cell}</td>
+                    <td key={c} className={`px-3 py-2 align-top ${c === 0 ? 'font-medium text-fg' : 'text-fg-muted'}`}>
+                      <RichText text={cell} />
+                    </td>
                   ))}
                 </tr>
               ))}
@@ -117,14 +168,22 @@ const NotesBlock = ({ block }) => {
           <p className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-fg-subtle">
             <Icon name="sparkles" size={13} /> {block.title || 'Tricky follow-ups'}
           </p>
-          <ul className="space-y-3">
+          <ul className="divide-y divide-border">
             {block.items.map((qa, i) => (
-              <li key={i}>
-                <p className="text-sm font-semibold text-fg">Q. {qa.q}</p>
-                <p className="mt-0.5 flex gap-1.5 text-sm text-fg-muted">
-                  <span className="font-semibold text-success">A.</span>
-                  <span>{qa.a}</span>
+              <li key={i} className="py-3 first:pt-0 last:pb-0">
+                <p className="flex gap-1.5 text-sm font-semibold text-fg">
+                  <span className="text-primary">Q.</span>
+                  <span>
+                    <RichText text={qa.q} />
+                  </span>
                 </p>
+                <div className="mt-1 flex gap-1.5 text-sm leading-relaxed text-fg-muted">
+                  <span className="font-semibold text-success">A.</span>
+                  <div className="min-w-0">
+                    <RichText text={qa.a} />
+                    {qa.code && <CodeBlock code={qa.code} />}
+                  </div>
+                </div>
               </li>
             ))}
           </ul>
@@ -142,12 +201,17 @@ const NotesBlock = ({ block }) => {
                 >
                   {item.level}
                 </span>
-                <p className="text-sm font-semibold text-fg">{item.q}</p>
+                <p className="text-sm font-semibold text-fg">
+                  <RichText text={item.q} />
+                </p>
               </div>
-              <p className="flex gap-1.5 text-sm leading-relaxed text-fg-muted">
+              <div className="flex gap-1.5 text-sm leading-relaxed text-fg-muted">
                 <span className="font-semibold text-success">A.</span>
-                <span>{item.a}</span>
-              </p>
+                <div className="min-w-0">
+                  <RichText text={item.a} />
+                  {item.code && <CodeBlock code={item.code} />}
+                </div>
+              </div>
             </li>
           ))}
         </ul>

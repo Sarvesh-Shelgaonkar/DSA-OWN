@@ -70,6 +70,36 @@ export function useRevision() {
     [persist]
   );
 
+  // Undo a revision pass (never goes below 0). Clears the timestamp at 0.
+  const decreaseRevision = useCallback(
+    (id) =>
+      persist((prev) => {
+        const entry = prev[id];
+        if (!entry || !(entry.reviseCount > 0)) return prev;
+        const nextCount = entry.reviseCount - 1;
+        return {
+          ...prev,
+          [id]: {
+            ...entry,
+            reviseCount: nextCount,
+            lastRevised: nextCount === 0 ? null : entry.lastRevised,
+          },
+        };
+      }),
+    [persist]
+  );
+
+  // Reset a problem's revision count (and timestamp) back to zero, keeping its rating.
+  const resetCount = useCallback(
+    (id) =>
+      persist((prev) => {
+        const entry = prev[id];
+        if (!entry) return prev;
+        return { ...prev, [id]: { ...entry, reviseCount: 0, lastRevised: null } };
+      }),
+    [persist]
+  );
+
   const resetRevision = useCallback(
     (id) =>
       persist((prev) => {
@@ -80,5 +110,5 @@ export function useRevision() {
     [persist]
   );
 
-  return { revision, getEntry, setRating, addRevision, resetRevision };
+  return { revision, getEntry, setRating, addRevision, decreaseRevision, resetCount, resetRevision };
 }

@@ -281,8 +281,8 @@ const Navbar = () => {
               </div>
             ) : (
               <div className="hidden items-center gap-2 sm:flex">
-                <Link to="/login" className="btn-ghost btn-sm">Log in</Link>
-                <Link to="/signup" className="btn-primary btn-sm">Sign up</Link>
+                <Link to="/login" className="btn-ghost h-10 px-4">Log in</Link>
+                <Link to="/signup" className="btn-primary h-10 px-4">Sign up</Link>
               </div>
             )}
 

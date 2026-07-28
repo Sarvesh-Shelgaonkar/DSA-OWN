@@ -25,7 +25,7 @@ const isDue = (entry) =>
 
 const Revision = () => {
   const { progress } = useLocalProgress();
-  const { revision, getEntry, setRating, addRevision } = useRevision();
+  const { revision, getEntry, setRating, addRevision, decreaseRevision, resetCount } = useRevision();
   const [topic, setTopic] = useState('All');
   const [difficulty, setDifficulty] = useState('All');
   const [sort, setSort] = useState('recent');
@@ -59,11 +59,10 @@ const Revision = () => {
   const stats = useMemo(() => {
     const solved = allProblems.filter((p) => progress[p.id]?.solved);
     const entries = solved.map((p) => getEntry(p.id));
-    const totalRevisions = entries.reduce((a, e) => a + (e.reviseCount || 0), 0);
     const rated = entries.filter((e) => e.rating > 0);
     const avg = rated.length ? (rated.reduce((a, e) => a + e.rating, 0) / rated.length).toFixed(1) : '—';
     const due = solved.filter((p) => isDue(getEntry(p.id))).length;
-    return { total: solved.length, totalRevisions, avg, due };
+    return { total: solved.length, avg, due };
   }, [progress, revision, getEntry]);
 
   return (
@@ -75,9 +74,8 @@ const Revision = () => {
       />
 
       {/* Stats */}
-      <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard icon="book" label="In revision" value={stats.total} accent="text-primary" />
-        <StatCard icon="reset" label="Total revisions" value={stats.totalRevisions} accent="text-accent" />
         <StatCard icon="star" label="Avg. confidence" value={stats.avg} sub="/ 5" accent="text-medium" />
         <StatCard icon="bell" label="Due to revise" value={stats.due} accent="text-hard" />
       </div>
@@ -163,13 +161,35 @@ const Revision = () => {
 
                       {/* Right: revise count + actions */}
                       <div className="flex items-center gap-2">
-                        <span
-                          className="flex items-center gap-1.5 rounded-lg bg-surface-2 px-3 py-2 text-sm font-semibold text-fg"
-                          title="Times revised"
-                        >
-                          <Icon name="reset" size={15} className="text-accent" />
-                          {p.entry.reviseCount || 0}×
-                        </span>
+                        <div className="flex items-center rounded-lg bg-surface-2 text-sm font-semibold text-fg">
+                          <button
+                            type="button"
+                            onClick={() => decreaseRevision(p.id)}
+                            disabled={(p.entry.reviseCount || 0) === 0}
+                            className="grid h-9 w-8 place-items-center rounded-l-lg text-fg-subtle transition-colors hover:bg-primary/10 hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-label="Decrease revision count"
+                            title="Undo one revision (−1)"
+                          >
+                            <Icon name="minus" size={15} />
+                          </button>
+                          <span
+                            className="flex min-w-[3rem] items-center justify-center gap-1.5 px-1 py-2"
+                            title="Times revised"
+                          >
+                            <Icon name="reset" size={15} className="text-accent" />
+                            {p.entry.reviseCount || 0}×
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => resetCount(p.id)}
+                            disabled={(p.entry.reviseCount || 0) === 0}
+                            className="grid h-9 w-8 place-items-center rounded-r-lg text-fg-subtle transition-colors hover:bg-hard/10 hover:text-hard disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-label="Reset revision count"
+                            title="Reset revision count to 0"
+                          >
+                            <Icon name="rotateCcw" size={15} />
+                          </button>
+                        </div>
                         <button
                           type="button"
                           onClick={() => addRevision(p.id)}

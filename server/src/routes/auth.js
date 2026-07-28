@@ -13,8 +13,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 
-const setAuthCookie = (res, userId) => {
-  res.cookie(COOKIE_NAME, signToken(userId), cookieOptions);
+// Issue a session: set the httpOnly cookie AND return the token so the client
+// can persist it (Bearer fallback) for environments where cross-site cookies
+// are blocked. Both mechanisms use the same signed JWT.
+const issueSession = (res, userId) => {
+  const token = signToken(userId);
+  res.cookie(COOKIE_NAME, token, cookieOptions);
+  return token;
 };
 
 // POST /api/auth/signup
@@ -36,8 +41,8 @@ router.post('/signup', async (req, res) => {
     const user = await User.create({ name, email, passwordHash });
     await UserData.create({ user: user._id, username: name });
 
-    setAuthCookie(res, user._id.toString());
-    return res.status(201).json({ user: user.toSafeJSON() });
+    const token = issueSession(res, user._id.toString());
+    return res.status(201).json({ user: user.toSafeJSON(), token });
   } catch (err) {
     console.error('[signup]', err);
     return res.status(500).json({ error: 'Could not create account. Please try again.' });
@@ -60,8 +65,8 @@ router.post('/login', async (req, res) => {
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) return res.status(401).json({ error: 'Invalid email or password.' });
 
-    setAuthCookie(res, user._id.toString());
-    return res.json({ user: user.toSafeJSON() });
+    const token = issueSession(res, user._id.toString());
+    return res.json({ user: user.toSafeJSON(), token });
   } catch (err) {
     console.error('[login]', err);
     return res.status(500).json({ error: 'Could not sign in. Please try again.' });
@@ -115,8 +120,8 @@ router.post('/google', async (req, res) => {
       if (!hasData) await UserData.create({ user: user._id, username: user.name });
     }
 
-    setAuthCookie(res, user._id.toString());
-    return res.json({ user: user.toSafeJSON() });
+    const token = issueSession(res, user._id.toString());
+    return res.json({ user: user.toSafeJSON(), token });
   } catch (err) {
     console.error('[google]', err);
     return res.status(500).json({ error: 'Could not sign in with Google. Please try again.' });
