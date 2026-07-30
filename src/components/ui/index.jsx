@@ -29,7 +29,7 @@ export const ProgressBar = ({ value = 0, className = '', barClassName = 'bg-prim
         aria-label={label}
       >
         <div
-          className={`h-full rounded-full ${barClassName} transition-[width] duration-700 ease-out-expo`}
+          className={`h-full rounded-full ${barClassName} transition-[width] duration-300 ease-out-expo`}
           style={{ width: `${clamped}%` }}
         />
       </div>

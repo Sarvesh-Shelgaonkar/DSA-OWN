@@ -103,8 +103,8 @@ export default {
       },
       animation: {
         'fade-in': 'fade-in 0.3s ease-out forwards',
-        'fade-slide-up': 'fade-slide-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards',
-        'scale-in': 'scale-in 0.18s ease-out forwards',
+        'fade-slide-up': 'fade-slide-up 0.28s cubic-bezier(0.22, 1, 0.36, 1) forwards',
+        'scale-in': 'scale-in 0.24s ease-out forwards',
         shimmer: 'shimmer 1.6s infinite',
         'check-burst': 'check-burst 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards',
         glitch: 'glitch 0.3s cubic-bezier(.25, .46, .45, .94) both infinite',

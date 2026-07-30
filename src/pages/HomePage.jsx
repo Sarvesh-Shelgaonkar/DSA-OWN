@@ -121,9 +121,9 @@ const HomePage = () => {
       {/* ------------------------------- Hero ------------------------------- */}
       <section className="relative overflow-hidden">
         <div className="absolute inset-0 -z-10 surface-grid opacity-40 [mask-image:radial-gradient(ellipse_at_top,black,transparent_70%)]" />
-        <div className="container-page pt-32 pb-16 sm:pt-40 lg:pb-24">
-          <div className="grid items-center gap-12 lg:grid-cols-2">
-            <div className="animate-fade-slide-up">
+        <div className="container-page pb-16 pt-28 sm:pt-36 lg:pb-24 lg:pt-40">
+          <div className="grid min-w-0 items-center gap-12 lg:grid-cols-2 lg:gap-14">
+            <div className="min-w-0 animate-fade-slide-up">
               <span className="badge border border-border bg-surface text-fg-muted">
                 <span className="h-1.5 w-1.5 rounded-full bg-accent" /> Master DSA, the structured way
               </span>
@@ -131,12 +131,12 @@ const HomePage = () => {
                 Crack coding interviews with a plan that{' '}
                 <span className="text-gradient">actually sticks</span>.
               </h1>
-              <p className="mt-5 max-w-xl text-lg text-fg-muted">
+              <p className="mt-6 max-w-xl text-base leading-7 text-fg-muted sm:text-lg">
                 MyDSA turns scattered practice into a clear path. Follow a proven roadmap,
                 solve {TOTAL_PROBLEMS} curated problems, and watch your progress grow — free,
                 private and distraction-free.
               </p>
-              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
                 <Link to="/roadmap" className="btn-primary btn-lg">
                   Start learning <Icon name="arrowRight" size={18} />
                 </Link>
@@ -144,22 +144,22 @@ const HomePage = () => {
                   Browse problems
                 </Link>
               </div>
-              <dl className="mt-10 grid max-w-lg grid-cols-2 gap-x-8 gap-y-5 sm:grid-cols-4">
+              <dl className="mt-10 grid max-w-xl grid-cols-2 border-t border-border/70 pt-6 sm:grid-cols-4 sm:divide-x sm:divide-border/70">
                 {platformStats.map((s) => (
-                  <div key={s.label}>
-                    <dt className="text-2xl font-bold text-fg">{s.value}</dt>
-                    <dd className="text-sm text-fg-muted">{s.label}</dd>
+                  <div key={s.label} className="min-w-0 py-2 first:pl-0 sm:px-5">
+                    <dt className="text-2xl font-bold tracking-[-0.03em] text-fg">{s.value}</dt>
+                    <dd className="mt-0.5 text-xs font-medium leading-5 text-fg-muted sm:text-[13px]">{s.label}</dd>
                   </div>
                 ))}
               </dl>
             </div>
 
             {/* Hero visual: progress preview card */}
-            <div className="relative animate-scale-in lg:pl-8">
-              <div className="card p-6 shadow-card-hover">
+            <div className="relative min-w-0 animate-scale-in lg:pl-4">
+              <div className="hero-progress-card">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <span className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-primary to-accent text-sm font-bold text-white">
+                    <span className="grid h-10 w-10 place-items-center rounded-[10px] border border-primary/30 bg-primary/15 text-sm font-bold text-primary">
                       You
                     </span>
                     <div>
@@ -167,12 +167,12 @@ const HomePage = () => {
                       <p className="text-sm text-fg-muted">Keep the streak alive</p>
                     </div>
                   </div>
-                  <span className="badge bg-medium/10 text-medium">
+                  <span className="badge border border-medium/15 bg-medium/10 text-medium">
                     <Icon name="flame" size={14} /> {stats.currentStreak}d
                   </span>
                 </div>
 
-                <div className="mt-6">
+                <div className="mt-7">
                   <div className="flex items-end justify-between">
                     <span className="text-sm text-fg-muted">Problems solved</span>
                     <span className="text-sm font-semibold text-fg">
@@ -182,31 +182,29 @@ const HomePage = () => {
                   <ProgressBar value={stats.percent} className="mt-2" label="Overall progress" />
                 </div>
 
-                <div className="mt-6 grid grid-cols-3 gap-3">
+                <div className="mt-6 grid grid-cols-3 gap-2.5">
                   {[
                     { k: 'Easy', v: stats.byDifficulty.Easy, c: 'text-easy' },
                     { k: 'Medium', v: stats.byDifficulty.Medium, c: 'text-medium' },
                     { k: 'Hard', v: stats.byDifficulty.Hard, c: 'text-hard' },
                   ].map((d) => (
-                    <div key={d.k} className="rounded-xl bg-surface-2 p-3 text-center">
+                    <div key={d.k} className="rounded-lg border border-border/60 bg-surface-2/75 p-3 text-center">
                       <p className={`text-xl font-bold ${d.c}`}>{d.v}</p>
                       <p className="text-xs text-fg-muted">{d.k}</p>
                     </div>
                   ))}
                 </div>
 
-                <div className="mt-6 space-y-2.5">
+                <div className="mt-6 space-y-3 border-t border-border/70 pt-5">
                   {stats.topics.slice(0, 3).map((t) => (
-                    <div key={t.topic} className="flex items-center gap-3">
-                      <span className="w-28 shrink-0 truncate text-sm text-fg-muted">{t.topic}</span>
+                    <div key={t.topic} className="grid min-w-0 grid-cols-[minmax(0,6.5rem)_minmax(0,1fr)_2.25rem] items-center gap-2.5 sm:grid-cols-[7rem_minmax(0,1fr)_2.25rem]">
+                      <span className="min-w-0 truncate text-sm text-fg-muted">{t.topic}</span>
                       <ProgressBar value={t.percent} className="flex-1" label={`${t.topic} progress`} />
                       <span className="w-9 text-right text-xs font-medium text-fg-subtle">{t.percent}%</span>
                     </div>
                   ))}
                 </div>
               </div>
-              <div className="absolute -right-4 -top-4 -z-10 h-24 w-24 rounded-full bg-primary/20 blur-2xl" />
-              <div className="absolute -bottom-6 -left-6 -z-10 h-28 w-28 rounded-full bg-accent/20 blur-2xl" />
             </div>
           </div>
         </div>

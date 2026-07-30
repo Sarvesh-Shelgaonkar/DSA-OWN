@@ -18,6 +18,7 @@ const NAV_LINKS = [
   { name: 'Dashboard', path: '/dashboard' },
   { name: 'Problems', path: '/problems' },
   { name: 'Roadmap', path: '/roadmap' },
+  { name: 'Engineering', path: '/engineering' },
   { name: 'Patterns', path: '/patterns' },
   { name: 'Interview', path: '/interview' },
 ];
@@ -100,8 +101,10 @@ const Navbar = () => {
   }, [mobileOpen]);
 
   const linkClass = ({ isActive }) =>
-    `relative rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-      isActive ? 'text-fg' : 'text-fg-muted hover:text-fg'
+    `relative rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-200 ease-out-expo ${
+      isActive
+        ? 'bg-surface-2 text-fg shadow-[inset_0_0_0_1px_rgb(var(--border)/0.7)]'
+        : 'text-fg-muted hover:bg-surface/70 hover:text-fg'
     }`;
 
   return (
@@ -114,35 +117,32 @@ const Navbar = () => {
       </a>
 
       <header
-        className={`fixed inset-x-0 top-0 z-50 transition-all duration-300 ${
+        className={`fixed inset-x-0 top-0 z-50 transition-all duration-300 ease-out-expo ${
           scrolled
-            ? 'border-b border-border bg-bg/80 backdrop-blur-xl'
+            ? 'border-b border-border/80 bg-bg/85 shadow-[0_1px_0_rgb(255_255_255/0.015)] backdrop-blur-xl'
             : 'border-b border-transparent bg-transparent'
         }`}
       >
-        <nav className="container-page flex h-16 items-center gap-4" aria-label="Primary">
+        <nav className="mx-auto flex h-16 w-full max-w-7xl items-center gap-4 px-4 sm:px-6 lg:px-8" aria-label="Primary">
           {/* Logo */}
-          <Link to="/" className="flex shrink-0 items-center gap-2" aria-label="MyDSA home">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-primary text-primary-fg shadow-sm">
-              <Icon name="code" size={18} strokeWidth={2.25} />
+          <Link
+            to="/"
+            className="group flex shrink-0 items-center gap-2.5 rounded-lg outline-none"
+            aria-label="MyDSA home"
+          >
+            <span className="grid h-9 w-9 place-items-center rounded-[10px] bg-primary text-primary-fg shadow-[0_1px_2px_rgb(0_0_0/0.18)] transition-transform duration-200 ease-out-expo group-hover:scale-[1.02]">
+              <Icon name="code" size={17} strokeWidth={2.25} />
             </span>
-            <span className="text-lg font-extrabold tracking-tight text-fg">
+            <span className="text-[17px] font-bold tracking-[-0.025em] text-fg">
               My<span className="text-primary">DSA</span>
             </span>
           </Link>
 
           {/* Desktop nav */}
-          <div className="ml-2 hidden items-center gap-0.5 lg:flex">
+          <div className="ml-3 hidden items-center gap-1 xl:flex">
             {NAV_LINKS.map((link) => (
               <NavLink key={link.path} to={link.path} className={linkClass}>
-                {({ isActive }) => (
-                  <>
-                    {link.name}
-                    {isActive && (
-                      <span className="absolute inset-x-3 -bottom-[1px] h-0.5 rounded-full bg-primary" />
-                    )}
-                  </>
-                )}
+                {link.name}
               </NavLink>
             ))}
 
@@ -153,13 +153,14 @@ const Navbar = () => {
                 onClick={() => setMoreOpen((o) => !o)}
                 aria-expanded={moreOpen}
                 aria-haspopup="true"
-                className={`relative flex items-center gap-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-                  moreActive ? 'text-fg' : 'text-fg-muted hover:text-fg'
+                className={`relative flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-200 ease-out-expo ${
+                  moreActive
+                    ? 'bg-surface-2 text-fg shadow-[inset_0_0_0_1px_rgb(var(--border)/0.7)]'
+                    : 'text-fg-muted hover:bg-surface/70 hover:text-fg'
                 }`}
               >
                 More
                 <Icon name="chevronDown" size={15} className={`transition-transform ${moreOpen ? 'rotate-180' : ''}`} />
-                {moreActive && <span className="absolute inset-x-3 -bottom-[1px] h-0.5 rounded-full bg-primary" />}
               </button>
               {moreOpen && (
                 <div className="absolute right-0 top-full mt-2 w-52 overflow-hidden rounded-xl border border-border bg-surface p-1.5 shadow-popover animate-scale-in">
@@ -182,32 +183,32 @@ const Navbar = () => {
             </div>
           </div>
 
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex min-w-0 items-center gap-2">
             {/* Search trigger */}
             <button
               type="button"
               onClick={() => setPaletteOpen(true)}
-              className="hidden items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm text-fg-subtle transition-colors hover:bg-surface-2 md:flex"
+              className="nav-search hidden xl:flex"
               aria-label="Search"
             >
-              <Icon name="search" size={16} />
-              <span>Search…</span>
-              <kbd className="rounded border border-border px-1.5 py-0.5 text-2xs font-semibold">⌘K</kbd>
+              <Icon name="search" size={15} className="shrink-0" />
+              <span className="min-w-0 flex-1 text-left">Search</span>
+              <kbd className="rounded-md border border-border/80 bg-bg/60 px-1.5 py-0.5 text-[10px] font-semibold text-fg-subtle">⌘K</kbd>
             </button>
 
             <button
               type="button"
               onClick={() => setPaletteOpen(true)}
-              className="grid h-10 w-10 place-items-center rounded-xl border border-border bg-surface text-fg-muted hover:bg-surface-2 md:hidden"
+              className="nav-icon-button grid xl:hidden"
               aria-label="Search"
             >
-              <Icon name="search" size={18} />
+              <Icon name="search" size={17} />
             </button>
 
             {/* Streak */}
             <Link
               to="/dashboard"
-              className="hidden items-center gap-1.5 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-semibold text-fg sm:flex"
+              className="nav-utility hidden sm:flex"
               title={`${stats.currentStreak}-day streak`}
             >
               <Icon name="flame" size={16} className="text-medium" />
@@ -217,7 +218,7 @@ const Navbar = () => {
             {/* Notifications */}
             <button
               type="button"
-              className="relative hidden h-10 w-10 place-items-center rounded-xl border border-border bg-surface text-fg-muted hover:bg-surface-2 sm:grid"
+              className="nav-icon-button relative hidden sm:grid"
               aria-label="Notifications"
               onClick={() => navigate('/dashboard')}
             >
@@ -280,9 +281,9 @@ const Navbar = () => {
                 )}
               </div>
             ) : (
-              <div className="hidden items-center gap-2 sm:flex">
-                <Link to="/login" className="btn-ghost h-10 px-4">Log in</Link>
-                <Link to="/signup" className="btn-primary h-10 px-4">Sign up</Link>
+              <div className="hidden items-center gap-2.5 md:flex">
+                <Link to="/login" className="nav-auth-secondary">Log in</Link>
+                <Link to="/signup" className="nav-auth-primary">Sign up</Link>
               </div>
             )}
 
@@ -290,7 +291,7 @@ const Navbar = () => {
             <button
               type="button"
               onClick={() => setMobileOpen((o) => !o)}
-              className="grid h-10 w-10 place-items-center rounded-xl border border-border bg-surface text-fg lg:hidden"
+              className="nav-icon-button grid xl:hidden"
               aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
               aria-expanded={mobileOpen}
             >
@@ -302,7 +303,7 @@ const Navbar = () => {
 
       {/* Mobile menu */}
       {mobileOpen && (
-        <div className="fixed inset-0 z-40 lg:hidden">
+        <div className="fixed inset-0 z-40 xl:hidden">
           <div className="absolute inset-0 bg-slate-950/50 backdrop-blur-sm" onClick={() => setMobileOpen(false)} />
           <div className="absolute inset-x-0 top-16 max-h-[calc(100vh-4rem)] overflow-y-auto border-b border-border bg-surface p-4 animate-fade-slide-up">
             <div className="grid gap-1">
@@ -312,7 +313,7 @@ const Navbar = () => {
                   to={link.path}
                   onClick={() => setMobileOpen(false)}
                   className={({ isActive }) =>
-                    `flex items-center justify-between rounded-xl px-4 py-3 text-base font-medium transition-colors ${
+                    `flex items-center justify-between rounded-lg px-4 py-3 text-base font-medium transition-colors ${
                       isActive ? 'bg-primary/10 text-primary' : 'text-fg hover:bg-surface-2'
                     }`
                   }
@@ -346,11 +347,11 @@ const Navbar = () => {
                   </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  <Link to="/login" onClick={() => setMobileOpen(false)} className="btn-ghost btn-md justify-center">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <Link to="/login" onClick={() => setMobileOpen(false)} className="nav-auth-secondary h-11 justify-center">
                     Log in
                   </Link>
-                  <Link to="/signup" onClick={() => setMobileOpen(false)} className="btn-primary btn-md justify-center">
+                  <Link to="/signup" onClick={() => setMobileOpen(false)} className="nav-auth-primary h-11 justify-center">
                     Sign up
                   </Link>
                 </div>

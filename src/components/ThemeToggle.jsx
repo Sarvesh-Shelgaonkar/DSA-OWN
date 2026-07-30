@@ -9,7 +9,7 @@ const ThemeToggle = ({ className = '' }) => {
     <button
       type="button"
       onClick={toggleTheme}
-      className={`grid h-10 w-10 place-items-center rounded-xl border border-border bg-surface text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg ${className}`}
+      className={`nav-icon-button grid ${className}`}
       aria-label={`Switch to ${isDark ? 'light' : 'dark'} mode`}
       title={`Switch to ${isDark ? 'light' : 'dark'} mode`}
     >

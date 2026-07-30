@@ -13,6 +13,8 @@ import Signup from './pages/Signup';
 
 // Secondary app pages (code-split)
 const Roadmap = lazy(() => import('./pages/Roadmap'));
+const EngineeringHub = lazy(() => import('./pages/EngineeringHub'));
+const EngineeringDsaLesson = lazy(() => import('./pages/EngineeringDsaLesson'));
 const RoadmapStage = lazy(() => import('./pages/RoadmapStage'));
 const Topics = lazy(() => import('./pages/Topics'));
 const Profile = lazy(() => import('./pages/Profile'));
@@ -79,6 +81,8 @@ const App = () => {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/problems" element={<ProblemsPage />} />
             <Route path="/roadmap" element={<Roadmap />} />
+            <Route path="/engineering" element={<EngineeringHub />} />
+            <Route path="/engineering/dsa/how-to-solve-dsa-problems" element={<EngineeringDsaLesson />} />
             <Route path="/roadmap/:stageId" element={<RoadmapStage />} />
             <Route path="/topics" element={<Topics />} />
             <Route path="/profile" element={<Profile />} />
