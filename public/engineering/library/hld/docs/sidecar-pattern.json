@@ -1,0 +1,535 @@
+{
+  "slug": "sidecar-pattern",
+  "title": "Sidecar Pattern",
+  "content": [
+    {
+      "id": "sidecar-pattern",
+      "title": "Sidecar Pattern",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Picture an old motorcycle with a sidecar bolted to it. The bike still does the actual job of moving you down the road. The sidecar just tags along, carrying whatever extra stuff you did not want strapped to the bike itself, your toolbox, your groceries, your friend who refuses to hold on tight."
+        },
+        {
+          "type": "paragraph",
+          "content": "You can swap that sidecar for a bigger one, a smaller one, or none at all, and the motorcycle engine never has to change. That is basically the whole pitch behind the sidecar pattern in software."
+        },
+        {
+          "type": "paragraph",
+          "content": "In a distributed system, your main application container is the motorcycle. It should focus on business logic, the actual thing your product does. A sidecar container rides alongside it in the same pod, handling the infrastructure chores that every service needs but that have nothing to do with the business itself."
+        },
+        {
+          "type": "blockQuote",
+          "content": "The sidecar pattern deploys a helper process next to your main application, in the same pod or host, so cross cutting concerns like networking, logging, and monitoring do not have to be coded into every app."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every service you write ends up needing the same handful of infrastructure features. It needs to encrypt traffic to other services, retry failed calls, emit metrics, ship logs somewhere durable, and pull fresh secrets. None of that is your business logic, yet somebody has to write it, and it tends to get copy pasted into every service in slightly different, slightly buggy ways."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 The problem sidecar solves",
+          "text": "1.1 The problem sidecar solves"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say you run thirty microservices in five different languages. You want all of them to talk to each other over mutual TLS and retry transparently on failure. Baking that logic into each service means thirty separate implementations, thirty separate bugs, and thirty separate upgrade cycles whenever the TLS library needs a patch."
+        },
+        {
+          "type": "list",
+          "content": "[\"Duplicated infra code across every service, often reimplemented per language\",\"Upgrading a cross cutting feature means touching every single codebase\",\"App teams end up owning networking and security code they never wanted to own\",\"Inconsistent behavior because each team implements retries or logging slightly differently\"]",
+          "items": [
+            "Duplicated infra code across every service, often reimplemented per language",
+            "Upgrading a cross cutting feature means touching every single codebase",
+            "App teams end up owning networking and security code they never wanted to own",
+            "Inconsistent behavior because each team implements retries or logging slightly differently"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "The pattern is not new",
+          "content": "The Unix philosophy already leaned this way: small focused processes doing one job well, composed together. The sidecar pattern is that idea applied to a Kubernetes pod."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.2 What the sidecar pattern actually is",
+          "text": "1.2 What the sidecar pattern actually is"
+        },
+        {
+          "type": "paragraph",
+          "content": "You deploy a second, small helper container right next to your main application container, inside the same pod. The helper handles one cross cutting concern, networking, logging, monitoring, config sync, whatever it is built for. Your main container stays focused purely on business logic and barely knows the helper exists."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291697-131576849.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291697-131576849.png",
+          "alt": "App container and sidecar container running together inside one Kubernetes pod"
+        },
+        {
+          "type": "paragraph",
+          "content": "Think of the pod as the motorcycle frame. The app container is the engine. The sidecar is bolted on, doing its own job, sharing the ride."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Sharing the pod, the network, and the lifecycle",
+          "text": "2. Sharing the pod, the network, and the lifecycle"
+        },
+        {
+          "type": "paragraph",
+          "content": "A sidecar is not just a nearby process. In Kubernetes it lives inside the exact same pod as your app, which comes with some very specific guarantees that make the pattern work."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Same network namespace, same localhost",
+          "text": "2.1 Same network namespace, same localhost"
+        },
+        {
+          "type": "paragraph",
+          "content": "Containers in the same pod share one network namespace. That means your app container and its sidecar can talk to each other over localhost, no service discovery, no extra DNS lookup, practically zero network overhead for that hop."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291698-154839004.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291698-154839004.png",
+          "alt": "App container calling its sidecar over localhost inside the shared pod network"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is what lets a proxy sidecar sit transparently in the path of your traffic. Your app just calls localhost on some port, and the sidecar quietly does the real work behind that call."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Same lifecycle, deployed and scaled together",
+          "text": "2.2 Same lifecycle, deployed and scaled together"
+        },
+        {
+          "type": "paragraph",
+          "content": "The sidecar starts when the pod starts and stops when the pod stops. When Kubernetes scales your app to ten replicas, you automatically get ten sidecars too, one per pod, no separate deployment to manage."
+        },
+        {
+          "type": "note",
+          "title": "Watch startup order",
+          "content": "If your app tries to make outbound calls before the sidecar proxy is ready, those calls can fail. Many service meshes solve this with init containers or readiness gates so the sidecar comes up first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Why this decouples infrastructure from business logic",
+          "text": "3. Why this decouples infrastructure from business logic"
+        },
+        {
+          "type": "paragraph",
+          "content": "The real payoff of the pattern is organizational as much as technical. It draws a hard line between what the app team owns and what the platform team owns."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 You can upgrade the sidecar independently",
+          "text": "3.1 You can upgrade the sidecar independently"
+        },
+        {
+          "type": "paragraph",
+          "content": "Since the sidecar is a separate container with its own image, you can ship a new version of it without touching your application code at all. Patch a security hole in your proxy, roll it out to every pod, and your app never rebuilds, never redeploys its own image, never even notices."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291698-428293397.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291698-428293397.png",
+          "alt": "Sidecar upgraded from version one to version two while the app container stays unchanged"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Different language, one sidecar reused everywhere",
+          "text": "3.2 Different language, one sidecar reused everywhere"
+        },
+        {
+          "type": "paragraph",
+          "content": "Your main app can be written in Java, Python, Go, whatever your team likes. The sidecar does not need to match. It is a separate process with its own runtime, so a single, well tested sidecar image can sit next to services written in completely different languages."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291699-725826735.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291699-725826735.png",
+          "alt": "The same sidecar image attached to three different services"
+        },
+        {
+          "type": "list",
+          "content": "[\"Write the sidecar once, reuse it across dozens or hundreds of services\",\"App developers stop needing deep networking or security expertise\",\"One team owns and hardens the sidecar, every service benefits automatically\"]",
+          "items": [
+            "Write the sidecar once, reuse it across dozens or hundreds of services",
+            "App developers stop needing deep networking or security expertise",
+            "One team owns and hardens the sidecar, every service benefits automatically"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Common sidecar use cases",
+          "text": "4. Common sidecar use cases"
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice, three flavors of sidecar show up again and again in real systems."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Service mesh proxy",
+          "text": "4.1 Service mesh proxy"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most common sidecar by far. A proxy like Envoy sits next to every service, intercepts all inbound and outbound traffic, and handles mutual TLS, retries, timeouts, circuit breaking, and traffic routing. The app never opens a raw socket to another service, it just talks to its local proxy."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291700-230382554.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291700-230382554.png",
+          "alt": "Two services each paired with an Envoy sidecar communicating over mutual TLS"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Logging and monitoring agent",
+          "text": "4.2 Logging and monitoring agent"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of every app shipping its own logs or metrics off the box, a sidecar tails the app logs or scrapes a metrics endpoint and forwards everything to a central store. The app just writes to stdout or a local file, blissfully unaware of where that data ends up."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291701-809306061.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291701-809306061.png",
+          "alt": "Logging sidecar collecting app logs and shipping them to central storage"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 Config and secret sync",
+          "text": "4.3 Config and secret sync"
+        },
+        {
+          "type": "paragraph",
+          "content": "A sync sidecar periodically pulls fresh configuration or secrets from a vault or config server and writes them to a shared volume that the app reads from. Rotate a secret centrally, and every sidecar quietly refreshes the local copy without the app restarting or even knowing a rotation happened."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. The cost of running a sidecar",
+          "text": "5. The cost of running a sidecar"
+        },
+        {
+          "type": "paragraph",
+          "content": "None of this is free. You are running more containers, and more containers means more to manage, more to pay for, and one more hop for every request."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 More containers, more resource overhead",
+          "text": "5.1 More containers, more resource overhead"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every pod now runs at least two containers instead of one. Multiply a small memory and CPU footprint per sidecar across thousands of pods and it adds up fast, both in cloud spend and in cluster capacity planning."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Infra logic centralized and reusable\",\"Extra container per pod, more memory and CPU used\"],[\"App code stays focused on business logic\",\"More moving parts to monitor and debug\"],[\"Upgrades roll out without touching app images\",\"Sidecar failure can affect the app it rides with\"],[\"Works across any language the app is written in\",\"Adds latency from the extra network hop\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 The extra network hop",
+          "text": "5.2 The extra network hop"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a proxy sidecar sits in the path of every request, traffic now goes app to sidecar to network, instead of app straight to network. That hop is fast, it is localhost after all, but it is not zero. At high volume, this latency shows up."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291702-630368749.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291702-630368749.png",
+          "alt": "Request hopping from the app to its sidecar before reaching the network"
+        },
+        {
+          "type": "note",
+          "title": "Measure before you assume",
+          "content": "A well tuned Envoy sidecar typically adds low single digit millisecond latency. That is usually a fine trade for the operational win, but confirm it with your own numbers before rolling it out at scale."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Real world usage",
+          "text": "6. Real world usage"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is not a theoretical pattern. Some of the most widely used infrastructure in the industry is built entirely around it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Istio and Envoy",
+          "text": "6.1 Istio and Envoy"
+        },
+        {
+          "type": "paragraph",
+          "content": "Istio, one of the most popular service meshes, injects an Envoy proxy sidecar into every pod it manages. All the mesh features, traffic shaping, mTLS, retries, observability, live in that sidecar. Your application containers stay completely unaware that a mesh exists."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Linkerd and other meshes",
+          "text": "6.2 Linkerd and other meshes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Linkerd takes the same approach with its own lightweight proxy, favoring a smaller footprint over Envoy in exchange for a narrower feature set. Both projects prove the pattern scales to real production traffic at serious companies."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Worked example: an app paired with an Envoy sidecar",
+          "text": "7. Worked example: an app paired with an Envoy sidecar"
+        },
+        {
+          "type": "paragraph",
+          "content": "Let us make this concrete with a checkout service that needs to call a payments service securely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Without a sidecar",
+          "text": "7.1 Without a sidecar"
+        },
+        {
+          "type": "paragraph",
+          "content": "The checkout service would need its own TLS certificate handling, its own retry logic for flaky calls, and its own logic to route to the right payments instance. Every one of those concerns lives inside the checkout codebase, written and maintained by the checkout team."
+        },
+        {
+          "type": "code",
+          "content": "// checkout service, without a sidecar\nconst cert = loadClientCert();\nconst conn = tls.connect({ cert, host: 'payments.internal' });\nlet attempt = 0;\nwhile (attempt < 3) {\n  try {\n    return await callPayments(conn, order);\n  } catch (err) {\n    attempt++;\n  }\n}\nthrow new Error('payments call failed after retries');",
+          "code": {
+            "language": "javascript",
+            "content": "// checkout service, without a sidecar\nconst cert = loadClientCert();\nconst conn = tls.connect({ cert, host: 'payments.internal' });\nlet attempt = 0;\nwhile (attempt < 3) {\n  try {\n    return await callPayments(conn, order);\n  } catch (err) {\n    attempt++;\n  }\n}\nthrow new Error('payments call failed after retries');"
+          },
+          "codes": {
+            "javascript": "// checkout service, without a sidecar\nconst cert = loadClientCert();\nconst conn = tls.connect({ cert, host: 'payments.internal' });\nlet attempt = 0;\nwhile (attempt < 3) {\n  try {\n    return await callPayments(conn, order);\n  } catch (err) {\n    attempt++;\n  }\n}\nthrow new Error('payments call failed after retries');"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 With an Envoy sidecar",
+          "text": "7.2 With an Envoy sidecar"
+        },
+        {
+          "type": "paragraph",
+          "content": "Now drop an Envoy sidecar into the checkout pod. The checkout code makes a plain, unencrypted call to localhost. Envoy intercepts it, wraps it in mutual TLS, retries on transient failure, and forwards it to the payments service, which has its own Envoy sidecar doing the same on the receiving end."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396302540-537513543.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396302540-537513543.png",
+          "alt": "App making a plain local call that the Envoy sidecar upgrades to mTLS with retries"
+        },
+        {
+          "type": "code",
+          "content": "// checkout service, with an Envoy sidecar\nconst conn = http.connect({ host: 'localhost', port: 15001 });\nreturn await callPayments(conn, order);",
+          "code": {
+            "language": "javascript",
+            "content": "// checkout service, with an Envoy sidecar\nconst conn = http.connect({ host: 'localhost', port: 15001 });\nreturn await callPayments(conn, order);"
+          },
+          "codes": {
+            "javascript": "// checkout service, with an Envoy sidecar\nconst conn = http.connect({ host: 'localhost', port: 15001 });\nreturn await callPayments(conn, order);"
+          }
+        },
+        {
+          "type": "example-box",
+          "title": "What just disappeared",
+          "text": "The certificate loading, the TLS handshake, and the retry loop are gone from application code entirely. That logic now lives once in the Envoy sidecar config, shared by every service in the mesh."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396302542-733019172.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396302542-733019172.png",
+          "alt": "Outbound app traffic transparently routed through the sidecar proxy"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Implementation: a Kubernetes pod spec with a sidecar",
+          "text": "8. Implementation: a Kubernetes pod spec with a sidecar"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is what this actually looks like as a pod definition. Two containers, one pod, sharing network and lifecycle."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 The pod spec",
+          "text": "8.1 The pod spec"
+        },
+        {
+          "type": "code",
+          "content": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: checkout-service\n  labels:\n    app: checkout\nspec:\n  containers:\n    - name: checkout-app\n      image: registry.internal/checkout:1.4.0\n      ports:\n        - containerPort: 8080\n    - name: envoy-sidecar\n      image: envoyproxy/envoy:v1.29\n      ports:\n        - containerPort: 15001\n      volumeMounts:\n        - name: envoy-config\n          mountPath: /etc/envoy\n  volumes:\n    - name: envoy-config\n      configMap:\n        name: envoy-checkout-config",
+          "code": {
+            "language": "yaml",
+            "content": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: checkout-service\n  labels:\n    app: checkout\nspec:\n  containers:\n    - name: checkout-app\n      image: registry.internal/checkout:1.4.0\n      ports:\n        - containerPort: 8080\n    - name: envoy-sidecar\n      image: envoyproxy/envoy:v1.29\n      ports:\n        - containerPort: 15001\n      volumeMounts:\n        - name: envoy-config\n          mountPath: /etc/envoy\n  volumes:\n    - name: envoy-config\n      configMap:\n        name: envoy-checkout-config"
+          },
+          "codes": {
+            "yaml": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: checkout-service\n  labels:\n    app: checkout\nspec:\n  containers:\n    - name: checkout-app\n      image: registry.internal/checkout:1.4.0\n      ports:\n        - containerPort: 8080\n    - name: envoy-sidecar\n      image: envoyproxy/envoy:v1.29\n      ports:\n        - containerPort: 15001\n      volumeMounts:\n        - name: envoy-config\n          mountPath: /etc/envoy\n  volumes:\n    - name: envoy-config\n      configMap:\n        name: envoy-checkout-config"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Walking through the config",
+          "text": "8.2 Walking through the config"
+        },
+        {
+          "type": "list",
+          "content": "[\"One pod, two containers, checkout-app and envoy-sidecar, deployed and scaled as a single unit\",\"The app listens on 8080, the sidecar listens on 15001, both reachable over the shared localhost\",\"The sidecar reads its routing and TLS rules from a mounted config map, kept separate from the app image\",\"Updating envoy-sidecar to a new image tag never requires rebuilding checkout-app\"]",
+          "items": [
+            "One pod, two containers, checkout-app and envoy-sidecar, deployed and scaled as a single unit",
+            "The app listens on 8080, the sidecar listens on 15001, both reachable over the shared localhost",
+            "The sidecar reads its routing and TLS rules from a mounted config map, kept separate from the app image",
+            "Updating envoy-sidecar to a new image tag never requires rebuilding checkout-app"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "This is not just for meshes",
+          "content": "The same pattern works for a logging sidecar tailing a shared volume, or a config sync sidecar writing secrets to a shared emptyDir, swap the image and the config, keep the same two container shape."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. The interview angle",
+          "text": "9. The interview angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "When an interviewer asks how you would add a cross cutting concern, like auth, logging, or mTLS, to many services without copy pasting the same code into each one, the sidecar pattern is exactly the answer they are fishing for."
+        },
+        {
+          "type": "list",
+          "content": "[\"Name the pattern and the core idea: a helper container in the same pod, handling infra so the app does not have to\",\"Mention that it works across languages since the sidecar is a separate process\",\"Bring up a concrete example, Envoy handling mTLS and retries for you\",\"Be upfront about the cost too, extra containers, extra latency, more to operate\"]",
+          "items": [
+            "Name the pattern and the core idea: a helper container in the same pod, handling infra so the app does not have to",
+            "Mention that it works across languages since the sidecar is a separate process",
+            "Bring up a concrete example, Envoy handling mTLS and retries for you",
+            "Be upfront about the cost too, extra containers, extra latency, more to operate"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "A strong answer names the tradeoff as clearly as the benefit. Sidecars buy you consistency and reuse, and they cost you resources and a network hop. Good engineers say both parts out loud."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Summary",
+          "text": "10. Summary"
+        },
+        {
+          "type": "paragraph",
+          "content": "The sidecar pattern earns its keep once you have enough services that duplicating infra logic in each one becomes genuinely painful. Below a certain scale, it is often just overhead you do not need yet."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396302542-281723795.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396302542-281723795.png",
+          "alt": "Deciding to skip or use a sidecar based on how many services you run"
+        },
+        {
+          "type": "list",
+          "content": "[\"Handful of services in one language, one team: the overhead probably is not worth it yet\",\"Dozens of services, multiple languages, multiple teams: a shared sidecar starts paying for itself fast\",\"If you are already reaching for a service mesh, you are already committing to this pattern\"]",
+          "items": [
+            "Handful of services in one language, one team: the overhead probably is not worth it yet",
+            "Dozens of services, multiple languages, multiple teams: a shared sidecar starts paying for itself fast",
+            "If you are already reaching for a service mesh, you are already committing to this pattern"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Keep the motorcycle analogy in your back pocket. The engine should just drive. Bolt the extra weight onto the sidecar, and swap that sidecar out whenever you need to, without ever touching the engine."
+        }
+      ]
+    }
+  ]
+}

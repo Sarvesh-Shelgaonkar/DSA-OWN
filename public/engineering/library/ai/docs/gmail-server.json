@@ -1,0 +1,543 @@
+{
+  "slug": "gmail-server",
+  "title": "Gmail Server",
+  "content": [
+    {
+      "id": "gmail-server",
+      "title": "Gmail Server",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "A Gmail MCP server lets an agent read, search, and reply to email through a set of well defined tools."
+        },
+        {
+          "type": "paragraph",
+          "text": "Most of it is safe by design. The one tool that actually sends mail on your behalf is the part that needs real guardrails."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson walks through the tools, the OAuth scopes, and the review step that keeps a send action from firing on its own."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What a Gmail MCP Server Is",
+          "id": "gmail-server-what-it-is"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580608323-357583780.png",
+          "alt": "An AI agent connects to a Gmail MCP server with search, draft, and send tools",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A Gmail MCP server is a thin layer that sits between an AI client and the Gmail API."
+        },
+        {
+          "type": "paragraph",
+          "text": "It exposes a small set of tools instead of the full Gmail API surface, which keeps the agent focused and the risk contained."
+        },
+        {
+          "type": "paragraph",
+          "text": "The agent never touches raw credentials. It only ever calls a tool the server chooses to expose."
+        },
+        {
+          "type": "list",
+          "items": [
+            "search_emails, finds messages or threads matching a query",
+            "read_thread, pulls the full content of one conversation for context",
+            "draft_reply, writes a reply and saves it as a draft",
+            "send_email, actually delivers a message, the one tool that needs strict controls"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The Core Tools at a Glance",
+          "id": "gmail-server-core-tools"
+        },
+        {
+          "type": "paragraph",
+          "text": "Each tool maps to one clear action, nothing does double duty."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping tools narrow makes it easy to reason about what an agent can and cannot do at any moment."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Tool\",\"What it does\",\"Risk level\"],\"rows\":[[\"search_emails\",\"Finds messages matching a query string\",\"Low, read only\"],[\"read_thread\",\"Returns the full text of a conversation\",\"Low, read only\"],[\"draft_reply\",\"Creates a draft reply, does not send it\",\"Medium, write but reversible\"],[\"send_email\",\"Delivers a message to the recipient\",\"High, irreversible once sent\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Irreversible is the key word",
+          "content": "You can delete a draft with no consequence. You cannot unsend an email a customer already opened."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Why send_email Is High Risk",
+          "id": "gmail-server-send-risk"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580610130-126346914.png",
+          "alt": "A search tool is low risk while a send email tool is high risk",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sending an email is a real world action with a real recipient on the other end."
+        },
+        {
+          "type": "paragraph",
+          "text": "A wrong address, a wrong attachment, or a wrong tone cannot be taken back once the message leaves the outbox."
+        },
+        {
+          "type": "paragraph",
+          "text": "An agent that hallucinates a detail in a draft is a minor annoyance. The same hallucination in a sent email is a customer facing mistake."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Wrong recipient, a reply goes to the wrong thread or the wrong person entirely",
+            "Wrong facts, the agent states a refund amount or a policy that is not accurate",
+            "Wrong tone, a reply reads as dismissive or rude to an already frustrated customer",
+            "Data leakage, a draft accidentally includes internal notes meant only for the team"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Applying Tool Permissions to Gmail Actions",
+          "id": "gmail-server-tool-permissions"
+        },
+        {
+          "type": "paragraph",
+          "text": "Tool Permissions means deciding, per tool, who or what is allowed to invoke it and under what conditions."
+        },
+        {
+          "type": "paragraph",
+          "text": "For a Gmail server, search_emails and read_thread can run freely. send_email should not."
+        },
+        {
+          "type": "paragraph",
+          "text": "A simple permission model marks send_email as requiring an explicit approval token before the server will execute it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# permission check enforced inside the MCP server, not the agent\nTOOL_PERMISSIONS = {\n    \"search_emails\": {\"requires_approval\": False},\n    \"read_thread\":   {\"requires_approval\": False},\n    \"draft_reply\":   {\"requires_approval\": False},\n    \"send_email\":    {\"requires_approval\": True},\n}\n\ndef can_execute(tool_name, approval_token=None):\n    rule = TOOL_PERMISSIONS[tool_name]\n    if rule[\"requires_approval\"] and not approval_token:\n        return False, \"send_email needs a human approval token\"\n    return True, None"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Human in the Loop for Every Send",
+          "id": "gmail-server-human-in-loop"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580611825-223425181.png",
+          "alt": "Every send action pauses for human approval before it actually goes out",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Human in the Loop means a person must review and confirm an action before it takes effect."
+        },
+        {
+          "type": "paragraph",
+          "text": "For send_email, that review is not optional. It is the entire safety mechanism."
+        },
+        {
+          "type": "paragraph",
+          "text": "The agent drafts, a person reads the draft, and only a person clicking approve triggers the actual send."
+        },
+        {
+          "type": "note",
+          "title": "The server enforces this, not the prompt",
+          "content": "Telling the agent to ask before sending is not a guardrail. The send_email tool itself must refuse to run without an approval signal."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. OAuth Scopes: Read Only vs Send Access",
+          "id": "gmail-server-oauth-scopes"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580613657-424639995.png",
+          "alt": "A read only scope is compared against a send access scope",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Gmail OAuth scopes let you grant exactly the access a server needs, nothing more."
+        },
+        {
+          "type": "paragraph",
+          "text": "A search and read only agent should never hold a scope capable of sending mail."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Scope\",\"What it grants\",\"Use it for\"],\"rows\":[[\"gmail.readonly\",\"View messages, threads, and labels\",\"search_emails, read_thread\"],[\"gmail.compose\",\"Create, edit, and delete drafts, cannot send\",\"draft_reply\"],[\"gmail.send\",\"Send messages on the user behalf\",\"send_email only\"],[\"gmail.modify\",\"Read, compose, send, and change labels\",\"avoid unless every one of those is truly needed\"],[\"mail.google.com\",\"Full account access including delete\",\"almost never appropriate for an agent\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Requesting the Narrowest Scope You Need",
+          "id": "gmail-server-narrow-scopes"
+        },
+        {
+          "type": "paragraph",
+          "text": "If a use case only searches and drafts, request gmail.readonly and gmail.compose together."
+        },
+        {
+          "type": "paragraph",
+          "text": "Add gmail.send only when the workflow genuinely requires the server to deliver mail itself."
+        },
+        {
+          "type": "paragraph",
+          "text": "Narrow scopes limit the blast radius if a token ever leaks or a bug slips through review."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Start every new Gmail integration with the smallest possible scope set",
+            "Add gmail.send late, and only after the approval flow is built and tested",
+            "Review granted scopes periodically, remove any that are no longer used",
+            "Never request mail.google.com for an automated agent"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Building the search_emails Tool",
+          "id": "gmail-server-build-search"
+        },
+        {
+          "type": "paragraph",
+          "text": "search_emails takes a query string and returns matching message summaries."
+        },
+        {
+          "type": "paragraph",
+          "text": "It only needs the readonly scope, so it is safe to let an agent call it freely."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def search_emails(query, max_results=10):\n    results = gmail_service.users().messages().list(\n        userId=\"me\",\n        q=query,\n        maxResults=max_results\n    ).execute()\n\n    messages = results.get(\"messages\", [])\n    summaries = []\n    for msg in messages:\n        full = gmail_service.users().messages().get(\n            userId=\"me\", id=msg[\"id\"], format=\"metadata\"\n        ).execute()\n        headers = {h[\"name\"]: h[\"value\"] for h in full[\"payload\"][\"headers\"]}\n        summaries.append({\n            \"id\": msg[\"id\"],\n            \"threadId\": full[\"threadId\"],\n            \"from\": headers.get(\"From\"),\n            \"subject\": headers.get(\"Subject\"),\n            \"snippet\": full.get(\"snippet\"),\n        })\n    return summaries"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Building the draft_reply Tool",
+          "id": "gmail-server-build-draft"
+        },
+        {
+          "type": "paragraph",
+          "text": "draft_reply writes a reply and saves it, it never calls the send endpoint."
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the return value tells the caller the draft is pending review, not delivered."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def draft_reply(thread_id, to_address, reply_text):\n    mime_message = build_mime_reply(to_address, reply_text, thread_id)\n\n    draft = gmail_service.users().drafts().create(\n        userId=\"me\",\n        body={\"message\": {\"raw\": mime_message, \"threadId\": thread_id}}\n    ).execute()\n\n    return {\n        \"draft_id\": draft[\"id\"],\n        \"status\": \"pending_human_review\",\n        \"note\": \"This draft has not been sent. It requires approval.\"\n    }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The tool stops here on purpose. Sending is a separate tool with a separate permission check."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. The Draft, Review, Send Flow",
+          "id": "gmail-server-draft-review-send"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580615599-423235443.png",
+          "alt": "A draft moves through review before it is finally sent",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Put the pieces together and you get a single, repeatable flow for every routine reply."
+        },
+        {
+          "type": "paragraph",
+          "text": "The agent never gets a path to send that skips the human step."
+        },
+        {
+          "type": "paragraph",
+          "text": "If the reviewer rejects a draft, it goes back to the agent for revision, not to a discard."
+        },
+        {
+          "type": "paragraph",
+          "text": "This loop keeps the agent useful without ever letting it act unsupervised on a live customer thread."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Approval UI and Audit Trail",
+          "id": "gmail-server-approval-ui"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580617508-928799620.png",
+          "alt": "An approval UI records every decision into an audit trail",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A reviewer needs to see the draft, the original email, and a single clear approve or reject choice."
+        },
+        {
+          "type": "paragraph",
+          "text": "Every approval decision should be logged with who approved it and when."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "function sendEmail({ draftId, approvedBy, approvalTimestamp }) {\n  if (!approvedBy) {\n    throw new Error(\"send_email blocked: missing human approval token\");\n  }\n\n  auditLog.record({\n    action: \"send_email\",\n    draftId,\n    approvedBy,\n    approvalTimestamp,\n  });\n\n  return gmail.users.drafts.send({\n    userId: \"me\",\n    requestBody: { id: draftId },\n  });\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Handling Attachments and Sensitive Content",
+          "id": "gmail-server-attachments"
+        },
+        {
+          "type": "paragraph",
+          "text": "Attachments raise the stakes further, a wrong file sent to the wrong person can leak sensitive data."
+        },
+        {
+          "type": "paragraph",
+          "text": "A safe draft_reply tool should list any attachments explicitly so a reviewer can check them before approval."
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider stripping or flagging anything that looks like an internal note accidentally copied into a draft."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Rate Limiting and Abuse Prevention",
+          "id": "gmail-server-rate-limiting"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580619449-745754748.png",
+          "alt": "Send requests over the rate limit are blocked to prevent abuse",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Even a read only tool can be misused if an agent loops and calls search_emails thousands of times."
+        },
+        {
+          "type": "paragraph",
+          "text": "Cap requests per minute per user, and cap the number of pending drafts an agent can create at once."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Limit search_emails calls per session to avoid quota exhaustion",
+            "Cap the number of unreviewed drafts sitting in the queue at any time",
+            "Alert a human if send_email approval requests spike unexpectedly"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Error Handling for Gmail API Calls",
+          "id": "gmail-server-error-handling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Gmail API errors fall into a few clear buckets, and each should map to a distinct tool response."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Error type\",\"Example\",\"What the tool should return\"],\"rows\":[[\"Auth expired\",\"Refresh token invalid\",\"A clear reauthorize message, not a silent retry\"],[\"Rate limited\",\"Too many requests\",\"A retryable error with a suggested wait time\"],[\"Not found\",\"Thread id no longer exists\",\"A clear not found message, never an empty success\"],[\"Permission denied\",\"Scope insufficient for action\",\"A denial naming the missing scope\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Logging and Auditing Every Send",
+          "id": "gmail-server-logging"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every successful send should leave a full paper trail behind it."
+        },
+        {
+          "type": "paragraph",
+          "text": "That means the draft content, who approved it, and the exact time it went out."
+        },
+        {
+          "type": "note",
+          "title": "Logs are your incident response plan",
+          "content": "If a customer ever disputes what was sent, the audit log is what tells you whether it was reviewed and by whom."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Testing the Server Safely",
+          "id": "gmail-server-testing"
+        },
+        {
+          "type": "paragraph",
+          "text": "Test against a dedicated Gmail test account, never a real production mailbox."
+        },
+        {
+          "type": "paragraph",
+          "text": "Run the full draft, review, send flow end to end before granting gmail.send to any real user account."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Use a sandbox mailbox with fake threads for every automated test",
+            "Verify send_email genuinely fails without an approval token",
+            "Confirm draft_reply never calls the send endpoint under any code path"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "gmail-server-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "A support inbox gets a routine question about order status, an easy case for automation."
+        },
+        {
+          "type": "paragraph",
+          "text": "The agent calls search_emails to find the customer thread, then read_thread to load the full history."
+        },
+        {
+          "type": "paragraph",
+          "text": "It calls draft_reply with an answer pulled from the order lookup tool, and the draft lands in a review queue."
+        },
+        {
+          "type": "paragraph",
+          "text": "A support agent reads the draft in under ten seconds, clicks approve, and send_email fires with their approval token attached."
+        },
+        {
+          "type": "paragraph",
+          "text": "The whole exchange took the agent seconds to prepare and a human seconds to check, with no unsupervised send at any point."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "gmail-server-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Granting gmail.send to a server that only needs to search and draft",
+            "Letting the agent prompt itself to skip review instead of enforcing the check in code",
+            "Treating draft_reply and send_email as one tool with a flag instead of two separate tools",
+            "Skipping audit logging until after an incident makes it obviously necessary",
+            "Testing send_email against a real production inbox instead of a sandbox account"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "gmail-server-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sketch the tool list for a Gmail server that only ever needs to triage and label incoming mail, no replies at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "Decide which OAuth scopes that server actually needs, and write down why gmail.send is not one of them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "gmail-server-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A Gmail MCP server is safe when the risky action is small, isolated, and gated behind a real human decision."
+        },
+        {
+          "type": "paragraph",
+          "text": "Narrow tools, narrow OAuth scopes, and a strict approval step before every send are what make automated email assistance trustworthy."
+        }
+      ]
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Navigate, Routes, Route, useLocation } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import { useCloudSync } from './hooks/useCloudSync';
@@ -14,7 +14,15 @@ import Signup from './pages/Signup';
 // Secondary app pages (code-split)
 const Roadmap = lazy(() => import('./pages/Roadmap'));
 const EngineeringHub = lazy(() => import('./pages/EngineeringHub'));
-const EngineeringDsaLesson = lazy(() => import('./pages/EngineeringDsaLesson'));
+const EngineeringDsaLibraryPage = lazy(() => import('./pages/EngineeringDsaLibraryPage'));
+const EngineeringRecoveredDsaPage = lazy(() => import('./pages/EngineeringRecoveredDsaPage'));
+const EngineeringCollectionLibraryPage = lazy(() => import('./pages/EngineeringCollectionLibraryPage'));
+const EngineeringCollectionDocumentPage = lazy(() => import('./pages/EngineeringCollectionDocumentPage'));
+const EngineeringCoursePage = lazy(() => import('./pages/EngineeringCoursePage'));
+const EngineeringLessonPage = lazy(() => import('./pages/EngineeringLessonPage'));
+const EngineeringSheetPage = lazy(() => import('./pages/EngineeringSheetPage'));
+const EngineeringSheetDocumentPage = lazy(() => import('./pages/EngineeringSheetDocumentPage'));
+const EngineeringRevisionPage = lazy(() => import('./pages/EngineeringRevisionPage'));
 const RoadmapStage = lazy(() => import('./pages/RoadmapStage'));
 const Topics = lazy(() => import('./pages/Topics'));
 const Profile = lazy(() => import('./pages/Profile'));
@@ -82,7 +90,19 @@ const App = () => {
             <Route path="/problems" element={<ProblemsPage />} />
             <Route path="/roadmap" element={<Roadmap />} />
             <Route path="/engineering" element={<EngineeringHub />} />
-            <Route path="/engineering/dsa/how-to-solve-dsa-problems" element={<EngineeringDsaLesson />} />
+            <Route path="/engineering/sheets" element={<EngineeringSheetPage />} />
+            <Route path="/engineering/sheets/dsa/:docSlug" element={<EngineeringSheetDocumentPage />} />
+            <Route path="/engineering/revision" element={<EngineeringRevisionPage />} />
+            <Route path="/engineering/dsa" element={<EngineeringDsaLibraryPage />} />
+            <Route path="/engineering/dsa/docs/:docSlug" element={<EngineeringRecoveredDsaPage />} />
+            <Route path="/engineering/dsa/how-to-solve-dsa-problems" element={<Navigate to="/engineering/dsa/docs/how-to-solve-dsa-problems" replace />} />
+            <Route path="/engineering/system-design" element={<EngineeringCollectionLibraryPage trackId="system-design" />} />
+            <Route path="/engineering/ai" element={<EngineeringCollectionLibraryPage trackId="ai" />} />
+            <Route path="/engineering/devops" element={<EngineeringCollectionLibraryPage trackId="devops" />} />
+            <Route path="/engineering/interview" element={<EngineeringCollectionLibraryPage trackId="interview" />} />
+            <Route path="/engineering/library/:collectionId/:docSlug" element={<EngineeringCollectionDocumentPage />} />
+            <Route path="/engineering/learn/:trackId/:lessonSlug" element={<EngineeringLessonPage />} />
+            <Route path="/engineering/:trackId" element={<EngineeringCoursePage />} />
             <Route path="/roadmap/:stageId" element={<RoadmapStage />} />
             <Route path="/topics" element={<Topics />} />
             <Route path="/profile" element={<Profile />} />

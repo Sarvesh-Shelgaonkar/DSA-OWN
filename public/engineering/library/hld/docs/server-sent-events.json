@@ -1,0 +1,739 @@
+{
+  "slug": "server-sent-events",
+  "title": "Server-Sent Events (SSE)",
+  "content": [
+    {
+      "id": "server-sent-events",
+      "title": "Server-Sent Events (SSE)",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "The stock price on a dashboard updates on its own. A live match score ticks up. When you ask ChatGPT a question, the answer appears word by word instead of all at once. A deployment log scrolls in real time as the build runs."
+        },
+        {
+          "type": "paragraph",
+          "content": "All of these share one shape. The server has a stream of updates and simply needs to keep sending them to the browser as they happen. The browser never asks again, it just listens."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is exactly what Server Sent Events, or SSE, are built for. It is the simplest way to get a continuous, one way stream of updates from a server to a browser, over plain HTTP, with no special protocol."
+        },
+        {
+          "type": "paragraph",
+          "content": "It has been part of the web platform for over a decade, quietly powering live features long before it became the common way to stream AI responses."
+        },
+        {
+          "type": "paragraph",
+          "content": "The best part is how little you have to learn. If you already understand an HTTP request and response, the pieces are already in place. SSE just keeps the response open and lets the server keep writing to it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Through this page we will build from that simple idea all the way to a production ready, scalable streaming setup."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278428611-694997477.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278428611-694997477.png",
+          "alt": "SSE: the client opens one connection and the server streams events down it"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What Server Sent Events Are",
+          "text": "1. What Server Sent Events Are"
+        },
+        {
+          "type": "paragraph",
+          "content": "SSE is a technology that lets a server push a continuous stream of events to a client over a single, long lived HTTP connection. The direction is strictly one way, from the server to the client."
+        },
+        {
+          "type": "paragraph",
+          "content": "The client opens the connection once, using an ordinary HTTP GET request, and then keeps it open. The server holds that connection and writes events into it whenever it has something new to say. Each time an event arrives, the browser fires a callback in your code."
+        },
+        {
+          "type": "paragraph",
+          "content": "The important insight is that this is not a new protocol. It is plain HTTP with a special content type, text/event-stream, and a simple line based text format for the events. Because it is just HTTP, it passes through almost every proxy, firewall, and load balancer with no special configuration."
+        },
+        {
+          "type": "list",
+          "content": "[\"One way: the server sends, the client only receives\",\"One connection: opened once and kept open for the whole session\",\"Plain HTTP: no protocol upgrade, just the text/event-stream content type\",\"Built in browser support: the EventSource API does the heavy lifting\",\"Automatic reconnection: if the connection drops, the browser reconnects on its own\"]",
+          "items": [
+            "One way: the server sends, the client only receives",
+            "One connection: opened once and kept open for the whole session",
+            "Plain HTTP: no protocol upgrade, just the text/event-stream content type",
+            "Built in browser support: the EventSource API does the heavy lifting",
+            "Automatic reconnection: if the connection drops, the browser reconnects on its own"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "A helpful comparison: if WebSockets are a phone call where both people can talk at once, SSE is a radio broadcast. The station keeps transmitting and your radio just listens. You cannot talk back on that channel, but for receiving a steady stream it is simple and efficient."
+        },
+        {
+          "type": "note",
+          "title": "The one line version",
+          "content": "SSE is a one way, server to client stream of text events over a single HTTP connection, with reconnection handled by the browser for you."
+        },
+        {
+          "type": "paragraph",
+          "content": "SSE is a web standard, part of the HTML specification, so it works in every modern browser with no library. The server side is just as portable, since any framework that can hold a response open and write to it can serve an SSE stream."
+        },
+        {
+          "type": "paragraph",
+          "content": "A concrete picture: a live scores page opens one SSE stream when it loads. As goals happen, the server writes a small event for each one, and the page updates the scoreline instantly. The page never polls, and the user never refreshes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Why SSE Exists",
+          "text": "2. Why SSE Exists"
+        },
+        {
+          "type": "paragraph",
+          "content": "To really understand SSE, it helps to see the two options it sits between, because it was created to fill the gap between them."
+        },
+        {
+          "type": "paragraph",
+          "content": "On one side is polling. With short polling the browser asks again and again on a timer, and almost every request comes back empty. With long polling the server holds each request open until it has data, which is far better, but it still opens a brand new request for every single message. Both are workarounds for the fact that plain HTTP was designed for the client to ask first."
+        },
+        {
+          "type": "paragraph",
+          "content": "On the other side are WebSockets, which open a full two way channel. They are powerful, but they are also more work. They are a separate protocol that must be upgraded into, they need their own server handling, and scaling stateful two way connections is genuinely harder."
+        },
+        {
+          "type": "paragraph",
+          "content": "SSE fills the middle. The key realization is that a huge number of real time features do not need the client to send anything back over the same channel. A price feed, a notifications stream, a live log, an AI answer streaming in, all of these flow in one direction only, from the server to the client."
+        },
+        {
+          "type": "paragraph",
+          "content": "For those cases, SSE gives you true server push with almost none of the WebSocket complexity. Under the hood it is simply an HTTP request that never finishes, with the server writing events into the open response body over time."
+        },
+        {
+          "type": "list",
+          "content": "[\"Simpler than WebSockets, because it is plain HTTP with no upgrade step\",\"One way by design, which is exactly right when only the server sends\",\"Reconnection built into the browser, so you write none of that logic\",\"Works through existing HTTP infrastructure like proxies, CDNs, and load balancers\"]",
+          "items": [
+            "Simpler than WebSockets, because it is plain HTTP with no upgrade step",
+            "One way by design, which is exactly right when only the server sends",
+            "Reconnection built into the browser, so you write none of that logic",
+            "Works through existing HTTP infrastructure like proxies, CDNs, and load balancers"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "A useful rule of thumb",
+          "content": "If the client only needs to receive, SSE is usually the right tool. Reach for WebSockets only when the client also needs to send frequently over the same connection."
+        },
+        {
+          "type": "paragraph",
+          "content": "Think about a notifications feature built three ways. With short polling you hit the server every few seconds and mostly get nothing. With WebSockets you stand up a socket server and manage a two way protocol for updates that only ever flow one way. With SSE you open one HTTP stream and the server pushes a notification the instant it happens."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is the core reason SSE exists. For one way updates it removes the waste of polling without taking on the full weight of WebSockets."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. How SSE Works",
+          "text": "3. How SSE Works"
+        },
+        {
+          "type": "paragraph",
+          "content": "The flow is straightforward once you see the pieces, and it maps almost directly onto normal HTTP."
+        },
+        {
+          "type": "paragraph",
+          "content": "The client creates an EventSource pointed at a URL. The browser sends an ordinary HTTP GET request to that URL, but includes an Accept header saying it wants text/event-stream."
+        },
+        {
+          "type": "paragraph",
+          "content": "The server responds with the content type text/event-stream and then does the one unusual thing: it does not end the response. It keeps the connection open and writes events into the body as they occur, flushing each one immediately."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278430471-564323623.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278430471-564323623.png",
+          "alt": "One GET request opens the stream, then the server pushes many events down it"
+        },
+        {
+          "type": "list",
+          "content": "[\"The client opens an EventSource to a URL\",\"The browser sends a GET request that accepts text/event-stream\",\"The server replies with that content type and keeps the response open\",\"Whenever there is news, the server writes an event into the stream and flushes it\",\"The browser parses each event and fires a message callback in your code\",\"If the connection drops, the browser automatically reconnects\"]",
+          "items": [
+            "The client opens an EventSource to a URL",
+            "The browser sends a GET request that accepts text/event-stream",
+            "The server replies with that content type and keeps the response open",
+            "Whenever there is news, the server writes an event into the stream and flushes it",
+            "The browser parses each event and fires a message callback in your code",
+            "If the connection drops, the browser automatically reconnects"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "content": "From the developer point of view this is beautifully simple. The server just writes lines of text, and the browser turns each block of lines into an event. There is no binary framing to manage and no handshake to negotiate beyond a normal HTTP response."
+        },
+        {
+          "type": "paragraph",
+          "content": "This simplicity is the whole appeal. You get real server push while still thinking in terms of a plain HTTP request and response."
+        },
+        {
+          "type": "paragraph",
+          "content": "One detail worth noting: an SSE response has no Content-Length, because the server does not know in advance how much it will send. The connection stays open with the body growing over time, which is unusual for HTTP but perfectly valid."
+        },
+        {
+          "type": "paragraph",
+          "content": "That immediate flush after each event is the whole trick. Normally a server builds a full response and sends it once. With SSE it sends a little, flushes, waits, and sends more, keeping the pipe open the entire time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The Event Stream Format",
+          "text": "4. The Event Stream Format"
+        },
+        {
+          "type": "paragraph",
+          "content": "SSE events are plain text sent in a specific but very simple format. Each event is a small group of lines, and a blank line marks the end of one event."
+        },
+        {
+          "type": "code",
+          "content": "event: price\nid: 42\ndata: {\"symbol\":\"ACME\",\"price\":101}\n",
+          "code": "event: price\nid: 42\ndata: {\"symbol\":\"ACME\",\"price\":101}\n",
+          "codes": {
+            "text": "event: price\nid: 42\ndata: {\"symbol\":\"ACME\",\"price\":101}\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "There are only a handful of fields, and you rarely need all of them at once."
+        },
+        {
+          "type": "list",
+          "content": "[\"data: the actual payload, the only required field, and it may span multiple lines\",\"event: an optional event name, so the client can listen for specific types\",\"id: an optional identifier used to resume the stream after a reconnect\",\"retry: how many milliseconds the browser should wait before reconnecting\"]",
+          "items": [
+            "data: the actual payload, the only required field, and it may span multiple lines",
+            "event: an optional event name, so the client can listen for specific types",
+            "id: an optional identifier used to resume the stream after a reconnect",
+            "retry: how many milliseconds the browser should wait before reconnecting"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "A line that begins with a colon is a comment and is ignored by the browser. Servers use this as a cheap heartbeat, sending a comment line every so often to keep the connection and any intermediate proxies from timing out."
+        },
+        {
+          "type": "code",
+          "content": ": this is a heartbeat comment, ignored by the client\n",
+          "code": ": this is a heartbeat comment, ignored by the client\n",
+          "codes": {
+            "text": ": this is a heartbeat comment, ignored by the client\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "If you send several data lines in one event, the browser joins them with newlines, so you can stream a multi line message naturally. In practice most applications simply put a single JSON string in one data field and parse it on the client."
+        },
+        {
+          "type": "paragraph",
+          "content": "Because the format is readable text, you can literally watch a live SSE stream from the terminal with a curl command. That makes SSE far easier to debug than a binary WebSocket frame, which you cannot just read with your eyes."
+        },
+        {
+          "type": "note",
+          "title": "Why text and not binary",
+          "content": "SSE was designed for human readable, text based streaming over HTTP. That choice keeps it simple and debuggable, but it is also why binary data does not fit SSE well."
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is what a short slice of a real stream looks like on the wire, with a named event, an id, and a couple of default messages:"
+        },
+        {
+          "type": "code",
+          "content": "event: price\nid: 100\ndata: {\"symbol\":\"ACME\",\"price\":101}\n\ndata: {\"log\":\"build started\"}\n\ndata: {\"log\":\"tests passed\"}\n",
+          "code": "event: price\nid: 100\ndata: {\"symbol\":\"ACME\",\"price\":101}\n\ndata: {\"log\":\"build started\"}\n\ndata: {\"log\":\"tests passed\"}\n",
+          "codes": {
+            "text": "event: price\nid: 100\ndata: {\"symbol\":\"ACME\",\"price\":101}\n\ndata: {\"log\":\"build started\"}\n\ndata: {\"log\":\"tests passed\"}\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The id field is what makes resumption possible, so if you care about not missing events across a drop, give every event a stable, increasing id. If you do not need that, you can leave it out entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Client Code: The EventSource API",
+          "text": "5. Client Code: The EventSource API"
+        },
+        {
+          "type": "paragraph",
+          "content": "The browser gives you the EventSource API, and it is refreshingly small. You point it at a URL, then listen for events."
+        },
+        {
+          "type": "code",
+          "content": "const es = new EventSource('/events');\n\n// default messages (events with no explicit name)\nes.onmessage = (e) => render(JSON.parse(e.data));\n\n// a named event type\nes.addEventListener('price', (e) => updatePrice(JSON.parse(e.data)));\n\nes.onerror = () => {\n  // no code needed here: the browser reconnects automatically\n};",
+          "code": "const es = new EventSource('/events');\n\n// default messages (events with no explicit name)\nes.onmessage = (e) => render(JSON.parse(e.data));\n\n// a named event type\nes.addEventListener('price', (e) => updatePrice(JSON.parse(e.data)));\n\nes.onerror = () => {\n  // no code needed here: the browser reconnects automatically\n};",
+          "codes": {
+            "javascript": "const es = new EventSource('/events');\n\n// default messages (events with no explicit name)\nes.onmessage = (e) => render(JSON.parse(e.data));\n\n// a named event type\nes.addEventListener('price', (e) => updatePrice(JSON.parse(e.data)));\n\nes.onerror = () => {\n  // no code needed here: the browser reconnects automatically\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "That is essentially the entire client. You listen for the default message event, optionally listen for named events, and you do not write any reconnection logic because the browser handles it."
+        },
+        {
+          "type": "paragraph",
+          "content": "One important constraint: an EventSource always uses GET and cannot send a request body. If the client needs to pass data to start the stream, it goes in the URL as query parameters, or in a separate normal request beforehand. This is a direct consequence of SSE being one way."
+        },
+        {
+          "type": "paragraph",
+          "content": "Named events are a nice touch. By setting the event field on the server, you can route different kinds of updates to different handlers on the client, for example a price event and a trade event on the same stream."
+        },
+        {
+          "type": "note",
+          "title": "Always close the stream",
+          "content": "Call es.close() when the component unmounts or the user navigates away. If you forget, the connection stays open and the browser keeps reconnecting in the background, quietly wasting resources."
+        },
+        {
+          "type": "paragraph",
+          "content": "An EventSource also exposes a readyState you can inspect, which is CONNECTING, OPEN, or CLOSED, useful for showing a connection indicator in the interface."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is one sharp edge that surprises people: the EventSource API cannot set custom request headers, so you cannot attach an Authorization header. Authentication has to ride on cookies, a query parameter, or a small fetch based polyfill that supports headers. This trips up teams expecting to send a bearer token the usual way."
+        },
+        {
+          "type": "note",
+          "title": "Cross origin streams",
+          "content": "For a stream on another origin, the server must send the right CORS headers, and you pass withCredentials to the EventSource if the stream needs to include cookies."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Server Code: Streaming Events",
+          "text": "6. Server Code: Streaming Events"
+        },
+        {
+          "type": "paragraph",
+          "content": "The server side is where the real work lives, and it comes down to three things: set the right headers, keep the response open, and write events as they happen."
+        },
+        {
+          "type": "code",
+          "content": "app.get('/events', (req, res) => {\n  res.setHeader('Content-Type', 'text/event-stream');\n  res.setHeader('Cache-Control', 'no-cache');\n  res.setHeader('Connection', 'keep-alive');\n\n  const send = (payload) => res.write(`data: ${JSON.stringify(payload)}\\n\\n`);\n\n  const subscription = priceFeed.subscribe(send);\n  req.on('close', () => subscription.unsubscribe());\n});",
+          "code": "app.get('/events', (req, res) => {\n  res.setHeader('Content-Type', 'text/event-stream');\n  res.setHeader('Cache-Control', 'no-cache');\n  res.setHeader('Connection', 'keep-alive');\n\n  const send = (payload) => res.write(`data: ${JSON.stringify(payload)}\\n\\n`);\n\n  const subscription = priceFeed.subscribe(send);\n  req.on('close', () => subscription.unsubscribe());\n});",
+          "codes": {
+            "javascript": "app.get('/events', (req, res) => {\n  res.setHeader('Content-Type', 'text/event-stream');\n  res.setHeader('Cache-Control', 'no-cache');\n  res.setHeader('Connection', 'keep-alive');\n\n  const send = (payload) => res.write(`data: ${JSON.stringify(payload)}\\n\\n`);\n\n  const subscription = priceFeed.subscribe(send);\n  req.on('close', () => subscription.unsubscribe());\n});"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The Content-Type header is what tells the browser this is an event stream rather than a normal response. Cache-Control no-cache stops proxies from caching the stream, and keep-alive asks to hold the connection open."
+        },
+        {
+          "type": "paragraph",
+          "content": "The key line is the res.write call. Each event is the data field followed by two newlines, and that double newline is what marks the end of one event. Notice the response is never ended, it simply keeps being written to."
+        },
+        {
+          "type": "paragraph",
+          "content": "Equally important is the close handler. When the client disconnects, whether by navigating away or losing the network, you must clean up the subscription. If you skip this, you slowly leak subscriptions and memory as clients come and go."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is one subtle trap on the server side. Many frameworks and proxies buffer responses by default, waiting to send until they have a chunk of data. That buffering breaks streaming, because events pile up instead of flushing immediately, so you often need to disable compression and buffering on the SSE route."
+        },
+        {
+          "type": "note",
+          "title": "Flush, do not buffer",
+          "content": "If your events arrive at the client in bursts instead of one at a time, buffering is almost always the cause. Disable response compression and any proxy buffering on the SSE endpoint."
+        },
+        {
+          "type": "paragraph",
+          "content": "When you need named events and ids for resumption, you write a few more fields into each event, like this:"
+        },
+        {
+          "type": "code",
+          "content": "function send(res, { id, event, data }) {\n  if (id) res.write(`id: ${id}\\n`);\n  if (event) res.write(`event: ${event}\\n`);\n  res.write(`data: ${JSON.stringify(data)}\\n\\n`);\n}",
+          "code": "function send(res, { id, event, data }) {\n  if (id) res.write(`id: ${id}\\n`);\n  if (event) res.write(`event: ${event}\\n`);\n  res.write(`data: ${JSON.stringify(data)}\\n\\n`);\n}",
+          "codes": {
+            "javascript": "function send(res, { id, event, data }) {\n  if (id) res.write(`id: ${id}\\n`);\n  if (event) res.write(`event: ${event}\\n`);\n  res.write(`data: ${JSON.stringify(data)}\\n\\n`);\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "One environment to watch is serverless. Many serverless platforms cap how long a single request may run, which conflicts with a stream meant to stay open for a long time. There you either raise the limit, use a streaming friendly runtime, or reach for a managed real time service."
+        },
+        {
+          "type": "paragraph",
+          "content": "For most traditional servers though, none of this is exotic. Any long running Node, Java, Go, or Python server can hold thousands of SSE streams comfortably, as long as it is not blocking a whole thread per connection."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Automatic Reconnection and Last-Event-ID",
+          "text": "7. Automatic Reconnection and Last-Event-ID"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is one of the best parts of SSE, and it is something WebSockets make you build entirely by hand."
+        },
+        {
+          "type": "paragraph",
+          "content": "If the connection drops, the browser automatically reconnects after a short delay. The server can even tune that delay with the retry field in the stream. You write zero code for this behavior."
+        },
+        {
+          "type": "paragraph",
+          "content": "Better still, SSE has a built in way to avoid missing events across a reconnect. If the server attaches an id to each event, the browser remembers the last id it received. When it reconnects, it automatically sends that value back in a header called Last-Event-ID."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278432105-51259062.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278432105-51259062.png",
+          "alt": "On reconnect the browser sends Last-Event-ID so the server resumes with no gaps"
+        },
+        {
+          "type": "paragraph",
+          "content": "The server can read that header and resume the stream from just after that id, so no events are lost in the gap. This is the same cursor idea used in long polling, except here the browser tracks and sends the cursor for you automatically."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth being precise about the guarantee. Resuming only works if your server actually keeps recent events around to replay. If it does not, the client simply continues from the newest event and may miss whatever happened during the disconnect."
+        },
+        {
+          "type": "note",
+          "title": "The replay requirement",
+          "content": "Last-Event-ID gives you gap free reconnection only if the server can look up and resend events after a given id. Store a short buffer of recent events, or accept that some may be missed on reconnect."
+        },
+        {
+          "type": "paragraph",
+          "content": "The retry field is simply a number of milliseconds sent in the stream, and the browser uses it as the base reconnect delay:"
+        },
+        {
+          "type": "code",
+          "content": "retry: 5000\ndata: {\"status\":\"ok\"}\n",
+          "code": "retry: 5000\ndata: {\"status\":\"ok\"}\n",
+          "codes": {
+            "text": "retry: 5000\ndata: {\"status\":\"ok\"}\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice you rarely tune retry by hand. The browser default of a few seconds is fine, and you set it only when you want faster recovery or want to back clients off during an outage."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. A Real Example: Streaming an LLM Response",
+          "text": "8. A Real Example: Streaming an LLM Response"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most relatable modern use of SSE is an AI chat. When you ask ChatGPT or a similar assistant a question, the answer does not appear all at once. It streams in, token by token. That streaming is almost always SSE."
+        },
+        {
+          "type": "paragraph",
+          "content": "The reason is that it is a perfect fit. The model generates tokens one at a time on the server, and each token should reach the browser the instant it is produced. During that time the client is not sending anything back, it is only receiving. That is textbook one way streaming."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278433680-51179119.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278433680-51179119.png",
+          "alt": "An LLM answer streamed token by token to the browser over SSE"
+        },
+        {
+          "type": "list",
+          "content": "[\"You send your prompt as a normal request\",\"The server starts the model and opens an SSE stream in the response\",\"As each token is generated, the server writes it as a data event and flushes\",\"The browser appends each token to the answer as it arrives\",\"When the model finishes, the server sends a final done event and closes the stream\"]",
+          "items": [
+            "You send your prompt as a normal request",
+            "The server starts the model and opens an SSE stream in the response",
+            "As each token is generated, the server writes it as a data event and flushes",
+            "The browser appends each token to the answer as it arrives",
+            "When the model finishes, the server sends a final done event and closes the stream"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "content": "This is why AI responses feel alive instead of freezing for several seconds and then dumping a wall of text. SSE turns a slow generation into a smooth, incremental experience, and it does so with nothing more than an HTTP request that streams its body."
+        },
+        {
+          "type": "paragraph",
+          "content": "It also shows why SSE beat WebSockets here. The browser only needs to receive tokens, the prompt was already sent in the initial request, so a full two way channel would be unnecessary complexity."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is not a niche trick. The streaming responses from major AI APIs, including the OpenAI API when you turn on its streaming option, are delivered as SSE, so the pattern you would draw in an interview is exactly how production AI products work today."
+        },
+        {
+          "type": "paragraph",
+          "content": "It also explains a detail you may have noticed: a streamed AI answer cannot take your input mid sentence. That is SSE being one way. To interrupt, the client sends a separate request, which fits the SSE plus POST pattern described next."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. SSE vs Long Polling vs WebSockets",
+          "text": "9. SSE vs Long Polling vs WebSockets"
+        },
+        {
+          "type": "paragraph",
+          "content": "SSE sits neatly between long polling and WebSockets. Laying all three side by side makes the choice clear."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Long polling\",\"SSE\",\"WebSockets\"],\"rows\":[[\"Direction\",\"Client to server, held\",\"Server to client only\",\"Two way\"],[\"Connection\",\"Reopened each response\",\"One long lived HTTP\",\"One persistent\"],[\"Protocol\",\"Plain HTTP\",\"Plain HTTP, event stream\",\"ws or wss\"],[\"Auto reconnect\",\"You build it\",\"Built in, Last-Event-ID\",\"You build it\"],[\"Data type\",\"Text\",\"Text only\",\"Text and binary\"],[\"Best for\",\"Simple near real time\",\"Live one way feeds\",\"Chat, games, two way\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "The short version: long polling is the universal fallback that works everywhere, SSE is the clean choice for one way streams, and WebSockets are for true two way communication."
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice that SSE and WebSockets are not really competitors. They solve different shapes of problem. Many real systems even use both, SSE for server to client feeds and WebSockets for interactive features."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a common hybrid worth knowing. The client receives updates over SSE, and whenever it needs to send something, it makes a normal POST request. This gives a two way feel while keeping the streaming half simple, and it sidesteps WebSocket scaling complexity when writes are infrequent."
+        },
+        {
+          "type": "paragraph",
+          "content": "So the honest framing is that SSE and WebSockets overlap only a little. SSE owns one way streaming, WebSockets own two way interaction, and long polling is the fallback when neither can run."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. When to Use SSE",
+          "text": "10. When to Use SSE"
+        },
+        {
+          "type": "paragraph",
+          "content": "SSE is the right tool whenever data flows one way, from the server to the client, and you value simplicity and easy operations."
+        },
+        {
+          "type": "list",
+          "content": "[\"Live feeds: stock prices, sports scores, breaking news\",\"Notifications: a bell that updates the moment something happens\",\"Streaming AI or LLM answers, token by token\",\"Live logs and progress: build output, deployment status, long job progress bars\",\"Dashboards that only display data and never send commands back\"]",
+          "items": [
+            "Live feeds: stock prices, sports scores, breaking news",
+            "Notifications: a bell that updates the moment something happens",
+            "Streaming AI or LLM answers, token by token",
+            "Live logs and progress: build output, deployment status, long job progress bars",
+            "Dashboards that only display data and never send commands back"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "It is the wrong tool when the client needs to send data frequently over the same channel. A chat app, a multiplayer game, or a collaborative editor all need two way traffic, which is exactly what WebSockets provide."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is also overkill when updates are rare. If something changes only a few times an hour, a simple periodic poll is easier to build and operate than holding a connection open all day."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A simple rule: if the client only listens, use SSE. The moment the client needs to talk back constantly, switch to WebSockets."
+        },
+        {
+          "type": "paragraph",
+          "content": "A quick gut check for an interview: say the direction of the data out loud. If you only ever say the server sends, SSE is your answer. If you catch yourself saying the client also sends, often, then it is WebSockets."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Limitations to Know",
+          "text": "11. Limitations to Know"
+        },
+        {
+          "type": "paragraph",
+          "content": "SSE is simple, but that simplicity comes with real limits you should understand before choosing it."
+        },
+        {
+          "type": "list",
+          "content": "[\"One way only: the client cannot send over the same connection\",\"Text only: SSE carries UTF-8 text, not binary, so images or audio need encoding or another transport\",\"Connection limits on HTTP/1.1: a browser allows only about six connections per domain, and each SSE stream uses one\",\"Proxy buffering: some proxies buffer the response and break streaming until they are configured otherwise\"]",
+          "items": [
+            "One way only: the client cannot send over the same connection",
+            "Text only: SSE carries UTF-8 text, not binary, so images or audio need encoding or another transport",
+            "Connection limits on HTTP/1.1: a browser allows only about six connections per domain, and each SSE stream uses one",
+            "Proxy buffering: some proxies buffer the response and break streaming until they are configured otherwise"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The connection limit is a classic gotcha. If you open several SSE streams to the same domain over HTTP/1.1, you can exhaust the browser six connection budget and block other requests to that domain, including normal page loads."
+        },
+        {
+          "type": "paragraph",
+          "content": "The good news is that HTTP/2 largely removes this problem. It multiplexes many streams over a single connection, so dozens of SSE streams no longer eat into a tiny per domain budget. Serving over HTTP/2 is the usual fix, along with consolidating to a single stream where possible."
+        },
+        {
+          "type": "note",
+          "title": "When SSE is the wrong choice",
+          "content": "If you need to stream binary data, or the client must send frequently, SSE fights you. WebSockets with binary frames and two way messaging are the better fit for those cases."
+        },
+        {
+          "type": "paragraph",
+          "content": "Two more real world quirks. Mobile browsers may throttle or close a stream when a tab goes to the background to save battery, so the client should reconnect gracefully when it returns. And some corporate proxies still buffer aggressively, which is another reason a periodic heartbeat comment helps keep the stream flowing."
+        },
+        {
+          "type": "paragraph",
+          "content": "None of these are dealbreakers, but they are the kind of detail that separates a design that works in a demo from one that works in production."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Scaling SSE",
+          "text": "12. Scaling SSE"
+        },
+        {
+          "type": "paragraph",
+          "content": "Like any persistent connection, SSE is stateful. Each connected client holds an open connection on one specific server, so scaling SSE looks a lot like scaling WebSockets, just simpler because the traffic is one way."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278435320-336445372.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278435320-336445372.png",
+          "alt": "A broker fans each event to every server, which streams to its own clients"
+        },
+        {
+          "type": "paragraph",
+          "content": "The two challenges are the same ones you meet with any long lived connection. First, a client is pinned to the server that holds its stream, so a naive load balancer that spreads requests around will break it, and you need sticky sessions or a connection aware balancer. Second, when an event happens on one server, clients connected to other servers also need to receive it."
+        },
+        {
+          "type": "list",
+          "content": "[\"Pin clients with sticky sessions so a client stays on the server holding its stream\",\"Fan out through a broker: publish each event to Redis or Kafka, and every server writes it to its own open streams\",\"Watch connection counts and memory, since every stream is an open connection\",\"Use an event driven server so thousands of mostly idle streams cost very little\"]",
+          "items": [
+            "Pin clients with sticky sessions so a client stays on the server holding its stream",
+            "Fan out through a broker: publish each event to Redis or Kafka, and every server writes it to its own open streams",
+            "Watch connection counts and memory, since every stream is an open connection",
+            "Use an event driven server so thousands of mostly idle streams cost very little"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Because SSE is one way and rides on plain HTTP, it is often easier to place behind standard infrastructure like load balancers and even CDNs than a WebSocket, which needs upgrade support along the entire path."
+        },
+        {
+          "type": "paragraph",
+          "content": "The mental model is the same as before: a layer of stateless application servers, each holding many open streams, coordinated by a pub sub broker that fans every event out to all of them."
+        },
+        {
+          "type": "paragraph",
+          "content": "Two operational notes complete the picture. On deploy, restarting a server drops every stream it holds, so drain connections gracefully and lean on automatic reconnection to spread clients back across the fleet. And plan capacity around concurrent connections, not requests per second, because with SSE the connection count is the number that grows."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is also why managed services exist. If you would rather not run and scale a fleet of connection holding servers, a hosted real time platform will hold the streams for you and expose a simpler publish API."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Security and Common Mistakes",
+          "text": "13. Security and Common Mistakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "SSE runs on ordinary HTTP, so it inherits the normal web security model, which is genuinely convenient."
+        },
+        {
+          "type": "list",
+          "content": "[\"Serve over https so the entire stream is encrypted\",\"Authenticate with the usual cookies or a token, since it is just a normal GET request\",\"Authorize what each client may subscribe to, so a user only receives events meant for them\",\"Rate limit reconnections so a buggy or malicious client cannot hammer the server\"]",
+          "items": [
+            "Serve over https so the entire stream is encrypted",
+            "Authenticate with the usual cookies or a token, since it is just a normal GET request",
+            "Authorize what each client may subscribe to, so a user only receives events meant for them",
+            "Rate limit reconnections so a buggy or malicious client cannot hammer the server"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Most mistakes with SSE come from forgetting that it is a long lived, easily buffered stream rather than a quick request."
+        },
+        {
+          "type": "list",
+          "content": "[\"Forgetting to disable buffering or compression, so events never flush to the client\",\"Not cleaning up on client disconnect, which leaks subscriptions and memory over time\",\"Opening many streams over HTTP/1.1 and hitting the per domain connection limit\",\"Using SSE when the design actually needs two way communication\",\"Sending no periodic heartbeat, so idle proxies silently close the connection\"]",
+          "items": [
+            "Forgetting to disable buffering or compression, so events never flush to the client",
+            "Not cleaning up on client disconnect, which leaks subscriptions and memory over time",
+            "Opening many streams over HTTP/1.1 and hitting the per domain connection limit",
+            "Using SSE when the design actually needs two way communication",
+            "Sending no periodic heartbeat, so idle proxies silently close the connection"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "The heartbeat habit",
+          "content": "Send a comment line every fifteen to thirty seconds. It costs almost nothing and keeps proxies and load balancers from killing an idle connection they think is dead."
+        },
+        {
+          "type": "paragraph",
+          "content": "A subtle security point follows from the client limitation mentioned earlier. Because EventSource cannot send an Authorization header, teams sometimes put a token in the URL, which can leak into logs and proxy caches. Prefer an httpOnly cookie, or a short lived one time token that is immediately exchanged, over a long lived token sitting in the query string."
+        },
+        {
+          "type": "paragraph",
+          "content": "For most apps the simplest safe setup is a normal session cookie over https, exactly like the rest of your API uses, which needs no special handling at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "14. HLD Interview: How to Talk About This",
+          "text": "14. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a design needs live, one way updates, reaching for SSE shows the interviewer that you know the simpler tool for the job instead of defaulting to WebSockets for everything."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Justify the choice:</strong> I use SSE when data flows only from the server, like a live feed or a streaming AI response, because it gives true server push over plain HTTP with far less complexity than WebSockets."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Highlight reconnection:</strong> SSE reconnects automatically, and with an event id and the Last-Event-ID header the browser resumes without missing events, which I get for free."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Address scaling:</strong> Connections are stateful, so I use sticky sessions and a Redis pub sub layer to fan events across servers, the same pattern as WebSockets but simpler because it is one way."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Name the limits:</strong> I mention it is one way and text only, and that I would switch to WebSockets the moment the client needs to send frequently or exchange binary data."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Show range:</strong> I note that SSE, long polling, and WebSockets form a spectrum, and picking the simplest one that meets the requirement is itself a signal of good judgement."
+        }
+      ]
+    }
+  ]
+}

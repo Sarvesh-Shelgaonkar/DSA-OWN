@@ -1,0 +1,532 @@
+{
+  "slug": "server-sent-events-sse",
+  "title": "Server-Sent Events (SSE)",
+  "content": [
+    {
+      "id": "server-sent-events-sse",
+      "title": "Server-Sent Events (SSE)",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Not every conversation needs both sides talking at once. Sometimes you just want to open the newspaper and have new stories appear on the page as they are published, without ever needing to write anything back. Server-Sent Events give you exactly that: a single HTTP request that stays open while the server trickles down a stream of updates, one at a time, for as long as the client cares to listen."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Server-Sent Events Are",
+          "id": "sse-what-is"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173275353-641296583.png",
+          "alt": "Server streams a sequence of events to a client over one open connection",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173275353-641296583.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Server-Sent Events, usually shortened to SSE, is a standard built directly on top of plain HTTP. The client makes an ordinary GET request, the server responds with a special content type, and instead of closing the connection after sending the body, the server keeps it open and continues writing small chunks of text to it whenever it has something new to say."
+        },
+        {
+          "type": "paragraph",
+          "text": "There is no upgrade handshake, no new protocol, and no new port. It is HTTP the whole way through, which is exactly why it fits so naturally into MCP deployments that already speak HTTP for everything else, including the initial request that kicks off the stream."
+        },
+        {
+          "type": "paragraph",
+          "text": "This also means SSE inherits everything you already know about debugging and securing HTTP: the same TLS certificates, the same authentication headers, and the same tooling for inspecting requests, none of which needs to be relearned for a new protocol."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The Event Stream Format",
+          "id": "sse-format"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173277057-838627060.png",
+          "alt": "Event field and data field combine into one event",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173277057-838627060.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "An SSE response is just plain text with a specific shape. Each event is one or more lines starting with data:, followed by a blank line to mark the end of that event. Optional fields let the server name the event type, attach an id for resumption, and hint at how long the client should wait before reconnecting if the stream drops."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "HTTP/1.1 200 OK\nContent-Type: text/event-stream\nCache-Control: no-cache\nConnection: keep-alive\n\nid: 1\nevent: notification\ndata: {\"method\": \"notifications/progress\", \"params\": {\"progress\": 0.25}}\n\nid: 2\nevent: notification\ndata: {\"method\": \"notifications/progress\", \"params\": {\"progress\": 0.75}}\n\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Because the format is line based text, you can watch an SSE stream with nothing more sophisticated than curl and read it with your own eyes, which makes debugging far easier than staring at binary WebSocket frames."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Why MCP Uses SSE for Remote Servers",
+          "id": "sse-mcp-usage"
+        },
+        {
+          "type": "paragraph",
+          "text": "In the MCP HTTP transport, a client typically sends requests as ordinary HTTP POSTs and opens a separate SSE stream to receive responses, notifications, and server initiated messages. The POST carries the request body, and the SSE connection is where the server writes back the result along with anything else it wants to tell the client along the way, such as progress updates for a long running tool."
+        },
+        {
+          "type": "paragraph",
+          "text": "This split lets a remote MCP server behave like a regular web service for the request side, which existing HTTP infrastructure already understands well, while still supporting the streaming, server initiated messages that make MCP interactions feel responsive."
+        },
+        {
+          "type": "note",
+          "title": "One stream, many responses",
+          "content": "A single SSE connection can carry the responses to several different requests along with unprompted notifications, all multiplexed as separate events on the same stream, distinguished by the ids embedded in their JSON-RPC payloads."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Consuming an SSE Stream in Python",
+          "id": "sse-consume-python"
+        },
+        {
+          "type": "paragraph",
+          "text": "Python does not have SSE support built into the standard library the way browsers have EventSource, but a streaming HTTP client makes it straightforward to parse the format yourself, reading line by line and reassembling events as they complete."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import httpx\n\ndef stream_events(url):\n    with httpx.stream(\"GET\", url, headers={\"Accept\": \"text/event-stream\"}) as response:\n        event_type = None\n        data_lines = []\n        for line in response.iter_lines():\n            if line.startswith(\"event:\"):\n                event_type = line[len(\"event:\"):].strip()\n            elif line.startswith(\"data:\"):\n                data_lines.append(line[len(\"data:\"):].strip())\n            elif line == \"\":\n                if data_lines:\n                    yield event_type, \"\\n\".join(data_lines)\n                event_type, data_lines = None, []\n\nfor event_type, data in stream_events(\"https://tools.example.com/mcp/events\"):\n    print(event_type, data)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Serving an SSE Stream",
+          "id": "sse-server-code"
+        },
+        {
+          "type": "paragraph",
+          "text": "On the server, sending SSE is a matter of setting the right content type and writing formatted chunks as they become available, keeping the underlying connection open rather than closing it after the first write. Most modern async web frameworks support this through a streaming response type."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from fastapi import FastAPI\nfrom fastapi.responses import StreamingResponse\nimport asyncio\nimport json\n\napp = FastAPI()\n\nasync def event_generator():\n    for pct in (25, 50, 75, 100):\n        await asyncio.sleep(1)\n        payload = json.dumps({\"method\": \"notifications/progress\", \"params\": {\"progress\": pct / 100}})\n        yield f\"event: notification\\ndata: {payload}\\n\\n\"\n\n@app.get(\"/mcp/events\")\nasync def mcp_events():\n    return StreamingResponse(event_generator(), media_type=\"text/event-stream\")"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Automatic Reconnection and Event Ids",
+          "id": "sse-reconnect-ids"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173278620-882265756.png",
+          "alt": "A dropped stream reconnects using the last event id",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173278620-882265756.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "One of the quieter but more valuable parts of the SSE specification is built in reconnection. Every event can carry an id, and if the connection drops, a browser EventSource client automatically reconnects and sends that last seen id back in a Last-Event-ID header, letting the server resume the stream from where it left off instead of starting over."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "GET /mcp/events HTTP/1.1\nHost: tools.example.com\nAccept: text/event-stream\nLast-Event-ID: 2"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A hand rolled client in Python does not get this behavior for free, so if resumability matters for your use case, you need to track the last seen id yourself and send it back on reconnect, mirroring what the browser does automatically."
+        },
+        {
+          "type": "note",
+          "title": "Ids only help if the server remembers them",
+          "content": "Automatic resumption is only as useful as the server side buffer of past events. If the server does not keep recent events around keyed by id, a client resuming with Last-Event-ID will simply miss whatever happened while it was disconnected."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. The Retry Field",
+          "id": "sse-retry-field"
+        },
+        {
+          "type": "paragraph",
+          "text": "A server can suggest how long a client should wait before reconnecting after a drop by sending a retry field with a number of milliseconds. This is only a suggestion, and a well behaved client should still apply its own backoff strategy on top of it, especially if reconnection attempts keep failing, a topic covered in full in the reconnection strategies topic later in this module."
+        },
+        {
+          "type": "note",
+          "title": "Retry is per connection, not global",
+          "content": "A new retry value only applies to the next reconnection attempt after it was received. If the server never sends one, most clients fall back to a hardcoded default, commonly around three seconds."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "retry: 3000\nevent: notification\ndata: {\"method\": \"ping\"}\n\n"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. SSE Versus WebSockets",
+          "id": "sse-vs-websockets"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173280185-854356161.png",
+          "alt": "SSE is one way from server to client while WebSockets are bidirectional",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173280185-854356161.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "SSE gives up one thing WebSockets have: the client cannot send data back over the same stream. Anything the client wants to say has to go over a separate, ordinary HTTP request. For MCP, where the client typically initiates each request anyway and the server mostly needs to stream results and notifications back, this is rarely a real limitation."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Property\",\"SSE\",\"WebSocket\"],\"rows\":[[\"Direction\",\"Server to client only\",\"Both directions\"],[\"Built on\",\"Plain HTTP\",\"HTTP upgraded to a new protocol\"],[\"Reconnection\",\"Built in, with last event id\",\"Must be implemented by the application\"],[\"Proxy and load balancer friendliness\",\"High, looks like a normal HTTP response\",\"Requires explicit WebSocket support\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Working Well With Existing HTTP Infrastructure",
+          "id": "sse-http-infra"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because an SSE response is, from the point of view of a proxy or load balancer, just an HTTP response with an unusually long body, it tends to pass through infrastructure that was never specifically designed for streaming without any special configuration. This is a meaningful operational advantage for remote MCP servers deployed behind standard reverse proxies, API gateways, and content delivery networks."
+        },
+        {
+          "type": "paragraph",
+          "text": "The main thing to watch for is buffering. Some proxies buffer response bodies before forwarding them, which defeats the purpose of streaming by delaying every event until the buffer fills or the response ends. Disabling buffering for streaming endpoints, or setting the appropriate proxy headers, is usually necessary to get events delivered promptly."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth testing your exact deployment path end to end rather than assuming buffering is off. A stream that behaves perfectly in local development can arrive in delayed chunks once it passes through a production load balancer or CDN that was never configured with streaming responses in mind."
+        },
+        {
+          "type": "note",
+          "title": "Disable proxy buffering",
+          "content": "Many reverse proxies need an explicit setting, such as X-Accel-Buffering: no for nginx, to avoid holding onto SSE chunks before forwarding them to the client."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Authentication for SSE Connections",
+          "id": "sse-auth"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173281814-163103708.png",
+          "alt": "An auth token accompanies the initial SSE request",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173281814-163103708.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because SSE is just HTTP, authenticating a stream is no different from authenticating any other request: send a bearer token or session cookie with the initial GET request, and the server validates it before starting to stream. There is no separate handshake to worry about the way there is with a WebSocket upgrade."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import httpx\n\nwith httpx.stream(\n    \"GET\",\n    \"https://tools.example.com/mcp/events\",\n    headers={\"Accept\": \"text/event-stream\", \"Authorization\": \"Bearer eyJhbGciOi...\"},\n) as response:\n    for line in response.iter_lines():\n        process(line)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Multiplexing Requests and Responses",
+          "id": "sse-multiplexing"
+        },
+        {
+          "type": "paragraph",
+          "text": "In the common MCP HTTP transport pattern, a client sends a JSON-RPC request as a POST and expects the matching response to arrive as an event on its already open SSE stream, identified by the same request id. The client keeps a small table mapping outstanding request ids to whatever code is waiting for that result, so it can route each incoming event to the right place."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\n\nclass SSEDispatcher:\n    def __init__(self):\n        self.pending = {}\n\n    async def wait_for(self, request_id):\n        future = asyncio.get_event_loop().create_future()\n        self.pending[request_id] = future\n        return await future\n\n    def dispatch(self, message):\n        request_id = message.get(\"id\")\n        if request_id in self.pending:\n            self.pending.pop(request_id).set_result(message)\n        else:\n            handle_notification(message)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Handling a Dropped SSE Stream",
+          "id": "sse-dropped-stream"
+        },
+        {
+          "type": "paragraph",
+          "text": "An SSE connection can drop for all the usual reasons a long lived HTTP request can drop: a proxy idle timeout, a network blip, or a server restart. When that happens the client sees its read loop end unexpectedly, and needs to reopen the connection, resending its Last-Event-ID if it tracked one, rather than treating the drop as the end of the conversation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import time\n\ndef robust_stream(url, last_event_id=None):\n    while True:\n        headers = {\"Accept\": \"text/event-stream\"}\n        if last_event_id:\n            headers[\"Last-Event-ID\"] = last_event_id\n        try:\n            for event_id, event_type, data in connect_and_stream(url, headers):\n                last_event_id = event_id\n                yield event_type, data\n        except ConnectionError:\n            time.sleep(2)\n            continue"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Comment Lines as Heartbeats",
+          "id": "sse-heartbeat-comments"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173283519-240392662.png",
+          "alt": "A comment line is sent periodically to keep the connection alive",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173283519-240392662.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The SSE format reserves lines starting with a colon as comments that carry no data and are meant to be ignored by the client. Servers commonly send an empty comment line every so often purely to keep the connection active, preventing idle timeouts on proxies and load balancers without triggering any actual event handling on the client."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": ": keep-alive\n\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This is functionally similar to a WebSocket ping frame, just expressed within the plain text format that SSE already uses, and it is one of the simplest and most effective ways to keep a stream looking alive to anything watching it in the middle of the network path."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Limitations of SSE",
+          "id": "sse-limitations"
+        },
+        {
+          "type": "list",
+          "items": [
+            "No native binary support, everything has to be encoded as text, typically JSON",
+            "The client cannot send data over the same connection, it always needs a separate request",
+            "Browsers historically limited the number of concurrent SSE connections to the same origin, which matters if a page opens several streams at once",
+            "Very old proxies and some corporate networks may still buffer or block long lived streaming responses"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. When SSE Is the Right Choice",
+          "id": "sse-when-to-choose"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173285260-179813412.png",
+          "alt": "Needing one way server push points toward choosing SSE",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173285260-179813412.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "SSE fits naturally whenever the server needs to push a sequence of updates to a client that mostly just listens, and the client is comfortable sending anything it needs to say as separate, ordinary requests. This describes a large share of remote MCP deployments, where tool calls come in as POSTs and results, progress, and notifications flow back over a single persistent stream."
+        },
+        {
+          "type": "list",
+          "items": [
+            "You want to reuse existing HTTP infrastructure, including proxies, gateways, and load balancers, without special casing",
+            "The client rarely if ever needs to send data over the same connection carrying the stream",
+            "Built in reconnection and resumption via Last-Event-ID is valuable for your use case",
+            "You want a transport that is easy to inspect and debug with plain text tools"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. The Browser EventSource API",
+          "id": "sse-eventsource-api"
+        },
+        {
+          "type": "paragraph",
+          "text": "Outside of MCP specific tooling, the browser gives you a built in EventSource object that speaks SSE natively, handling reconnection, event ids, and the retry field automatically without any extra library. Knowing this API is useful context even when your MCP client is written in Python or another server side language, since it defines the baseline behavior SSE was designed around."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const source = new EventSource(\"/mcp/events\");\n\nsource.addEventListener(\"notification\", (event) => {\n  const payload = JSON.parse(event.data);\n  console.log(\"progress:\", payload.params.progress);\n});\n\nsource.onerror = () => {\n  console.log(\"connection lost, browser will retry automatically\");\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The browser reconnects on its own after a connection error, waiting the amount of time specified by the retry field, and automatically resends the last event id it saw, which is the behavior a hand written Python client has to replicate manually if it wants the same resilience."
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP hosts built as browser extensions or web applications can lean on EventSource directly for this reason, while server side hosts written in Python, Go, or another backend language need to implement the reconnect and resume logic themselves, which is exactly what the reconnection strategies topic later in this module walks through."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Debugging an SSE Stream",
+          "id": "sse-debugging"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because SSE is plain text over HTTP, you can inspect a stream directly from the command line, which is one of its more underrated advantages during development. A simple curl command with streaming enabled shows you exactly what the server is sending, in the order it sends it, without needing any special tooling."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "curl -N -H \"Accept: text/event-stream\" https://tools.example.com/mcp/events"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The -N flag disables curl output buffering so you see events as they arrive rather than all at once at the end. This kind of direct inspection is invaluable when tracking down whether a delay is happening on the server, in a misconfigured proxy, or on the client."
+        },
+        {
+          "type": "paragraph",
+          "text": "A related trick is comparing timestamps: log when the server writes each event and when the client receives it. A growing gap between those two numbers over the course of a long stream is a strong signal that something in the middle is buffering rather than forwarding immediately."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "sse-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider a remote MCP server exposing a \"generate_report\" tool that takes several seconds to run. The client sends a POST with the tool call, and the server streams three progress events followed by the final result over the SSE connection the client already has open, using the request id to tie everything together."
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice that the queue in this example is keyed by a client identifier rather than tied to a single request. That is what allows one SSE connection to carry the results of several different tool calls made in sequence, or even in parallel, all multiplexed onto the same underlying stream."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from fastapi import FastAPI, Request\nfrom fastapi.responses import StreamingResponse\nimport asyncio, json\n\napp = FastAPI()\nqueues = {}\n\n@app.post(\"/mcp/requests\")\nasync def submit_request(req: Request):\n    body = await req.json()\n    request_id = body[\"id\"]\n    queue = queues.setdefault(\"client-1\", asyncio.Queue())\n    asyncio.create_task(run_tool(queue, request_id))\n    return {\"accepted\": True}\n\nasync def run_tool(queue, request_id):\n    for pct in (33, 66, 100):\n        await asyncio.sleep(1)\n        await queue.put({\"method\": \"notifications/progress\", \"params\": {\"progress\": pct / 100}})\n    await queue.put({\"id\": request_id, \"result\": {\"status\": \"complete\"}})\n\n@app.get(\"/mcp/events\")\nasync def events():\n    queue = queues.setdefault(\"client-1\", asyncio.Queue())\n    async def gen():\n        while True:\n            message = await queue.get()\n            yield f\"data: {json.dumps(message)}\\n\\n\"\n    return StreamingResponse(gen(), media_type=\"text/event-stream\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The client posts its request, then reads the shared SSE stream, watching for a message whose id matches the request it sent, while also being ready to react to any notifications that arrive first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "sse-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Forgetting to set the content type to text/event-stream, which causes some clients and proxies to treat the response as a normal buffered body",
+            "Leaving proxy buffering enabled, so events arrive in one big delayed burst instead of as they happen",
+            "Not sending periodic comment lines or events, letting idle connections get killed by a load balancer timeout",
+            "Ignoring the Last-Event-ID header on the server, so reconnecting clients replay from the very beginning every time",
+            "Assuming the client can send data back over the SSE connection itself, rather than using a separate request",
+            "Not setting a reasonable retry field, leaving clients to guess how quickly they should attempt to reconnect"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "sse-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Build a small SSE endpoint that streams the numbers one through ten, one per second, each tagged with an incrementing event id. Then write a client that connects, prints each number, and simulates a network drop after the fifth event, reconnecting with the correct Last-Event-ID and continuing from six onward."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Verify the reconnected stream truly starts at six and does not repeat any earlier numbers",
+            "Add a comment line heartbeat every two seconds and confirm your client ignores it without erroring",
+            "Point curl with the -N flag at your endpoint and watch the raw text arrive in real time"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from fastapi import FastAPI, Request\nfrom fastapi.responses import StreamingResponse\nimport asyncio\n\napp = FastAPI()\n\n@app.get(\"/count\")\nasync def count(request: Request):\n    start = int(request.headers.get(\"Last-Event-ID\", \"0\")) + 1\n\n    async def gen():\n        for n in range(start, 11):\n            await asyncio.sleep(1)\n            yield f\"id: {n}\\ndata: {n}\\n\\n\"\n    return StreamingResponse(gen(), media_type=\"text/event-stream\")"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "sse-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Server-Sent Events give you server to client streaming without leaving the world of plain HTTP, complete with built in reconnection and event ids for resuming a stream cleanly. That combination of simplicity and infrastructure friendliness is why so many remote MCP servers use SSE as their default way of pushing responses and notifications back to a client."
+        },
+        {
+          "type": "paragraph",
+          "text": "Understanding SSE sets up the next two topics well: remote MCP servers, which lean on exactly this kind of HTTP based streaming to operate across a network, and local MCP servers, which take an entirely different, simpler approach built around a subprocess and stdio."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,482 @@
+{
+  "slug": "distributed-cache-architecture",
+  "title": "Distributed Cache Architecture",
+  "content": [
+    {
+      "id": "distributed-cache-architecture",
+      "title": "Distributed Cache Architecture",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "The concepts, sharding, consistent hashing, replication, are the theory of distributing a cache. This page is about the other half: what you actually deploy, configure, and operate when you run a real distributed cache cluster in production, and how that differs meaningfully depending on which technology you pick."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281413205-134053014.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281413205-134053014.png",
+          "alt": "The ideas behind distributed caching are the same everywhere; the actual architecture you run looks different depending on the technology",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281413205-134053014.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. From Concept to a Real Cluster",
+          "text": "1. From Concept to a Real Cluster"
+        },
+        {
+          "type": "paragraph",
+          "content": "Knowing that consistent hashing spreads keys evenly across nodes is one thing. Deciding how many nodes to run, how much memory each one needs, how they discover each other, and what happens automatically when one dies at 3am, is the architecture layer this page focuses on."
+        },
+        {
+          "type": "paragraph",
+          "content": "The two most common technology choices, Redis and Memcached, are worth comparing directly before going further, since the rest of this page draws a real architectural distinction between them rather than treating \"distributed cache\" as one single thing."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281415693-396612302.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281415693-396612302.png",
+          "alt": "Redis brings richer features and persistence; Memcached stays deliberately simple and fast for pure key-value caching",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281415693-396612302.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Redis</strong> supports richer data structures (lists, sets, sorted sets) beyond plain key-value pairs, and can optionally persist to disk, which is why it tends to be the default choice today even for straightforward caching needs. <strong>Memcached</strong> stays deliberately minimal, pure in-memory key-value storage with no persistence at all, which keeps it extremely fast and simple for workloads that genuinely need nothing more than that."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every choice covered on this page, which technology, how many nodes, how tiered the caching is, ultimately traces back to the same two questions asked throughout this entire course: how much traffic does this actually need to handle, and what happens the moment one piece of it fails."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. A Common Pattern: Tiered Caching",
+          "text": "2. A Common Pattern: Tiered Caching"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029030-277208910.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029030-277208910.png",
+          "alt": "A small local cache on each app server absorbs the hottest keys before a request ever reaches the shared cluster",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029030-277208910.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Production systems rarely rely on a single layer of caching. A common architecture adds a small, per-instance <strong>local cache</strong> directly inside each app server, in front of the larger shared cache cluster. The local cache is tiny and holds only the very hottest keys, but because it lives in the same process as the application, a hit there is faster than even the quickest network round trip to a shared cache node. This tiered approach is exactly what protects a shared cache cluster from the hot-key problem covered in the Handling Hot Keys pattern."
+        },
+        {
+          "type": "paragraph",
+          "content": "The trade-off with a local tier is staleness: two different app server instances can briefly disagree about a value if one has a fresher local copy than the other. Most systems accept this, keeping local cache TTLs deliberately short, seconds rather than minutes, so any disagreement resolves itself quickly without needing active coordination between instances."
+        },
+        {
+          "type": "paragraph",
+          "content": "A second, less obvious benefit of the local tier is reducing network chatter itself. Every request served locally is one less round trip crossing the network to the shared cluster, which matters at high enough request volume purely from a network capacity standpoint, independent of the latency benefit."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Redis Cluster: Hash Slots, Not Generic Consistent Hashing",
+          "text": "3. Redis Cluster: Hash Slots, Not Generic Consistent Hashing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281419187-230725395.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281419187-230725395.png",
+          "alt": "Every key maps to one of a fixed 16,384 hash slots, and each node in the cluster owns a range of those slots",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281419187-230725395.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth knowing that Redis Cluster does not actually use classic consistent hashing under the hood. Instead, the entire keyspace is divided into a fixed <strong>16,384 hash slots</strong>. Every key gets deterministically mapped to one of those slots, and each node in the cluster is assigned ownership of a range of slots. Adding or removing a node means reassigning slot ranges, not recomputing a hash ring, a meaningfully simpler operation to reason about, and one Redis Cluster automates through its own gossip protocol, where nodes continuously exchange cluster state directly with each other, no separate coordination service required."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029032-679452852.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029032-679452852.png",
+          "alt": "Every node talks to every other node over a dedicated cluster bus port, separate from the port clients actually connect to",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029032-679452852.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Each Redis Cluster node runs two ports side by side: the normal client-facing port applications connect to, and a separate <strong>cluster bus port</strong> used purely for node-to-node gossip, exchanging cluster state, slot ownership, and failure detection. Keeping these separate means a flood of client traffic can never drown out the internal coordination traffic the cluster depends on to stay healthy."
+        },
+        {
+          "type": "paragraph",
+          "content": "A production Redis Cluster needs a minimum of three master nodes to function at all, since its failure detection relies on a majority quorum of nodes agreeing that another node is actually down, exactly the same quorum reasoning covered in the Failure Detection pattern, applied here to deciding when to fail over a shard."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281422583-830706866.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281422583-830706866.png",
+          "alt": "Resharding moves ownership of specific slot ranges between nodes, migrating only the keys inside those slots, not the entire dataset",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281422583-830706866.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Adding a node to a running cluster triggers <strong>resharding</strong>: a controlled, gradual migration of specific slot ranges from existing nodes to the new one. Because ownership is tracked at the slot level rather than per individual key, this migration is a well-defined, resumable operation rather than an all-or-nothing rehash of the entire keyspace."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 The gossip protocol in a bit more detail",
+          "text": "3.1 The gossip protocol in a bit more detail"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029033-624468140.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029033-624468140.png",
+          "alt": "Nodes periodically exchange state directly with each other, so every node eventually learns about every other node",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029033-624468140.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Concretely, every node in a Redis Cluster periodically sends a small gossip message to a handful of other nodes it knows about, sharing what it currently believes about cluster state, who owns which slots, who looks unhealthy. Over a few rounds, this information naturally propagates to every node in the cluster, the same peer-to-peer spread mechanism covered in more depth under Failure Detection, just carrying cluster topology instead of failure suspicion."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281426991-190374717.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281426991-190374717.png",
+          "alt": "With three nodes sharing 16,384 slots, each one owns a little over five thousand",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281426991-190374717.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "For a concrete sense of scale, a 3-node cluster splits those 16,384 slots roughly evenly, each node ends up responsible for a little over 5,000 slots. Adding a fourth node means migrating roughly a quarter of the total slots away from the existing three, not recalculating anything for the entire keyspace from scratch."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Memcached: A Dumb Server, A Smart Client",
+          "text": "4. Memcached: A Dumb Server, A Smart Client"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029480-749430327.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029480-749430327.png",
+          "alt": "Memcached servers know nothing about each other; the client library alone decides which server owns which key",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029480-749430327.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Memcached takes a completely different architectural stance. Memcached servers <strong>do not talk to each other at all</strong>, there is no cluster protocol, no gossip, no shared cluster state whatsoever. All of the sharding intelligence lives entirely in the client library: it hashes each key and decides which server to talk to, and different client libraries can even make different choices about how many servers exist or how keys map to them. This makes Memcached servers themselves extremely simple and fast, at the cost of pushing real architectural complexity, and the risk of different clients disagreeing about where a key lives, onto application code."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281431121-638570028.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281431121-638570028.png",
+          "alt": "Every client library implementing the same standard hash function agrees on which server owns which key, without ever talking to each other",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281431121-638570028.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Since Memcached servers have no shared state at all, the only thing keeping multiple application instances from disagreeing about where a key lives is using the <strong>exact same hashing algorithm</strong> in every client. The de facto standard is <strong>ketama</strong>, a specific consistent hashing implementation that most major Memcached client libraries share, precisely so that a Python service and a Java service hitting the same Memcached cluster agree on key placement without ever coordinating directly."
+        },
+        {
+          "type": "note",
+          "title": "Why this matters operationally",
+          "content": "Upgrading or swapping a client library to one using a different hashing scheme, even subtly, can silently scatter keys across different servers than before, which looks exactly like a mysterious, sudden collapse in cache hit ratio rather than an obvious error."
+        },
+        {
+          "type": "paragraph",
+          "content": "This simplicity is also why Memcached remains a popular choice specifically for the local, per-instance tier described earlier on this page, a role where its lack of persistence and clustering logic is not a downside at all, since a local cache is expected to be small, disposable, and rebuilt constantly anyway."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Proxy-Based Architectures",
+          "text": "5. Proxy-Based Architectures"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281432698-678025153.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281432698-678025153.png",
+          "alt": "A proxy layer centralizes the sharding logic so application code never has to implement it directly",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281432698-678025153.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A middle ground places a lightweight <strong>caching proxy</strong>, Twemproxy is a well-known example, between the application and the cache nodes. The application just talks to the proxy as if it were a single cache, and the proxy handles sharding keys across the real backend nodes. This centralizes sharding logic in one place instead of duplicating it across every application client, at the cost of the proxy itself becoming a new component that needs its own redundancy."
+        },
+        {
+          "type": "paragraph",
+          "content": "The proxy itself needs to be treated as seriously as any other piece of shared infrastructure, running it as a single instance simply relocates the single-point-of-failure problem from the cache layer to the proxy layer instead of solving it. A production proxy deployment runs multiple proxy instances behind a load balancer, exactly the redundancy pattern covered in the Removing Single Points of Failure material."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Capacity Planning for a Cache Cluster",
+          "text": "6. Capacity Planning for a Cache Cluster"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sizing a real cluster comes down to a few concrete numbers: total working-set size (how much hot data actually needs to be cached, from the 80/20 estimates covered elsewhere in this section), memory per node (leaving real headroom, a node that hits 100% memory starts evicting aggressively or, worse, falling over), and network bandwidth (a cache node serving tens of thousands of requests a second needs a network interface that can actually keep up)."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Factor\",\"What to check\"],\"rows\":[[\"Working set size\",\"How much hot data needs to fit in memory across the whole cluster\"],[\"Memory per node\",\"Leave 20 to 30 percent headroom, do not run at the edge of capacity\"],[\"Network bandwidth\",\"Peak requests per second times average payload size, per node\"],[\"Node count\",\"Working set divided by usable memory per node, rounded up with room to grow\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Planning for growth, not just today",
+          "text": "6.1 Planning for growth, not just today"
+        },
+        {
+          "type": "paragraph",
+          "content": "A cluster sized exactly for today working set will need resharding again within months for almost any growing service. A common practice is sizing for roughly twice the current working set, giving real runway before the next resharding operation is needed, since resharding, while safe, is still an operation worth not doing more often than necessary."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 A worked sizing example",
+          "text": "6.2 A worked sizing example"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029482-948349519.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029482-948349519.png",
+          "alt": "A concrete example: a 50 GB working set, with headroom, spread across five nodes",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029482-948349519.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say a service estimates its hot working set, using the same 80/20 reasoning covered in the capacity estimation sections elsewhere in this course, at roughly 50 GB. Adding a healthy 30 percent headroom brings that to about 65 GB of usable cache capacity actually needed. Spreading that across nodes with 16 GB of usable memory each calls for 5 nodes, comfortably rounding up rather than running right at the edge of a node boundary."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Handling a Node Failure Automatically",
+          "text": "7. Handling a Node Failure Automatically"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281436032-783883241.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281436032-783883241.png",
+          "alt": "A health monitor notices a dead primary and promotes its replica automatically, without anyone being paged",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281436032-783883241.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A production cache cluster needs to survive a node dying without a human intervening at 3am. Each shard is backed by at least one replica, and a monitoring process (built into Redis Cluster itself, or a separate tool like Redis Sentinel) continuously checks node health. The moment a primary stops responding, its replica is automatically promoted, and the rest of the cluster updates its view of who owns that shard, all without a person needing to do anything beyond getting an alert afterward."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 What the client should do while this is happening",
+          "text": "7.1 What the client should do while this is happening"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281438381-184053508.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281438381-184053508.png",
+          "alt": "A well-behaved client retries once with a short timeout, then falls back to the database rather than hanging indefinitely",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281438381-184053508.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A well-written cache client does not simply hang waiting for a slow or failing node. It applies a short timeout, retries once at most, and if that also fails, falls straight through to the database rather than piling up blocked requests waiting on a cache that may be mid-failover. This client-side discipline matters just as much as the server-side failover mechanics, a perfectly resilient cluster is still only as good as a client that knows how to give up gracefully."
+        },
+        {
+          "type": "note",
+          "title": "A common mistake",
+          "content": "Setting cache client timeouts too generously \"to be safe\" often backfires badly, a five-second timeout during a failover means five seconds of piled-up, blocked requests per affected key, which can cascade into an application-wide slowdown far worse than a fast, clean fallback to the database would have caused."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 What happens to in-flight requests during failover",
+          "text": "7.2 What happens to in-flight requests during failover"
+        },
+        {
+          "type": "paragraph",
+          "content": "The brief window between a primary failing and its replica being promoted is not instantaneous, typically a handful of seconds. Requests arriving during that exact window either time out and retry (safe, if the client has sane retry logic) or briefly fail outright. This is precisely why application code should never assume a cache is perfectly always available, the fallback-to-database behavior covered in the caching strategy material exists exactly to absorb moments like this one gracefully."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Multi-Region Cache Architecture",
+          "text": "8. Multi-Region Cache Architecture"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029478-325922426.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029478-325922426.png",
+          "alt": "Each region runs its own cache cluster, kept loosely in sync with other regions through asynchronous replication",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029478-325922426.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "For a globally distributed system, each region typically runs its own independent cache cluster, serving that region's users with local latency, rather than every region reaching across the globe to one shared cluster. Keeping those regional clusters loosely synchronized (for data that benefits from it) uses asynchronous replication, accepting the same eventual-consistency trade-off covered in the Cache Consistency topic, rather than paying a cross-region round trip on every cache read."
+        },
+        {
+          "type": "paragraph",
+          "content": "Choosing which data even belongs in a multi-region cache is itself a decision worth making deliberately. Data that is naturally global and slow-changing (product catalog details, configuration) replicates well across regions. Data that is inherently local and fast-changing (a user session, a shopping cart) is often better left uncached across regions entirely, served fresh from whichever region the user actually landed in."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 The cross-region invalidation problem",
+          "text": "8.1 The cross-region invalidation problem"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281442420-720547216.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281442420-720547216.png",
+          "alt": "A write in one region does not automatically clear stale cache entries sitting in another region's cluster",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281442420-720547216.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Running independent regional clusters creates a genuine problem: a write that happens in region A does not automatically know to invalidate a cached copy of that same data sitting in region B's cluster. Solving this well usually means propagating invalidation events (not full data, just \"this key changed\") across regions through the same kind of message queue used elsewhere in this course for asynchronous processing, accepting a short window of cross-region staleness in exchange for not paying a synchronous cross-region round trip on every single write."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. What to Actually Monitor",
+          "text": "9. What to Actually Monitor"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Hit ratio per node:</strong> a node with a noticeably lower hit ratio than its peers often signals uneven key distribution.\",\"<strong>Memory usage and eviction rate:</strong> climbing evictions is an early warning the cluster is undersized for its current working set.\",\"<strong>Connection count:</strong> a sudden spike often means a client is misbehaving, reconnecting in a loop instead of reusing connections.\",\"<strong>Replication lag:</strong> how far behind a replica is from its primary, directly affects how much data could be lost on a failover.\"]",
+          "items": [
+            "<strong>Hit ratio per node:</strong> a node with a noticeably lower hit ratio than its peers often signals uneven key distribution.",
+            "<strong>Memory usage and eviction rate:</strong> climbing evictions is an early warning the cluster is undersized for its current working set.",
+            "<strong>Connection count:</strong> a sudden spike often means a client is misbehaving, reconnecting in a loop instead of reusing connections.",
+            "<strong>Replication lag:</strong> how far behind a replica is from its primary, directly affects how much data could be lost on a failover."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Metric\",\"Healthy range\",\"What a bad value suggests\"],\"rows\":[[\"Hit ratio\",\"Consistent across nodes\",\"One low node suggests uneven key distribution\"],[\"Eviction rate\",\"Near zero, steady\",\"Rising suggests the cluster is undersized\"],[\"Replication lag\",\"Under a few hundred ms\",\"High lag risks real data loss on failover\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Beyond individual node metrics, it is worth tracking cluster-wide health as its own signal, the fraction of slots currently owned versus unassigned, and how many nodes are currently marked suspect by the gossip protocol. A cluster can look healthy node by node while still being one more failure away from losing quorum entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Common Mistakes",
+          "text": "10. Common Mistakes"
+        },
+        {
+          "type": "list",
+          "content": "[\"Treating client-side sharding (Memcached-style) as safe to change without redeploying every single client at once, a client library disagreement about key ownership silently causes cache misses that look like a mysteriously low hit rate.\",\"Under-provisioning memory headroom, then being surprised when eviction rates spike under a completely normal traffic increase.\",\"Running a single-region cache cluster for a genuinely global user base and wondering why cache reads feel slow for half the world.\"]",
+          "items": [
+            "Treating client-side sharding (Memcached-style) as safe to change without redeploying every single client at once, a client library disagreement about key ownership silently causes cache misses that look like a mysteriously low hit rate.",
+            "Under-provisioning memory headroom, then being surprised when eviction rates spike under a completely normal traffic increase.",
+            "Running a single-region cache cluster for a genuinely global user base and wondering why cache reads feel slow for half the world."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "list",
+          "content": "[\"Forgetting that a proxy layer or client library needs redundancy just as much as the cache nodes themselves.\",\"Sizing a cluster once at launch and never revisiting it as the working set naturally grows over time.\"]",
+          "items": [
+            "Forgetting that a proxy layer or client library needs redundancy just as much as the cache nodes themselves.",
+            "Sizing a cluster once at launch and never revisiting it as the working set naturally grows over time."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "list",
+          "content": "[\"Setting cache client timeouts too generously, turning a brief node failure into a pile of blocked requests instead of a fast, clean fallback.\",\"Assuming a proxy or client library upgrade is safe without checking whether it changed the underlying hashing scheme.\"]",
+          "items": [
+            "Setting cache client timeouts too generously, turning a brief node failure into a pile of blocked requests instead of a fast, clean fallback.",
+            "Assuming a proxy or client library upgrade is safe without checking whether it changed the underlying hashing scheme."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. HLD Interview: How to Talk About This",
+          "text": "11. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "When this comes up, naming a real technology and its specific architecture, Redis Cluster hash slots and gossip, versus Memcached dumb-server client-side hashing, versus a proxy layer like Twemproxy, shows a level of concreteness that a purely conceptual answer about \"consistent hashing\" alone does not. Following up with how failure gets handled automatically, and how capacity is actually planned, rounds out an answer that sounds like it comes from someone who has actually operated one of these clusters."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Two systems can both describe themselves as a distributed cache and be architected in almost opposite ways underneath."
+        },
+        {
+          "type": "paragraph",
+          "content": "It also helps to be ready for a natural follow up: what would you do differently for a cache serving mostly reads versus one serving a heavy mix of reads and writes. A read-heavy cache tolerates more replicas and looser consistency; a write-heavy one needs to think much harder about invalidation propagation speed, which is exactly what the Cache Invalidation topic covers next."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "Key Takeaways",
+          "text": "Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"This topic covers how a distributed cache is actually deployed and operated, building on the sharding and consistent hashing concepts covered under Distributed Caching.\",\"Redis Cluster uses a fixed 16,384 hash slots and a gossip protocol between nodes; Memcached pushes all sharding logic into the client, with servers that never talk to each other.\",\"A proxy layer can centralize sharding logic outside of application code, at the cost of one more component to keep redundant.\",\"Capacity planning comes down to working set size, memory headroom, and network bandwidth per node.\",\"Automatic failover, promoting a replica the moment a primary is unreachable, is what keeps a cluster resilient without paging a human every time.\",\"A global system typically runs one cache cluster per region rather than one shared cluster reached across the world.\"]",
+          "items": [
+            "This topic covers how a distributed cache is actually deployed and operated, building on the sharding and consistent hashing concepts covered under Distributed Caching.",
+            "Redis Cluster uses a fixed 16,384 hash slots and a gossip protocol between nodes; Memcached pushes all sharding logic into the client, with servers that never talk to each other.",
+            "A proxy layer can centralize sharding logic outside of application code, at the cost of one more component to keep redundant.",
+            "Capacity planning comes down to working set size, memory headroom, and network bandwidth per node.",
+            "Automatic failover, promoting a replica the moment a primary is unreachable, is what keeps a cluster resilient without paging a human every time.",
+            "A global system typically runs one cache cluster per region rather than one shared cluster reached across the world."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Treat this page as the practical companion to Distributed Caching: read that one first for the underlying ideas, then come back here for how those ideas turn into an actual cluster running in production."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "Related Topics",
+          "text": "Related Topics"
+        },
+        {
+          "type": "paragraph",
+          "content": "This page assumes familiarity with the sharding and consistent hashing concepts covered under Distributed Caching, and connects directly to Cache Consistency (for the cross-region staleness trade-off) and Cache Invalidation (for how a change actually gets removed from every node in a cluster like this one)."
+        }
+      ]
+    }
+  ]
+}

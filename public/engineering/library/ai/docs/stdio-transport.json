@@ -1,0 +1,594 @@
+{
+  "slug": "stdio-transport",
+  "title": "STDIO Transport",
+  "content": [
+    {
+      "id": "stdio-transport",
+      "title": "STDIO Transport",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Every MCP connection has to travel over something physical, some actual channel that carries bytes from a client to a server and back."
+        },
+        {
+          "type": "paragraph",
+          "text": "The simplest one of all, and the one you have almost certainly used without realizing it, is standard input and standard output, the same two streams every command line program already has."
+        },
+        {
+          "type": "paragraph",
+          "text": "When a host application starts an MCP server as a child process on the same machine, it does not need a network at all, it just talks to that process the way a shell talks to any program it launches, by writing to its input and reading from its output."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Transport Means Here",
+          "id": "stdio-what-transport-means"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146672870-184180086.png",
+          "alt": "Host connects to a subprocess server through stdin and stdout",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146672870-184180086.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "In MCP, the word transport refers only to how bytes physically move between a client and a server, not to what those bytes mean. The messages themselves, the JSON dash RPC requests and responses, look identical whether they travel over stdio, over HTTP, or over a WebSocket. What changes across transports is entirely mechanical, how a connection is opened, how a single message is framed inside a stream of raw bytes, and how the two sides know a connection has ended."
+        },
+        {
+          "type": "paragraph",
+          "text": "This separation matters because it means you can learn the message format once, in the MCP Communication Protocol module, and then treat each transport as a separate, swappable delivery mechanism underneath it. STDIO is the first and often the simplest of those delivery mechanisms to understand, precisely because it reuses concepts every developer already knows from working with command line programs."
+        },
+        {
+          "type": "note",
+          "title": "One protocol, several transports",
+          "content": "Later lessons in this module cover HTTP, WebSockets, and Server-Sent Events, each carries the exact same JSON-RPC message shape, only the delivery mechanism around it changes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Why Standard Input and Output",
+          "id": "stdio-why-stdin-stdout"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every operating system process is born with three open file descriptors already attached to it, standard input for reading, standard output for writing normal results, and standard error for writing diagnostics."
+        },
+        {
+          "type": "paragraph",
+          "text": "These are not an MCP invention, they exist for every program on Unix and Windows alike."
+        },
+        {
+          "type": "paragraph",
+          "text": "Choosing them as a transport means an MCP server needs no networking code whatsoever, no socket to open, no port to bind, no firewall rule to configure, it only needs to read lines from one stream and write lines to another, exactly like a program that reads from a pipe in a shell script."
+        },
+        {
+          "type": "paragraph",
+          "text": "This makes stdio the lowest-friction way to get a local tool talking to an AI model. A developer can write an MCP server as a small script, and the host application launches it exactly the way a terminal would launch any other command line tool."
+        },
+        {
+          "type": "note",
+          "title": "Nothing new to install",
+          "content": "A process already has stdin, stdout, and stderr available the moment it starts, there is no separate library or protocol stack required just to get these three streams."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. The Subprocess Model",
+          "id": "stdio-subprocess-model"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146674688-563133786.png",
+          "alt": "Host process spawns a child process running the server",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146674688-563133786.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "With stdio transport, the host does not connect out to some already-running server somewhere, it becomes the parent of the server."
+        },
+        {
+          "type": "paragraph",
+          "text": "The host process spawns the server as a child process, keeping a handle to that child’s stdin and stdout, and the server’s entire lifetime is tied to that parent-child relationship."
+        },
+        {
+          "type": "paragraph",
+          "text": "When the host closes the connection or exits, the child process is typically terminated along with it, there is no server sitting around waiting for other clients to show up."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import subprocess\n\nserver = subprocess.Popen(\n    [\"python\", \"my_mcp_server.py\"],\n    stdin=subprocess.PIPE,\n    stdout=subprocess.PIPE,\n    stderr=subprocess.PIPE,\n    text=True,\n    bufsize=1,\n)\n# server.stdin and server.stdout are now the two ends of the transport"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice that this single call does two things at once, it starts the program and it wires up the exact pipes the rest of the MCP session will use, there is no separate connect step the way there would be for a network transport."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Framing Messages Over a Byte Stream",
+          "id": "stdio-framing-messages"
+        },
+        {
+          "type": "paragraph",
+          "text": "A raw byte stream has no built-in concept of where one message ends and the next begins, stdin and stdout are just an endless sequence of bytes flowing in one direction. Before any MCP message can be reliably read back out, both sides need to agree on framing, a rule for finding message boundaries inside that stream. Get framing wrong and a reader might combine two messages into one malformed blob, or split one message in half and wait forever for the rest."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is not a problem unique to MCP, it is the same problem every line-based protocol, from SMTP to many database wire protocols, has had to solve for decades. MCP over stdio solves it with one of the simplest framing rules available."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some early homegrown protocols tried to solve framing by prefixing each message with its byte length instead of using a delimiter, a scheme still used by some other JSON-RPC transports."
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP over stdio deliberately avoids that approach for simplicity, a length prefix requires both sides to agree on an encoding for the length itself, and it makes a message unreadable to a human simply piping the stream to a terminal for debugging, whereas newline-delimited JSON stays readable either way."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Newline-Delimited JSON-RPC",
+          "id": "stdio-newline-delimited-jsonrpc"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146676490-760474621.png",
+          "alt": "Message one newline and message two newline stream one after another",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146676490-760474621.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The framing rule MCP uses over stdio is newline delimiting, every single JSON-RPC message is written as one line, with no embedded newline characters inside it, followed by a single newline character that marks the end of that message. A reader on the other side just needs to keep reading bytes until it sees a newline, parse everything before it as one JSON document, and then start collecting the next line."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/list\", \"params\": {}}\n{\"jsonrpc\": \"2.0\", \"id\": 1, \"result\": {\"tools\": [{\"name\": \"read_file\"}]}}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Because JSON objects can be serialized without any internal newlines, this rule is both simple to implement and cheap to parse, a reader does not need to understand JSON at all just to find the boundary, it only needs to look for the next newline byte."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Launching the Server Process",
+          "id": "stdio-launching-server"
+        },
+        {
+          "type": "paragraph",
+          "text": "Starting an stdio server is a configuration detail as much as a code detail, most hosts let a user or an administrator specify a command and arguments to run, and the host takes care of spawning it correctly with pipes attached. A very common example is a configuration entry naming an executable, like a Python interpreter, and a script path, along with any environment variables the server needs, such as an API key for whatever it wraps."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"mcpServers\": {\n    \"filesystem\": {\n      \"command\": \"python\",\n      \"args\": [\"-m\", \"mcp_server_filesystem\", \"--root\", \"/home/user/projects\"]\n    }\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The host reads a configuration block like this one, launches the named command as a subprocess, and from that point forward treats its stdin and stdout exactly as the transport for that one server connection."
+        },
+        {
+          "type": "paragraph",
+          "text": "Environment variables passed alongside the command are worth extra care, since anything a server needs, an API key, a file path, a feature flag, has to arrive through this configuration rather than through any request made after the process has already started."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Writing Requests to stdin",
+          "id": "stdio-writing-requests"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146678007-445514575.png",
+          "alt": "Host writes a request to stdin which the server reads",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146678007-445514575.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sending a request means serializing it to a single JSON line and writing that line, plus a trailing newline, to the child process’s stdin. The client then typically flushes the stream immediately, since many stdio pipes are buffered by default, and an unflushed write can sit in a buffer for a while before the server actually sees it, which would look like the server is simply not responding."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import json\n\ndef send_request(server, request: dict) -> None:\n    line = json.dumps(request) + \"\\n\"\n    server.stdin.write(line)\n    server.stdin.flush()\n\nsend_request(server, {\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/list\", \"params\": {}})"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Reading Responses from stdout",
+          "id": "stdio-reading-responses"
+        },
+        {
+          "type": "paragraph",
+          "text": "On the receiving side, the client reads the server’s stdout one line at a time, parsing each complete line as a JSON-RPC message the moment a newline arrives. Because a single stdio connection can be used for many requests over its lifetime, the reading side is usually a small loop running for as long as the connection is open, matching each incoming response back to the request id that was sent earlier."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import json\n\ndef read_response(server) -> dict:\n    line = server.stdout.readline()\n    return json.loads(line)\n\nresponse = read_response(server)\nprint(response[\"result\"])"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "In a real client this read loop usually runs on its own thread or async task, so that a slow or blocked server does not freeze the rest of the host application while it waits for a line to arrive."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Keeping stderr Separate for Logs",
+          "id": "stdio-stderr-for-logs"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146679706-26583637.png",
+          "alt": "Stdout carries protocol data while stderr carries logs",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146679706-26583637.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Since stdout is reserved entirely for JSON-RPC messages, a server needs somewhere else to print ordinary diagnostic output, a startup message, a warning, a stack trace."
+        },
+        {
+          "type": "paragraph",
+          "text": "That somewhere else is stderr, a third stream that the host can read separately and route to its own logs, without it ever being mistaken for protocol traffic."
+        },
+        {
+          "type": "paragraph",
+          "text": "This separation is not optional politeness, it is a hard requirement, a single stray print statement sent to stdout by mistake can corrupt the message stream and break the whole connection."
+        },
+        {
+          "type": "note",
+          "title": "A single misplaced print statement can break everything",
+          "content": "If server code ever calls a plain print() or console.log() that writes to stdout instead of stderr, the client will try to parse that line as JSON-RPC and fail, this is one of the most common bugs when first building an stdio server."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import sys\n\n# correct: diagnostic output goes to stderr, never stdout\nprint(\"server starting up\", file=sys.stderr)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Many MCP SDKs enforce this separation for you automatically, redirecting a server’s default logging configuration to stderr before any user code runs, precisely because this mistake is so easy to make by accident and so confusing to debug afterward."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Blocking vs Async I/O Considerations",
+          "id": "stdio-blocking-vs-async"
+        },
+        {
+          "type": "paragraph",
+          "text": "Reading a line from a pipe is a blocking operation by default, the calling code simply waits until a full line has arrived."
+        },
+        {
+          "type": "paragraph",
+          "text": "For a client that also needs to stay responsive to a user interface, or that manages several MCP servers at once, blocking reads on the main thread are usually unacceptable."
+        },
+        {
+          "type": "paragraph",
+          "text": "Most real clients either run the read loop on a dedicated background thread, or use asynchronous I/O primitives so a slow server on one connection cannot stall everything else the host is doing."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\n\nasync def read_loop(reader: asyncio.StreamReader):\n    while True:\n        line = await reader.readline()\n        if not line:\n            break\n        handle_message(line)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Whichever approach is chosen, the important property to preserve is that reading a response for one request never blocks a second request from being sent, an MCP client that can only handle one in-flight call at a time will feel noticeably slower than one that can pipeline several calls to the same server."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Process Lifecycle and Exit Codes",
+          "id": "stdio-process-lifecycle"
+        },
+        {
+          "type": "paragraph",
+          "text": "An stdio connection is inseparable from the lifetime of the underlying process."
+        },
+        {
+          "type": "paragraph",
+          "text": "If the server process crashes, its stdout pipe closes, and the client’s next read simply returns nothing, an empty read is usually the client’s first sign that the server is gone, well before any explicit error message arrives."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well-behaved client checks the process exit code after a connection ends, since a nonzero exit code combined with anything captured on stderr is often the only clue about what actually went wrong."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "server.stdin.close()\nexit_code = server.wait(timeout=5)\nif exit_code != 0:\n    stderr_output = server.stderr.read()\n    print(f\"server exited with {exit_code}: {stderr_output}\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth deliberately testing what your own client does when a server process is killed mid-request, does it hang forever waiting for a response that will never arrive, or does it notice the closed pipe and surface a clear error. Building this test early saves a great deal of confusion later, since a hung MCP client with no visible error is one of the hardest failure modes to diagnose after the fact."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Security and Trust Boundary of stdio",
+          "id": "stdio-security-trust-boundary"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146681307-148050942.png",
+          "alt": "A local trusted process is compared against a remote untrusted caller",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146681307-148050942.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because an stdio server always runs as a subprocess on the exact same machine as the host, it inherits whatever permissions the host process itself has, it can read the same files, use the same environment variables, and reach the same network the host can reach."
+        },
+        {
+          "type": "paragraph",
+          "text": "There is no separate authentication handshake the way there usually is for a remote connection, the trust boundary is simply, whatever code you are willing to execute locally, you are trusting with everything the host process can already do."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is exactly why stdio servers are most appropriate for tools you have chosen to install yourself, a file system helper, a local git wrapper, a database client pointed at your own machine, rather than for arbitrary third-party code you have not reviewed."
+        },
+        {
+          "type": "note",
+          "title": "No implicit sandboxing",
+          "content": "STDIO transport by itself provides no sandboxing whatsoever, a server can read any file or make any network call the host process could make, any sandboxing has to be added deliberately by the host or the operating system, not assumed from the transport."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Performance Characteristics of stdio",
+          "id": "stdio-performance-characteristics"
+        },
+        {
+          "type": "paragraph",
+          "text": "Local pipes are extremely fast, there is no network stack, no TLS handshake, no DNS lookup, a message written to stdin is typically available on the other end in well under a millisecond. This makes stdio a good fit for tools that get called very frequently, like a file system server that might be asked to read dozens of small files while an AI model works through a task, where even a few milliseconds of network overhead per call would add up quickly."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Typical stdio behavior\"],\"rows\":[[\"Latency per message\",\"Sub-millisecond, limited mostly by process scheduling\"],[\"Setup cost\",\"One process spawn per session, no handshake per message\"],[\"Throughput ceiling\",\"Bound by how fast both sides can serialize and parse JSON\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "One subtlety worth knowing is that operating system pipes usually have a fixed internal buffer size, often somewhere around sixty four kilobytes. A single JSON-RPC message larger than that buffer can, in principle, cause a write to block until the reader drains some of it, which is one more reason MCP tool results are expected to stay reasonably sized rather than returning enormous raw payloads directly inline."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. When stdio Is the Right Choice",
+          "id": "stdio-when-right-choice"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146682792-931891180.png",
+          "alt": "Running on the same machine points toward choosing stdio",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146682792-931891180.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "STDIO fits best when the server is meant to run locally, alongside the host, and is launched and owned by that same host for the duration of one session."
+        },
+        {
+          "type": "paragraph",
+          "text": "Command line developer tools are the clearest example, a file system browser, a local shell helper, a code search tool scoped to a project directory the user already has open."
+        },
+        {
+          "type": "paragraph",
+          "text": "In all of these cases, there is exactly one client using the server, the two live on the same machine, and the simplicity of pipes outweighs anything a network transport would add."
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful rule of thumb, if you can imagine comfortably running the server by typing its command directly into your own terminal, stdio is very likely the right transport for it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. When stdio Is the Wrong Choice",
+          "id": "stdio-when-wrong-choice"
+        },
+        {
+          "type": "paragraph",
+          "text": "STDIO stops making sense the moment a server needs to live somewhere other than the user’s own machine, or needs to serve more than one client at a time. A team-wide server hosted centrally, a server wrapping a paid API that should not have its credentials distributed to every laptop, or a server that many different users need to share concurrently, all call for a networked transport instead, covered in the next lessons in this module."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A server that must run on shared infrastructure rather than the user’s own machine",
+            "A server that many different clients need to connect to at the same time",
+            "A server whose credentials should stay on a controlled server rather than being distributed to every user’s machine",
+            "A server that needs to keep running independently of any one particular host application being open"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "It also is not a good fit whenever a server benefits from being independently observable or restartable by ordinary infrastructure tooling, load balancers, health checks, and horizontal scaling all assume a network-addressable service, none of which apply cleanly to a process that only exists as someone’s child process."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Debugging an stdio Server",
+          "id": "stdio-debugging"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because there is no network traffic to inspect with familiar tools, debugging an stdio server usually starts with running it manually from a terminal and typing a JSON-RPC request by hand to see what comes back, before ever wiring it up to a real host. Many MCP tooling ecosystems also include an inspector application specifically built to spawn a server the same way a host would, then let a developer send requests and watch responses interactively."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "# manual smoke test from a terminal, one line of JSON in, one line out\npython my_mcp_server.py\n{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/list\", \"params\": {}}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "If a server hangs with no output at all, the first thing worth checking is almost always whether every write is being flushed, an unflushed buffer sitting quietly is by far the most common reason an stdio server looks frozen when it is technically still running."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "stdio-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider a minimal MCP server that exposes one tool, add, which adds two numbers. The server reads a line from stdin, parses it as a JSON-RPC request, computes the result, and writes a JSON-RPC response back to stdout, all inside a simple loop."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import sys, json\n\nfor line in sys.stdin:\n    request = json.loads(line)\n    if request[\"method\"] == \"tools/call\" and request[\"params\"][\"name\"] == \"add\":\n        a, b = request[\"params\"][\"arguments\"][\"a\"], request[\"params\"][\"arguments\"][\"b\"]\n        response = {\"jsonrpc\": \"2.0\", \"id\": request[\"id\"], \"result\": {\"sum\": a + b}}\n    else:\n        response = {\"jsonrpc\": \"2.0\", \"id\": request[\"id\"], \"error\": {\"code\": -32601, \"message\": \"unknown method\"}}\n    sys.stdout.write(json.dumps(response) + \"\\n\")\n    sys.stdout.flush()"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "On the client side, the host spawns this exact script as a subprocess, writes a tools/call request for add with arguments 2 and 3, and reads back a single line containing the JSON-RPC response with sum equal to 5. Nothing here touches a network, a socket, or a port, the entire round trip happens through two operating system pipes."
+        },
+        {
+          "type": "paragraph",
+          "text": "If you extend this example, try adding a second tool, like multiply, and notice that the same read loop handles both without any change to the framing or transport logic at all, only the branch that inspects the requested method name needs to grow, everything about how bytes move between the two processes stays exactly the same."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "stdio-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Writing debug output with a plain print statement that lands on stdout instead of stderr, silently corrupting the message stream.",
+            "Forgetting to flush stdin or stdout after a write, leaving a message sitting in a buffer while the other side waits for it.",
+            "Assuming an stdio server can serve multiple independent clients at once, when in fact each client typically needs its own spawned process.",
+            "Not checking the process exit code and captured stderr when a connection ends unexpectedly, and missing the actual reason the server died.",
+            "Reaching for stdio transport for a server that needs to run on shared infrastructure or serve many users, where a networked transport is the correct fit instead."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "stdio-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Write a tiny script, in any language you like, that reads one line of JSON from stdin, adds an extra field called handled set to true, and writes the modified JSON back to stdout as a single line."
+        },
+        {
+          "type": "paragraph",
+          "text": "Then, from a separate script, spawn your first script as a subprocess, write a JSON line to its stdin, and read the transformed line back from its stdout."
+        },
+        {
+          "type": "paragraph",
+          "text": "Confirm that any print statements you add for debugging go to stderr, and verify your reading script still works correctly even after you add them."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "# quick manual test from a shell, without writing a second script yet\necho '{\"hello\": \"world\"}' | python echo_server.py"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "As a stretch goal, add a small delay before your script responds, and confirm your reading side waits correctly rather than timing out too early.",
+            "Then deliberately kill the subprocess mid-request from a separate terminal, and see exactly what your reading script observes when the pipe closes unexpectedly."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "stdio-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "STDIO transport turns the three streams every operating system process already has, standard input, standard output, and standard error, into a complete MCP transport, with newline-delimited JSON-RPC messages flowing over stdin and stdout while diagnostics stay on stderr."
+        },
+        {
+          "type": "paragraph",
+          "text": "It needs no networking code at all, which makes it the natural choice for a server that runs locally as a subprocess launched and owned by its one host, but it stops being a good fit the moment a server needs to run remotely or serve more than one client."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson in this module moves to HTTP transport, the mechanism a server uses once it needs to live somewhere other than the user’s own machine, and looks at how request and response messages travel over a network instead of over a pair of local pipes."
+        }
+      ]
+    }
+  ]
+}

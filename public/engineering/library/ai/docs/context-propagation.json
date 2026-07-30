@@ -1,0 +1,546 @@
+{
+  "slug": "context-propagation",
+  "title": "Context Propagation",
+  "content": [
+    {
+      "id": "context-propagation",
+      "title": "Context Propagation",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Picture a piece of context, say the contents of a file, starting life on a server that has never heard of the model it will eventually reach."
+        },
+        {
+          "type": "paragraph",
+          "text": "Before that content becomes a sentence the model reasons about, it crosses several boundaries: a protocol message, a client library, a host application that stitches things together. Each hop can add, drop, or reshape that content."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson traces that whole path, from a server's raw response to the words the model actually reads, so that when something looks wrong later, you know exactly where to look."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Context Propagation Means in MCP",
+          "id": "ctxprop-what-it-means"
+        },
+        {
+          "type": "paragraph",
+          "text": "Context propagation is the journey a piece of information takes from the place it originates to the place it is consumed. In an MCP system, that means tracing how a resource's content, a tool's result, or metadata about the current task moves from a server, through a client, into a host, and finally into the block of text the model is given to reason over. Nothing appears in front of the model by magic, every scrap of context took a specific route to get there."
+        },
+        {
+          "type": "paragraph",
+          "text": "Thinking in terms of propagation rather than just availability changes how you debug problems. If a model seems to be missing information, the question is never just whether the information exists somewhere, it is which hop along the path failed to carry it forward. A resource can be fetched successfully by a server and still never reach the model if the host decides not to include it in the next request."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a resource exists on the server, but that alone guarantees nothing\nresource = server.read_resource(\"file:///report.md\")\n# whether the model ever sees resource.content depends entirely on\n# what the client and host do with it after this line"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The Path From Resource to Model",
+          "id": "ctxprop-the-path"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173261480-322693053.png",
+          "alt": "Resource content flows from an MCP server through a client and host into the model",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173261480-322693053.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The canonical path looks the same regardless of which server or which model is involved. A server holds or generates some content. A client, acting on behalf of the host, requests that content over the protocol. The host receives the response and decides how, and whether, to fold it into the next prompt it sends the model. The model receives an assembled block of text and has no visibility into any of the steps that produced it."
+        },
+        {
+          "type": "paragraph",
+          "text": "Every one of those four stops, server, client, host, model, is a place where the content could be transformed. A server might paginate a large file. A client might apply a timeout and give up partway through a read. A host might truncate a resource to fit a budget. By the time the model sees anything, it is looking at the result of all of those decisions layered on top of each other, not the original resource in its pristine form."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Stop\",\"What it does with the context\",\"Can it change the content\"],\"rows\":[[\"Server\",\"Produces or fetches the raw content\",\"Yes, at the source\"],[\"Client\",\"Requests it and relays the response\",\"Rarely, mostly passthrough\"],[\"Host\",\"Decides whether and how to include it in the prompt\",\"Yes, formatting and trimming\"],[\"Model\",\"Reads whatever the host assembled\",\"No, it only consumes\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. How a Server Exposes Context",
+          "id": "ctxprop-server-exposes"
+        },
+        {
+          "type": "paragraph",
+          "text": "A server is the origin point for most context that flows through an MCP session. It exposes resources with URIs, it returns tool call results, and it can attach metadata describing what it just did. None of that is context yet in the sense the model cares about, it is only a response sitting inside a JSON-RPC message waiting for something downstream to pick it up and carry it further."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well behaved server keeps its responses self describing, a resource read should say what mime type it is, a tool result should say whether it represents an error, so that whatever consumes it downstream can make good decisions about how to propagate it. A server that returns an ambiguous blob of text forces every later hop to guess."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a server's resource response carries more than raw bytes\n{\n  \"uri\": \"file:///report.md\",\n  \"mimeType\": \"text/markdown\",\n  \"text\": \"# Quarterly Report\\n...\"\n}\n# the mimeType and uri travel alongside the text, letting the\n# host decide how to present it without re-guessing its shape"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. The Client's Role in Relaying Context",
+          "id": "ctxprop-client-relay"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173263607-114688195.png",
+          "alt": "A client relays context between the server and the host",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173263607-114688195.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The client sits directly on top of the transport, sending requests and receiving responses on behalf of the host. Its job in propagation is mostly mechanical, it should relay what the server sent without silently editing it. That said, a client is also where timeouts, retries, and connection errors are handled, and every one of those can turn a full response into a partial one or no response at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "A subtle propagation bug happens when a client retries a failed request and the second attempt returns a different result than the first would have, perhaps because the underlying data changed in between. From the host's point of view, it just receives whatever the client eventually hands back, with no signal that a retry happened or that the content might already be stale."
+        },
+        {
+          "type": "note",
+          "title": "Passthrough is a feature, not a shortcut",
+          "content": "A client that quietly reformats or summarizes content on the way through is removing information the host and model never get a chance to evaluate. Keep transformation decisions in the host, where there is enough context to make them well."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. The Host's Role in Assembling Context",
+          "id": "ctxprop-host-assembly"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173265275-465316561.png",
+          "alt": "A host assembles context from multiple sources before sending it to the model",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173265275-465316561.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The host is where propagation stops being purely mechanical and starts being a design decision. It receives responses from potentially many servers through potentially many clients, and it has to decide what subset of all that content actually goes into the next message sent to the model. This is the layer where a context budget, a relevance filter, or a summarization step gets applied."
+        },
+        {
+          "type": "paragraph",
+          "text": "Two hosts connected to the exact same servers can produce very different model experiences purely because of how each one assembles context. One host might include every resource read verbatim, another might keep only the last few and summarize the rest. Both are propagating context, but the shape of what reaches the model differs enormously."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def assemble_prompt(system_prompt, tool_schemas, resource_reads, history):\n    # the host decides the order, the trimming, and the framing\n    parts = [system_prompt]\n    parts += [format_tool_schema(t) for t in tool_schemas]\n    parts += [format_resource(r) for r in resource_reads]\n    parts += history\n    return \"\\n\\n\".join(parts)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Tool Call Results as Propagated Context",
+          "id": "ctxprop-tool-results"
+        },
+        {
+          "type": "paragraph",
+          "text": "A tool call is one of the most common ways new context enters a session mid conversation. The model asks for a tool to run, the host dispatches that call through a client to a server, the server does the work and returns a result, and that result has to travel all the way back before the model can use it. The round trip is the same propagation path as a resource read, just triggered by the model itself rather than by the host at startup."
+        },
+        {
+          "type": "paragraph",
+          "text": "Because tool results are often generated dynamically, ranking a search, querying a database, calling an external API, they carry a kind of freshness that static resources do not always have. Propagating them faithfully means preserving not just the content but enough framing that the model understands this came from a specific tool call, at a specific point in the conversation, not from the system prompt or a resource read earlier."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "tool_result = server.call_tool(\"search\", {\"query\": \"refund policy\"})\n# the host must propagate both the content and its provenance\nmessage = {\n    \"role\": \"tool\",\n    \"tool_name\": \"search\",\n    \"content\": tool_result.content,\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Metadata That Travels Alongside Content",
+          "id": "ctxprop-metadata"
+        },
+        {
+          "type": "paragraph",
+          "text": "Content is rarely the only thing worth propagating. A resource's last modified time, a tool result's success or failure status, a server's declared capabilities, all of that metadata shapes how the host and eventually the model should treat the content it is attached to. Dropping metadata during propagation is a common way to lose important signal even while the main content survives intact."
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider a resource read that includes a warning that the underlying file was partially unreadable. If only the readable text propagates forward and the warning gets stripped somewhere along the way, the model will reason over incomplete data as if it were complete, which is a worse outcome than the model knowing it has partial information."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Timestamps, so staleness can be judged later",
+            "Success or error status, so failures are not mistaken for empty results",
+            "Source identifiers, so the model can distinguish one server's output from another's",
+            "Truncation flags, so a shortened resource is not read as a complete one"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Propagation Across Multiple Servers",
+          "id": "ctxprop-multiple-servers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173267302-568956850.png",
+          "alt": "Context propagates from several servers into one host",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173267302-568956850.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single host is frequently connected to more than one server at once, a filesystem server, a search server, a ticketing server. Context from each of them has to be propagated independently, and the host is the only place where all of those independent streams converge. This makes the host responsible for keeping the sources distinguishable even after everything lands in the same shared prompt."
+        },
+        {
+          "type": "paragraph",
+          "text": "A common mistake is letting content from different servers blend together without labels once it reaches the model. If a snippet from a documentation server and a snippet from a customer database both show up as unlabeled paragraphs, the model has no way to weigh their reliability differently, even though a host designer might have wanted it to."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def format_resource(resource, server_name):\n    # tag every piece of propagated context with where it came from\n    return f\"[from {server_name}] {resource.content}\""
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Ordering and Precedence When Assembling Context",
+          "id": "ctxprop-ordering"
+        },
+        {
+          "type": "paragraph",
+          "text": "The order in which propagated content is arranged inside the final prompt is itself a decision with consequences. Most models weigh recent content more heavily than content buried deep in the middle of a long prompt, so a host that appends the newest tool result at the very end is making a different implicit choice than one that inserts it near the system prompt."
+        },
+        {
+          "type": "paragraph",
+          "text": "Precedence also matters when two propagated pieces of context disagree, for instance a resource read early in the session says a value is one thing, and a tool result later says something different. The host's assembly order communicates, whether intentionally or not, which one the model should trust more."
+        },
+        {
+          "type": "note",
+          "title": "Recency is a signal, not a guarantee",
+          "content": "Placing the freshest context last helps a model favor it, but does not force that outcome. Explicitly labeling which content is authoritative is more reliable than relying on position alone."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Transformations During Propagation",
+          "id": "ctxprop-transformations"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173268833-183986996.png",
+          "alt": "Raw content is transformed as it propagates toward the model",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173268833-183986996.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Content is not always passed through unchanged. A host might reformat a resource from raw markdown into a cleaner summary, truncate a long tool result to fit a budget, or translate a structured JSON response into a short natural language description. Every one of these transformations is still propagation, just propagation that reshapes the content along the way."
+        },
+        {
+          "type": "paragraph",
+          "text": "The risk with transformation is that it can silently drop details the model would have found useful, without anyone downstream knowing a transformation even happened. A host that always logs what it changed, and why, makes it far easier to trace a confusing model answer back to a specific propagation decision."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def propagate_with_log(resource, transform_fn):\n    transformed = transform_fn(resource.content)\n    log.info(\"propagated %s -> %d chars (was %d)\",\n             resource.uri, len(transformed), len(resource.content))\n    return transformed"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. What the Model Actually Sees",
+          "id": "ctxprop-what-model-sees"
+        },
+        {
+          "type": "paragraph",
+          "text": "By the time content reaches the model, it has been flattened into plain text sitting inside a single prompt, no matter how many servers, clients, or transformation steps it passed through to get there. The model has no way to independently verify that this text faithfully represents the original resource, it simply reasons over what is in front of it."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is why every earlier stop in the path matters so much. The model is the least forgiving link in the chain, in the sense that it cannot correct for a dropped field or a garbled transformation, it can only work with what actually made it through. Good propagation design treats the model's view as the thing every other decision serves."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# the model only ever sees the final assembled string,\n# never the intermediate JSON-RPC messages that produced it\nfinal_prompt = assemble_prompt(system_prompt, tool_schemas, resource_reads, history)\nresponse = model.generate(final_prompt)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Propagation Failures and Silent Drops",
+          "id": "ctxprop-failures"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173270335-849712301.png",
+          "alt": "A propagation failure can silently drop context without any error",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173270335-849712301.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Propagation can fail loudly, a client raising a timeout error, or quietly, a host silently omitting a resource because it exceeded a size limit with no warning surfaced anywhere. Silent drops are the more dangerous failure mode because nothing in the visible conversation signals that something is missing, the model simply answers as if it had complete information."
+        },
+        {
+          "type": "paragraph",
+          "text": "A resilient host treats every drop as something to surface, even briefly, rather than something to hide. A short note in the system context saying a resource was too large to include in full gives the model a chance to ask for a summary or a narrower read instead of confidently answering from a gap it does not know exists."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A resource read times out and the host silently skips it",
+            "A tool result exceeds a size limit and gets dropped instead of truncated with a warning",
+            "A server disconnects mid session and its prior context is never marked as stale",
+            "A retried request returns different data than the original request would have"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Propagation Latency and Staleness",
+          "id": "ctxprop-latency-staleness"
+        },
+        {
+          "type": "paragraph",
+          "text": "Propagation is not instantaneous, and the gap between when content is produced and when it is actually used by the model can matter. A resource read at the start of a long session may no longer reflect reality by the time the model reasons about it many turns later, even though nothing about the propagation mechanism itself failed."
+        },
+        {
+          "type": "paragraph",
+          "text": "Distinguishing propagation latency from a genuine content problem is an important debugging skill. If a model's answer seems wrong, the resource it relied on might have been perfectly correctly propagated, just stale by the time it mattered. That is a different fix than a broken propagation path, it points toward re-reading fresh content rather than fixing a transport bug."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "resource = server.read_resource(\"file:///status.json\")\npropagated_at = time.time()\n# ... many turns later ...\nif time.time() - propagated_at > MAX_STALENESS_SECONDS:\n    resource = server.read_resource(\"file:///status.json\")  # refresh"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Explicit vs Implicit Propagation",
+          "id": "ctxprop-explicit-implicit"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173271879-858534834.png",
+          "alt": "Explicit propagation is compared against implicit propagation",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173271879-858534834.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Explicit propagation happens when a host deliberately decides to include a specific piece of content in the next prompt, usually because the model asked for it or a workflow step requires it. Implicit propagation happens when content rides along automatically, a system prompt that always includes certain resources, or a host that always appends the full history regardless of relevance."
+        },
+        {
+          "type": "paragraph",
+          "text": "Neither approach is inherently better, but conflating them causes confusion. A developer debugging why the model knows something it should not have access to needs to know whether that knowledge arrived explicitly, through a deliberate resource read, or implicitly, through a default that quietly includes more than intended."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Style\",\"How content enters the prompt\",\"Typical use\"],\"rows\":[[\"Explicit\",\"A specific read or tool call the host or model requested\",\"Answering a targeted question\"],[\"Implicit\",\"Always included by default configuration\",\"Baseline instructions, persistent identity\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Security Boundaries During Propagation",
+          "id": "ctxprop-security-boundaries"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every hop in the propagation path is also a place where access control needs to be respected. A server should only expose content the current session is authorized to see, a host should not forward content from one server into a prompt that also serves a different, less trusted server's tools, and a client should not cache credentials or content across sessions that should stay isolated."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson only touches the surface of that concern, since keeping sensitive context from leaking where it should not is its own deep topic later in this module, and the full mechanics of authenticating and authorizing access across a session belong to the Authentication and Security module."
+        },
+        {
+          "type": "note",
+          "title": "Propagation is not the place to add security as an afterthought",
+          "content": "By the time content is being assembled into a prompt, it is much harder to reason about who should see it. Enforce access decisions as early in the path as possible, ideally at the server."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Debugging a Propagation Path",
+          "id": "ctxprop-debugging"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a model's behavior does not match what you expect given the data available, the most productive question is not what the correct answer should have been, it is which specific hop in the propagation path the content actually took. Working backward from the model's final prompt toward the original server response usually isolates the problem quickly."
+        },
+        {
+          "type": "paragraph",
+          "text": "A simple technique is to log the content at every stop, the raw server response, what the client received, what the host decided to include, and the final assembled prompt. Diffing across those four snapshots usually shows exactly where content was dropped, transformed, or delayed."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a minimal propagation trace across the four stops\ntrace = {\n    \"server_response\": raw_response,\n    \"client_received\": client_result,\n    \"host_assembled\": final_prompt_fragment,\n}\nfor stage, content in trace.items():\n    print(stage, \"->\", len(content), \"chars\")"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Designing for Predictable Propagation",
+          "id": "ctxprop-designing-predictable"
+        },
+        {
+          "type": "paragraph",
+          "text": "The goal of understanding propagation is not to memorize every possible failure mode, it is to design systems where the path content takes is predictable enough that failures are easy to spot when they happen. That means keeping transformations explicit and logged, keeping metadata attached rather than stripped, and keeping the assembly step in the host visible rather than buried in ad hoc logic scattered across the codebase."
+        },
+        {
+          "type": "paragraph",
+          "text": "A predictable propagation path also makes every later topic in this module tractable. Persistence, compression, synchronization, all of them assume you already know how content gets from a source into the model's view in the first place, and they build refinements on top of that baseline understanding."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Keep the four stops, server, client, host, model, conceptually distinct even when the code is not",
+            "Attach metadata to content and carry it forward rather than stripping it early",
+            "Log transformations so a confusing answer can be traced back to a specific decision",
+            "Prefer surfacing a drop over silently omitting content"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "ctxprop-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider a support assistant built as an MCP host, connected to a knowledge base server and a ticketing server. A user asks about a refund policy. The host calls the knowledge base server's search tool, which returns three matching articles. The client relays that result back, the host picks the single most relevant article, tags it with its source, and inserts it into the prompt just before the user's question."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "search_result = kb_client.call_tool(\"search\", {\"query\": \"refund policy\"})\nbest_article = rank_articles(search_result.content)[0]\nprompt_fragment = f\"[from knowledge-base] {best_article.text}\"\n# the model now sees a single, sourced, relevant paragraph,\n# not the raw three-article search response"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Later in the same session, the user mentions a specific order number, and the host calls the ticketing server's lookup tool. That result propagates through the exact same path, client to host to prompt, but this time it is tagged as coming from the ticketing server, so the model can tell the two sources apart when it answers."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "ctxprop-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Assuming a resource is visible to the model just because a server successfully returned it",
+            "Letting a client silently retry and swap in different content without the host knowing",
+            "Stripping metadata such as timestamps or source names during assembly",
+            "Blending content from multiple servers into unlabeled text the model cannot attribute",
+            "Truncating a large resource without leaving any signal that it was cut short",
+            "Treating transformation steps as invisible, with no logging of what changed"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "ctxprop-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Design a propagation trace function for a hypothetical host connected to two servers. Given a raw server response, a client relayed result, and a final assembled prompt fragment, write a function that detects whether content was dropped, truncated, or reordered between each stage, and returns a short human readable report describing what happened at each hop."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def propagation_diff(server_response, client_result, host_assembled):\n    # TODO: compare lengths and key phrases across the three stages\n    # TODO: return a report noting any drop, truncation, or reordering\n    pass"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "ctxprop-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Context propagation is the full journey a piece of information takes from a server, through a client, into a host, and finally into the text a model reads, and every one of those hops is a place where content can be shaped, delayed, or lost. Treating the path as something to trace and log, rather than something to assume works, is what turns a confusing model answer into a solvable bug."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson turns to context persistence, looking at which parts of everything that successfully propagates into a session are worth keeping available across multiple turns, and which parts should be let go after they have served their purpose once."
+        }
+      ]
+    }
+  ]
+}

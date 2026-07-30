@@ -1,0 +1,773 @@
+{
+  "problemId": "p-ride-sharing-service",
+  "title": "Ride Sharing Service",
+  "slug": "ride-sharing-service",
+  "sections": [
+    {
+      "id": "content",
+      "title": "Content"
+    }
+  ],
+  "content": [
+    {
+      "id": "content",
+      "title": "Content",
+      "blocks": [
+        {
+          "type": "heading1",
+          "text": "1. Problem Statement",
+          "content": "1. Problem Statement"
+        },
+        {
+          "type": "paragraph",
+          "text": "<div style=\"border:2px solid #5b5fc7;border-radius:14px;padding:18px 22px;background:rgba(91,95,199,0.07);margin:4px 0 8px 0;\"><p style=\"margin:0 0 12px 0;\">Design the core matching engine behind a <strong>ride-sharing service</strong> (the kind that powers Uber Pool or Lyft Shared style carpooling). The distinguishing challenge is <strong>detour-constrained ride pooling</strong>: when a rider requests a shared ride, the system should try to fit them into a driver who already has a passenger, but only if doing so adds an <strong>acceptable detour</strong> to that driver's existing trip, rather than simply matching to whichever driver happens to be nearest.</p><img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925630093-653854959.png\" alt=\"A pooled request first checks whether inserting the new pickup and dropoff into an existing driver's route stays within the detour limit, before falling back to assigning the nearest empty driver\" style=\"width:100%;border-radius:8px;margin:4px 0 14px 0;\" /><ul style=\"margin:0 0 12px 1.25em;padding:0;list-style:disc;\"><li style=\"margin:4px 0;\"><strong>Actors:</strong> Rider (requests a solo or pooled ride), RideDispatchService (the core orchestrator).</li><li style=\"margin:4px 0;\"><strong>Scope:</strong> driver capacity, detour-constrained pooling for shared rides, solo matching, and fare calculation with a pooled discount.</li></ul><p style=\"border-left:3px solid #5b5fc7;padding-left:12px;font-style:italic;margin:0 0 12px 0;\">The distinguishing mechanic is a real route-insertion heuristic: a new rider joins an in-progress driver only if the extra distance their pickup and dropoff would add, compared to that driver's original route, stays within a fixed detour tolerance.</p></div>"
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "2. Functional Requirements",
+          "content": "2. Functional Requirements"
+        },
+        {
+          "type": "paragraph",
+          "text": "The system must support the following <strong>core capabilities</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Request a solo ride:</strong> match to the nearest driver who currently has no other riders.",
+            "<strong>Request a pooled ride:</strong> try to insert the rider into an already-occupied driver's route within an acceptable detour, falling back to the nearest empty driver if no pooling opportunity qualifies.",
+            "<strong>Complete a ride:</strong> free up the driver's occupied seat for future matching.",
+            "<strong>Calculate fare:</strong> price a ride from a base fare plus a per-distance rate, discounted if the ride ended up shared with another rider.",
+            "<strong>Reject unreasonable manual pooling:</strong> a direct pooling request that would exceed the detour limit must be rejected."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "3. Non-Functional Requirements",
+          "content": "3. Non-Functional Requirements"
+        },
+        {
+          "type": "paragraph",
+          "text": "Beyond correctness, the design should hold up along five <strong>quality pillars</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925632198-387033228.png",
+          "metadata": {
+            "alt": "Five non-functional pillars: scalability, extensibility, maintainability, performance, thread safety"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Scalability:</strong> supporting thousands of concurrent riders and drivers must not require touching existing matching logic.",
+            "<strong>Extensibility:</strong> a new matching algorithm (multi-stop pooling, surge-aware matching) should plug in without rewriting the service.",
+            "<strong>Maintainability:</strong> matching rules, notification, and id creation are isolated in their own classes.",
+            "<strong>Performance:</strong> evaluating candidate drivers for a new ride request is proportional to the number of tracked drivers.",
+            "<strong>Thread safety:</strong> two riders attempting to pool onto the same driver concurrently must never both slip past that driver's capacity check."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "4. Clarifying Questions",
+          "content": "4. Clarifying Questions"
+        },
+        {
+          "type": "paragraph",
+          "text": "Questions worth asking the interviewer <strong>before designing</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Should the detour limit be a fixed distance, a percentage of the original trip length, or a maximum added time?",
+            "Can more than two riders share a single pooled ride, or is pooling capped at two?",
+            "Should a rider be able to opt out of pooling mid-trip if the detour becomes uncomfortable?",
+            "Is real road-network distance required, or is straight-line distance an acceptable simplification?",
+            "Should surge pricing be layered on top of the base fare and per-distance rate?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "5. Assumptions & Constraints",
+          "content": "5. Assumptions & Constraints"
+        },
+        {
+          "type": "paragraph",
+          "text": "To keep the design focused, we make these <strong>explicit assumptions</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Distance is computed as straight-line Euclidean distance on a flat coordinate plane, a simplification versus real road-network routing.",
+            "Pooling is capped at two riders per driver in this design, a reasonable starting point that keeps the route-insertion math tractable.",
+            "A driver's active route, once they have picked up their first pooled rider, is represented by that first rider's pickup and dropoff points, the reference segment any further pooling insertion is measured against.",
+            "Fare is calculated at ride completion rather than at match time, so a rider who was picked up before a pool partner joined still receives the pooled discount, since the discount reflects the trip's actual final shared status.",
+            "A rider cannot opt out of pooling mid-trip in this design, that is noted as a follow-up."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "6. Core Entities",
+          "content": "6. Core Entities"
+        },
+        {
+          "type": "paragraph",
+          "text": "The design centers on <strong>four core entities</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925633814-415385447.png",
+          "metadata": {
+            "alt": "Core entities: Driver, Ride, Rider, and Fare"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Driver:</strong> a courier with a location, a capacity, and the active route of whichever rider they picked up first.",
+            "<strong>Ride:</strong> one rider's trip request, tracking pickup, dropoff, type, and lifecycle status.",
+            "<strong>Rider:</strong> the person requesting a ride, identified within this design simply by name.",
+            "<strong>Fare:</strong> the computed price for one ride, including any pooled discount."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "7. Relationships Between Entities",
+          "content": "7. Relationships Between Entities"
+        },
+        {
+          "type": "paragraph",
+          "text": "These entities connect through a small set of <strong>well-defined relationships</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925635243-497855599.png",
+          "metadata": {
+            "alt": "A driver carries up to their capacity worth of rides concurrently; each ride is requested by one rider and priced by a fare calculation"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Driver to Ride</strong> is one-to-many, bounded by the driver's capacity at any given moment.",
+            "<strong>Ride to Rider</strong> is many-to-one, a rider can place many ride requests over time.",
+            "<strong>Ride to Fare</strong> is a derived, on-demand relationship computed when calculateFare is called."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "8. UML Class Diagram",
+          "content": "8. UML Class Diagram"
+        },
+        {
+          "type": "paragraph",
+          "text": "The class diagram below shows the <strong>full static structure</strong>, including the Strategy and Observer interfaces:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925648302-593476294.png",
+          "metadata": {
+            "alt": "UML class diagram for the Ride Sharing Service"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "9. Design Patterns Used",
+          "content": "9. Design Patterns Used"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three patterns keep matching rules, notification, and id creation <strong>decoupled from the core service</strong>."
+        },
+        {
+          "type": "heading2",
+          "text": "9.1 Strategy Pattern (Matching Rules)",
+          "content": "9.1 Strategy Pattern (Matching Rules)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> a solo ride and a pooled ride fundamentally disagree on which drivers even qualify, empty-only versus detour-constrained sharing, and that decision genuinely varies per ride request."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925636895-547381830.png",
+          "metadata": {
+            "alt": "MatchingStrategy interface with DirectMatchingStrategy and PooledMatchingStrategy implementations"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> a future multi-stop or surge-aware matching algorithm is a new strategy implementation, with zero changes to the core assignment logic in RideDispatchService. <strong>What it solves:</strong> it isolates ride-type-specific matching rules from the shared, stable assignment and lifecycle-tracking algorithm."
+        },
+        {
+          "type": "heading2",
+          "text": "9.2 Observer Pattern (Notifications)",
+          "content": "9.2 Observer Pattern (Notifications)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> a ride being matched, a match failing, or a ride completing are all events a real ride-sharing app would want to react to (rider notifications, driver apps, analytics)."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925638346-626421848.png",
+          "metadata": {
+            "alt": "RideObserver interface notified by RideDispatchService on every lifecycle event"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> RideDispatchService does not need to know who is listening. <strong>What it solves:</strong> it decouples the core matching workflow from side effects."
+        },
+        {
+          "type": "heading2",
+          "text": "9.3 Factory Pattern (Id Creation)",
+          "content": "9.3 Factory Pattern (Id Creation)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> ride id generation should not be scattered across calling code."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925639792-223837147.png",
+          "metadata": {
+            "alt": "RideIdFactory generating sequential RIDE prefixed ids"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> every ride is created through one consistent path. <strong>What it solves:</strong> centralizes id-generation rules so they cannot drift or collide."
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "10. Class Design",
+          "content": "10. Class Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "Each class has a single, clear <strong>responsibility</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Driver:</strong> attributes driverId, locationX, locationY, capacity, currentRiders, activePickupX/Y, activeDropoffX/Y; responsibility: track one courier's occupancy and current route reference segment.",
+            "<strong>Ride:</strong> attributes rideId, riderName, pickupX/Y, dropoffX/Y, type, assignedDriverId, status; responsibility: represent one rider's trip through its lifecycle.",
+            "<strong>RideDispatchService:</strong> the orchestrator; responsibility: match rides, enforce detour and capacity limits, calculate fares, and track lifecycle transitions."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "11. Interface Design",
+          "content": "11. Interface Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two interfaces keep the design <strong>open for extension</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925641179-211774192.png",
+          "metadata": {
+            "alt": "MatchingStrategy and RideObserver interfaces with their key methods"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>MatchingStrategy:</strong> findDriver(ride, drivers): abstracts away exactly how a driver is selected for a ride request.",
+            "<strong>RideObserver:</strong> onRideMatched / onMatchFailed / onRideCompleted: abstracts away who reacts to lifecycle events."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "12. Sequence Diagrams",
+          "content": "12. Sequence Diagrams"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three flows below cover a <strong>fresh assignment to an empty driver</strong>, a <strong>successful pooled match within the detour limit</strong>, and a <strong>manual pooling attempt rejected for exceeding the detour limit</strong>."
+        },
+        {
+          "type": "heading2",
+          "text": "12.1 Fresh Assignment",
+          "content": "12.1 Fresh Assignment"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925650239-333075240.png",
+          "metadata": {
+            "alt": "Alice's pooled request finds no existing occupied driver to join, so the nearest empty driver, D1, is assigned fresh"
+          }
+        },
+        {
+          "type": "heading2",
+          "text": "12.2 Successful Pooled Match",
+          "content": "12.2 Successful Pooled Match"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925651917-362075164.png",
+          "metadata": {
+            "alt": "Bob's pooled request fits into D1's existing route within the detour limit, so he joins Alice on the same driver"
+          }
+        },
+        {
+          "type": "heading2",
+          "text": "12.3 Manual Pooling Rejected",
+          "content": "12.3 Manual Pooling Rejected"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925653349-848330714.png",
+          "metadata": {
+            "alt": "Eve's manual pooling attempt onto a distant driver is rejected for exceeding the detour limit"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "13. Important Workflows",
+          "content": "13. Important Workflows"
+        },
+        {
+          "type": "paragraph",
+          "text": "The <strong>pooled-matching workflow</strong>, alongside its fallback and failure branches, looks like this:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925642800-787432048.png",
+          "metadata": {
+            "alt": "A pooled request first tries a detour-constrained insertion into an occupied driver, then falls back to the nearest empty driver, failing only if neither exists"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Happy path, fresh:</strong> request a pooled ride → no occupied driver qualifies → the nearest empty driver is assigned, becoming this driver's reference route.",
+            "<strong>Happy path, pooled:</strong> request a pooled ride → an occupied driver's insertion detour stays within the limit → the rider joins that driver alongside the existing rider.",
+            "<strong>Failure path:</strong> request a ride → no occupied driver qualifies for pooling and no empty driver exists → the match fails."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "14. Public APIs / Methods",
+          "content": "14. Public APIs / Methods"
+        },
+        {
+          "type": "paragraph",
+          "text": "The service exposes a <strong>small, intention-revealing API</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>requestRide(riderName, pickupX, pickupY, dropoffX, dropoffY, type):</strong> matches a new ride request using the strategy appropriate to its type.",
+            "<strong>poolManually(rideId, driverId):</strong> directly attempts to pool a ride onto a specific driver, still detour-checked.",
+            "<strong>calculateFare(rideId):</strong> computes the price for a ride, applying the pooled discount if applicable at call time.",
+            "<strong>completeRide(rideId):</strong> transitions a matched ride to completed, freeing its driver's occupied seat."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "15. Exception Handling",
+          "content": "15. Exception Handling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three custom exceptions cover the <strong>realistic failure modes</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925645242-218012307.png",
+          "metadata": {
+            "alt": "NoDriverAvailableException, InvalidRideStateException, DetourLimitExceededException"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>NoDriverAvailableException:</strong> neither a qualifying pooled driver nor an empty driver exists.",
+            "<strong>InvalidRideStateException:</strong> completeRide is called on a ride that was never matched.",
+            "<strong>DetourLimitExceededException:</strong> a manual pooling request would add more detour than the configured limit allows."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "16. Concurrency Considerations",
+          "content": "16. Concurrency Considerations"
+        },
+        {
+          "type": "paragraph",
+          "text": "The <strong>critical race</strong> is two riders attempting to pool onto the same driver at nearly the same moment."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925646681-360172109.png",
+          "metadata": {
+            "alt": "Two threads racing to pool onto the same driver; synchronization ensures one join is counted and applied before the other reads the current occupancy"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Synchronizing the check-then-increment step per driver ensures two concurrent pooling attempts can never both read an occupancy just below capacity and both proceed, which would otherwise let a driver exceed their seat capacity."
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "17. Extensibility Discussion",
+          "content": "17. Extensibility Discussion"
+        },
+        {
+          "type": "paragraph",
+          "text": "The pattern choices make several <strong>future features</strong> low-friction to add:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A new matching algorithm (multi-stop pooling beyond two riders, surge-aware matching) is a new MatchingStrategy implementation.",
+            "A new notification channel (rider push notification, driver app alert) is a new RideObserver implementation.",
+            "Mid-trip pooling opt-out can be added as a new lifecycle transition without touching the matching algorithm itself.",
+            "Real road-network distance can replace the straight-line calculation by swapping the distance helper, without touching the matching or fare logic that consumes it."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "18. SOLID Principles Applied",
+          "content": "18. SOLID Principles Applied"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Single Responsibility:</strong> Driver tracks occupancy and route reference, MatchingStrategy decides driver selection, RideObserver reacts to events, each for one reason to change.",
+            "<strong>Open/Closed:</strong> new matching algorithms or notification behavior extends via new classes, not edits to RideDispatchService.",
+            "<strong>Liskov Substitution:</strong> any MatchingStrategy or RideObserver implementation can replace another without breaking the service.",
+            "<strong>Interface Segregation:</strong> RideObserver exposes only the three lifecycle callbacks a listener actually needs.",
+            "<strong>Dependency Inversion:</strong> RideDispatchService depends on the MatchingStrategy and RideObserver interfaces, not concrete classes."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "19. Edge Cases",
+          "content": "19. Edge Cases"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A driver exactly at their capacity limit is correctly excluded from further pooling, not just drivers already over it.",
+            "A solo ride request never considers an occupied driver at all, even one whose detour would technically qualify, since SOLO explicitly opts out of sharing by design.",
+            "Completing a ride correctly frees exactly one seat, allowing a driver who dropped one rider off to immediately be eligible again as either an empty driver or still-occupied pooling candidate depending on remaining riders.",
+            "A pooled request when zero drivers are registered at all fails the same way as when every driver is full or detour-ineligible, both reported as NoDriverAvailableException."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "20. Complexity Analysis",
+          "content": "20. Complexity Analysis"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>requestRide:</strong> O(d) where d is the number of registered drivers, scanned to evaluate pooling eligibility and, if needed, the nearest empty driver.",
+            "<strong>completeRide / calculateFare:</strong> O(1).",
+            "<strong>Space:</strong> O(drivers + rides) held in memory."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "21. Database Design",
+          "content": "21. Database Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "A relational schema mirrors the in-memory model directly, with <strong>foreign keys enforcing referential integrity</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784925654798-775947721.png",
+          "metadata": {
+            "alt": "ER diagram: Driver and Ride"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "An index on Driver(currentRiders, capacity) speeds up scanning for drivers with spare seats.",
+            "Ride stores driverId as a foreign key, capturing the full assignment relationship for one trip."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "22. Improvements & Follow-Up Questions",
+          "content": "22. Improvements & Follow-Up Questions"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Move from straight-line distance to real road-network travel time for both matching and detour calculation.",
+            "Support pooling beyond two riders with a full multi-stop route representation.",
+            "Add mid-trip pooling opt-out with an automatic fare recalculation.",
+            "In a distributed deployment, shard driver tracking by geographic region rather than scanning every driver for every ride request."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Complete Code Implementation",
+          "content": "Complete Code Implementation"
+        },
+        {
+          "type": "paragraph",
+          "text": "RideType, RideStatus, Driver, Ride, and RideIdFactory:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Whether a ride is willing to share a driver with another rider.\nenum RideType { SOLO, POOLED }\n\n// Lifecycle status of a single ride.\nenum RideStatus { REQUESTED, MATCHED, COMPLETED }\n\n// A courier with a location, a capacity, and the active route of whoever they picked up first.\nclass Driver {\n    private final String driverId;   // unique id\n    private final double locationX;    // base x coordinate\n    private final double locationY;      // base y coordinate\n    private final int capacity;            // max concurrent riders this driver can carry\n    private int currentRiders;               // riders currently on board\n    private double activePickupX;              // reference route: first rider's pickup x\n    private double activePickupY;                 // reference route: first rider's pickup y\n    private double activeDropoffX;                   // reference route: first rider's dropoff x\n    private double activeDropoffY;                       // reference route: first rider's dropoff y\n\n    public Driver(String driverId, double locationX, double locationY, int capacity) {\n        this.driverId = driverId; // store id\n        this.locationX = locationX; // store base x\n        this.locationY = locationY;   // store base y\n        this.capacity = capacity;       // store capacity\n        this.currentRiders = 0;           // starts empty\n    }\n\n    public String getDriverId() { return driverId; }             // id getter\n    public double getLocationX() { return locationX; }              // base x getter\n    public double getLocationY() { return locationY; }                 // base y getter\n    public int getCapacity() { return capacity; }                        // capacity getter\n    public int getCurrentRiders() { return currentRiders; }                 // rider count getter\n    public boolean isEmpty() { return currentRiders == 0; }                    // true if carrying nobody\n    public boolean hasSpareSeat() { return currentRiders < capacity; }            // true if room for one more\n    public double getActivePickupX() { return activePickupX; }                       // reference pickup x getter\n    public double getActivePickupY() { return activePickupY; }                          // reference pickup y getter\n    public double getActiveDropoffX() { return activeDropoffX; }                           // reference dropoff x getter\n    public double getActiveDropoffY() { return activeDropoffY; }                              // reference dropoff y getter\n\n    public void assignFresh(double pickupX, double pickupY, double dropoffX, double dropoffY) {\n        this.activePickupX = pickupX;     // this becomes the reference route's pickup\n        this.activePickupY = pickupY;       // ...\n        this.activeDropoffX = dropoffX;       // and its dropoff\n        this.activeDropoffY = dropoffY;         // ...\n        this.currentRiders = 1;                   // now carrying one rider\n    }\n\n    public void addPooledRider() { currentRiders++; } // a second rider joins the existing reference route\n    public void removeRider() { currentRiders--; }       // a rider's trip completes, freeing a seat\n}\n\n// One rider's trip request, tracked through its lifecycle.\nclass Ride {\n    private final String rideId;         // unique id, e.g. RIDE1\n    private final String riderName;        // who requested it\n    private final double pickupX;             // pickup x coordinate\n    private final double pickupY;                // pickup y coordinate\n    private final double dropoffX;                  // dropoff x coordinate\n    private final double dropoffY;                     // dropoff y coordinate\n    private final RideType type;                          // solo or pooled\n    private String assignedDriverId;                         // which driver is carrying it, if any\n    private RideStatus status;                                 // current lifecycle state\n\n    public Ride(String rideId, String riderName, double pickupX, double pickupY, double dropoffX, double dropoffY, RideType type) {\n        this.rideId = rideId;               // store id\n        this.riderName = riderName;           // store rider\n        this.pickupX = pickupX;                 // store pickup x\n        this.pickupY = pickupY;                    // store pickup y\n        this.dropoffX = dropoffX;                     // store dropoff x\n        this.dropoffY = dropoffY;                        // store dropoff y\n        this.type = type;                                  // store type\n        this.status = RideStatus.REQUESTED;                    // starts requested, unmatched\n    }\n\n    public String getRideId() { return rideId; }                            // id getter\n    public String getRiderName() { return riderName; }                         // rider getter\n    public double getPickupX() { return pickupX; }                               // pickup x getter\n    public double getPickupY() { return pickupY; }                                  // pickup y getter\n    public double getDropoffX() { return dropoffX; }                                   // dropoff x getter\n    public double getDropoffY() { return dropoffY; }                                      // dropoff y getter\n    public RideType getType() { return type; }                                              // type getter\n    public String getAssignedDriverId() { return assignedDriverId; }                           // assigned driver getter\n    public void setAssignedDriverId(String driverId) { this.assignedDriverId = driverId; }        // assign a driver\n    public RideStatus getStatus() { return status; }                                                 // status getter\n    public void setStatus(RideStatus status) { this.status = status; }                                  // status setter\n}\n\n// Creates sequential, correctly-prefixed ids for rides.\nclass RideIdFactory {\n    private int rideCounter = 0; // running id counter\n\n    public String nextRideId() {\n        rideCounter++;                // bump id counter\n        return \"RIDE\" + rideCounter;    // e.g. RIDE1\n    }\n}",
+            "python": "from enum import Enum\n\n# Whether a ride is willing to share a driver with another rider.\nclass RideType(Enum):\n    SOLO = \"SOLO\"\n    POOLED = \"POOLED\"\n\n# Lifecycle status of a single ride.\nclass RideStatus(Enum):\n    REQUESTED = \"REQUESTED\"\n    MATCHED = \"MATCHED\"\n    COMPLETED = \"COMPLETED\"\n\n# A courier with a location, a capacity, and the active route of whoever they picked up first.\nclass Driver:\n    def __init__(self, driver_id, location_x, location_y, capacity):\n        self.driver_id = driver_id      # unique id\n        self.location_x = location_x      # base x coordinate\n        self.location_y = location_y        # base y coordinate\n        self.capacity = capacity              # max concurrent riders this driver can carry\n        self.current_riders = 0                 # starts empty\n        self.active_pickup_x = 0.0                 # reference route: first rider's pickup x\n        self.active_pickup_y = 0.0                    # reference route: first rider's pickup y\n        self.active_dropoff_x = 0.0                      # reference route: first rider's dropoff x\n        self.active_dropoff_y = 0.0                         # reference route: first rider's dropoff y\n\n    def is_empty(self):\n        return self.current_riders == 0  # true if carrying nobody\n\n    def has_spare_seat(self):\n        return self.current_riders < self.capacity  # true if room for one more\n\n    def assign_fresh(self, pickup_x, pickup_y, dropoff_x, dropoff_y):\n        self.active_pickup_x = pickup_x      # this becomes the reference route's pickup\n        self.active_pickup_y = pickup_y        # ...\n        self.active_dropoff_x = dropoff_x        # and its dropoff\n        self.active_dropoff_y = dropoff_y          # ...\n        self.current_riders = 1                      # now carrying one rider\n\n    def add_pooled_rider(self):\n        self.current_riders += 1  # a second rider joins the existing reference route\n\n    def remove_rider(self):\n        self.current_riders -= 1  # a rider's trip completes, freeing a seat\n\n# One rider's trip request, tracked through its lifecycle.\nclass Ride:\n    def __init__(self, ride_id, rider_name, pickup_x, pickup_y, dropoff_x, dropoff_y, ride_type):\n        self.ride_id = ride_id            # unique id, e.g. RIDE1\n        self.rider_name = rider_name        # who requested it\n        self.pickup_x = pickup_x              # pickup x coordinate\n        self.pickup_y = pickup_y                # pickup y coordinate\n        self.dropoff_x = dropoff_x                # dropoff x coordinate\n        self.dropoff_y = dropoff_y                  # dropoff y coordinate\n        self.type = ride_type                          # solo or pooled\n        self.assigned_driver_id = None                    # which driver is carrying it, if any\n        self.status = RideStatus.REQUESTED                   # starts requested, unmatched\n\n# Creates sequential, correctly-prefixed ids for rides.\nclass RideIdFactory:\n    def __init__(self):\n        self.ride_counter = 0  # running id counter\n\n    def next_ride_id(self):\n        self.ride_counter += 1  # bump id counter\n        return f\"RIDE{self.ride_counter}\"  # e.g. RIDE1",
+            "cpp": "#include <string>\nusing namespace std;\n\n// Whether a ride is willing to share a driver with another rider.\nenum class RideType { SOLO, POOLED };\n\n// Lifecycle status of a single ride.\nenum class RideStatus { REQUESTED, MATCHED, COMPLETED };\n\n// A courier with a location, a capacity, and the active route of whoever they picked up first.\nclass Driver {\npublic:\n    string driverId;        // unique id\n    double locationX;          // base x coordinate\n    double locationY;             // base y coordinate\n    int capacity;                    // max concurrent riders this driver can carry\n    int currentRiders;                  // riders currently on board\n    double activePickupX;                  // reference route: first rider's pickup x\n    double activePickupY;                     // reference route: first rider's pickup y\n    double activeDropoffX;                       // reference route: first rider's dropoff x\n    double activeDropoffY;                          // reference route: first rider's dropoff y\n\n    Driver() : locationX(0.0), locationY(0.0), capacity(0), currentRiders(0),\n               activePickupX(0.0), activePickupY(0.0), activeDropoffX(0.0), activeDropoffY(0.0) {}\n    Driver(string id, double x, double y, int cap)\n        : driverId(id), locationX(x), locationY(y), capacity(cap), currentRiders(0),\n          activePickupX(0.0), activePickupY(0.0), activeDropoffX(0.0), activeDropoffY(0.0) {}\n    // constructor stores id, base location, and capacity, starting empty\n\n    bool isEmpty() { return currentRiders == 0; }              // true if carrying nobody\n    bool hasSpareSeat() { return currentRiders < capacity; }      // true if room for one more\n\n    void assignFresh(double pickupX, double pickupY, double dropoffX, double dropoffY) {\n        activePickupX = pickupX;     // this becomes the reference route's pickup\n        activePickupY = pickupY;       // ...\n        activeDropoffX = dropoffX;       // and its dropoff\n        activeDropoffY = dropoffY;          // ...\n        currentRiders = 1;                     // now carrying one rider\n    }\n\n    void addPooledRider() { currentRiders++; } // a second rider joins the existing reference route\n    void removeRider() { currentRiders--; }       // a rider's trip completes, freeing a seat\n};\n\n// One rider's trip request, tracked through its lifecycle.\nclass Ride {\npublic:\n    string rideId;              // unique id, e.g. RIDE1\n    string riderName;              // who requested it\n    double pickupX;                   // pickup x coordinate\n    double pickupY;                      // pickup y coordinate\n    double dropoffX;                        // dropoff x coordinate\n    double dropoffY;                           // dropoff y coordinate\n    RideType type;                                // solo or pooled\n    string assignedDriverId;                         // which driver is carrying it, if any\n    RideStatus status;                                  // current lifecycle state\n\n    Ride() : pickupX(0.0), pickupY(0.0), dropoffX(0.0), dropoffY(0.0), type(RideType::SOLO), status(RideStatus::REQUESTED) {}\n    Ride(string id, string rider, double pX, double pY, double dX, double dY, RideType t)\n        : rideId(id), riderName(rider), pickupX(pX), pickupY(pY), dropoffX(dX), dropoffY(dY), type(t), status(RideStatus::REQUESTED) {}\n    // constructor stores every field and starts the ride as REQUESTED\n};\n\n// Creates sequential, correctly-prefixed ids for rides.\nclass RideIdFactory {\n    int rideCounter = 0; // running id counter\n\npublic:\n    string nextRideId() {\n        rideCounter++;                    // bump id counter\n        return \"RIDE\" + to_string(rideCounter); // e.g. RIDE1\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "MatchingStrategy, DirectMatchingStrategy, PooledMatchingStrategy, RideObserver and ConsoleRideObserver:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Reusable straight line distance helper.\nclass DistanceUtil {\n    public static double distance(double x1, double y1, double x2, double y2) {\n        double dx = x2-x1;               // x difference\n        double dy = y2-y1;                  // y difference\n        return Math.sqrt(dx * dx + dy * dy);  // Euclidean distance\n    }\n}\n\n// Strategy interface: how a driver is chosen for a ride request.\ninterface MatchingStrategy {\n    Driver findDriver(Ride ride, java.util.Collection<Driver> drivers); // returns the chosen driver, or null if none qualifies\n}\n\n// Only matches empty drivers, never shares a ride, choosing the nearest one to the pickup.\nclass DirectMatchingStrategy implements MatchingStrategy {\n    @Override\n    public Driver findDriver(Ride ride, java.util.Collection<Driver> drivers) {\n        Driver best = null;                                                    // best empty candidate found so far\n        double bestDistance = Double.MAX_VALUE;                                    // distance of the best candidate\n        for (Driver driver : drivers) {                                               // scan every registered driver\n            if (!driver.isEmpty()) continue;                                             // solo never shares, skip occupied drivers\n            double distance = DistanceUtil.distance(driver.getLocationX(), driver.getLocationY(), ride.getPickupX(), ride.getPickupY());\n            if (distance < bestDistance) {                                                   // closer than anything seen so far\n                bestDistance = distance;                                                        // remember the new best distance\n                best = driver;                                                                    // remember the new best driver\n            }\n        }\n        return best; // the nearest empty driver, or null if none exist\n    }\n}\n\n// Tries a detour constrained insertion into an occupied driver first, falls back to the nearest empty driver.\nclass PooledMatchingStrategy implements MatchingStrategy {\n    private final double maxDetourDistance; // how much extra distance a pooling insertion may add\n\n    public PooledMatchingStrategy(double maxDetourDistance) {\n        this.maxDetourDistance = maxDetourDistance; // store the detour tolerance\n    }\n\n    // Computes the extra distance inserting this ride into the driver's existing route would add.\n    public double computeDetour(Driver driver, Ride ride) {\n        double originalDistance = DistanceUtil.distance(driver.getActivePickupX(), driver.getActivePickupY(), driver.getActiveDropoffX(), driver.getActiveDropoffY());\n        double toNewPickup = DistanceUtil.distance(driver.getActivePickupX(), driver.getActivePickupY(), ride.getPickupX(), ride.getPickupY());\n        double acrossNewRide = DistanceUtil.distance(ride.getPickupX(), ride.getPickupY(), ride.getDropoffX(), ride.getDropoffY());\n        double toOriginalDropoff = DistanceUtil.distance(ride.getDropoffX(), ride.getDropoffY(), driver.getActiveDropoffX(), driver.getActiveDropoffY());\n        double newDistance = toNewPickup + acrossNewRide + toOriginalDropoff; // full route with the insertion\n        return newDistance-originalDistance; // the extra distance this insertion would add\n    }\n\n    @Override\n    public Driver findDriver(Ride ride, java.util.Collection<Driver> drivers) {\n        Driver bestPoolCandidate = null;                                          // best occupied candidate found so far\n        double bestDetour = Double.MAX_VALUE;                                        // detour of the best candidate\n        for (Driver driver : drivers) {                                                 // scan every registered driver\n            if (driver.isEmpty() || !driver.hasSpareSeat()) continue;                      // only consider occupied drivers with room\n            double detour = computeDetour(driver, ride);                                     // extra distance this insertion would add\n            if (detour <= maxDetourDistance && detour < bestDetour) {                           // within tolerance and better than seen so far\n                bestDetour = detour;                                                               // remember the new best detour\n                bestPoolCandidate = driver;                                                           // remember the new best pool candidate\n            }\n        }\n        if (bestPoolCandidate != null) return bestPoolCandidate; // a pooling opportunity qualified\n        return new DirectMatchingStrategy().findDriver(ride, drivers); // otherwise fall back to the nearest empty driver\n    }\n}\n\n// Observer interface: reacts to ride lifecycle events.\ninterface RideObserver {\n    void onRideMatched(Ride ride, Driver driver);         // a ride was successfully matched\n    void onMatchFailed(String rideId, String reason);        // a match attempt found no driver\n    void onRideCompleted(Ride ride);                            // a ride finished\n}\n\n// Simple observer that prints events to the console.\nclass ConsoleRideObserver implements RideObserver {\n    @Override\n    public void onRideMatched(Ride ride, Driver driver) {\n        System.out.println(\"Ride \" + ride.getRideId() + \" matched to \" + driver.getDriverId() + \", riders now \" + driver.getCurrentRiders());\n    }\n\n    @Override\n    public void onMatchFailed(String rideId, String reason) {\n        System.out.println(\"Match failed for \" + rideId + \": \" + reason);\n    }\n\n    @Override\n    public void onRideCompleted(Ride ride) {\n        System.out.println(\"Ride \" + ride.getRideId() + \" completed\");\n    }\n}",
+            "python": "import math\n\n# Reusable straight line distance helper.\ndef distance(x1, y1, x2, y2):\n    dx = x2-x1  # x difference\n    dy = y2-y1  # y difference\n    return math.sqrt(dx * dx + dy * dy)  # Euclidean distance\n\n# Strategy interface: how a driver is chosen for a ride request.\nclass MatchingStrategy:\n    def find_driver(self, ride, drivers): raise NotImplementedError\n\n# Only matches empty drivers, never shares a ride, choosing the nearest one to the pickup.\nclass DirectMatchingStrategy(MatchingStrategy):\n    def find_driver(self, ride, drivers):\n        best = None                     # best empty candidate found so far\n        best_distance = float(\"inf\")      # distance of the best candidate\n        for driver in drivers:              # scan every registered driver\n            if not driver.is_empty():\n                continue  # solo never shares, skip occupied drivers\n            d = distance(driver.location_x, driver.location_y, ride.pickup_x, ride.pickup_y)\n            if d < best_distance:  # closer than anything seen so far\n                best_distance = d  # remember the new best distance\n                best = driver  # remember the new best driver\n        return best  # the nearest empty driver, or None if none exist\n\n# Tries a detour constrained insertion into an occupied driver first, falls back to the nearest empty driver.\nclass PooledMatchingStrategy(MatchingStrategy):\n    def __init__(self, max_detour_distance):\n        self.max_detour_distance = max_detour_distance  # how much extra distance a pooling insertion may add\n\n    def compute_detour(self, driver, ride):\n        original_distance = distance(driver.active_pickup_x, driver.active_pickup_y, driver.active_dropoff_x, driver.active_dropoff_y)\n        to_new_pickup = distance(driver.active_pickup_x, driver.active_pickup_y, ride.pickup_x, ride.pickup_y)\n        across_new_ride = distance(ride.pickup_x, ride.pickup_y, ride.dropoff_x, ride.dropoff_y)\n        to_original_dropoff = distance(ride.dropoff_x, ride.dropoff_y, driver.active_dropoff_x, driver.active_dropoff_y)\n        new_distance = to_new_pickup + across_new_ride + to_original_dropoff  # full route with the insertion\n        return new_distance-original_distance  # the extra distance this insertion would add\n\n    def find_driver(self, ride, drivers):\n        best_pool_candidate = None      # best occupied candidate found so far\n        best_detour = float(\"inf\")        # detour of the best candidate\n        for driver in drivers:               # scan every registered driver\n            if driver.is_empty() or not driver.has_spare_seat():\n                continue  # only consider occupied drivers with room\n            detour = self.compute_detour(driver, ride)  # extra distance this insertion would add\n            if detour <= self.max_detour_distance and detour < best_detour:  # within tolerance and better than seen so far\n                best_detour = detour  # remember the new best detour\n                best_pool_candidate = driver  # remember the new best pool candidate\n        if best_pool_candidate is not None:\n            return best_pool_candidate  # a pooling opportunity qualified\n        return DirectMatchingStrategy().find_driver(ride, drivers)  # otherwise fall back to the nearest empty driver\n\n# Observer interface: reacts to ride lifecycle events.\nclass RideObserver:\n    def on_ride_matched(self, ride, driver): raise NotImplementedError\n    def on_match_failed(self, ride_id, reason): raise NotImplementedError\n    def on_ride_completed(self, ride): raise NotImplementedError\n\n# Simple observer that prints events to the console.\nclass ConsoleRideObserver(RideObserver):\n    def on_ride_matched(self, ride, driver):\n        print(f\"Ride {ride.ride_id} matched to {driver.driver_id}, riders now {driver.current_riders}\")\n\n    def on_match_failed(self, ride_id, reason):\n        print(f\"Match failed for {ride_id}: {reason}\")\n\n    def on_ride_completed(self, ride):\n        print(f\"Ride {ride.ride_id} completed\")",
+            "cpp": "#include <string>\n#include <vector>\n#include <cmath>\n#include <memory>\n#include <iostream>\nusing namespace std;\n\n// Reusable straight line distance helper.\ndouble distanceBetween(double x1, double y1, double x2, double y2) {\n    double dx = x2-x1;               // x difference\n    double dy = y2-y1;                  // y difference\n    return sqrt(dx * dx + dy * dy);       // Euclidean distance\n}\n\n// Strategy interface: how a driver is chosen for a ride request.\nclass MatchingStrategy {\npublic:\n    virtual Driver* findDriver(Ride& ride, vector<Driver*>& drivers) = 0;\n    virtual ~MatchingStrategy() {}\n};\n\n// Only matches empty drivers, never shares a ride, choosing the nearest one to the pickup.\nclass DirectMatchingStrategy : public MatchingStrategy {\npublic:\n    Driver* findDriver(Ride& ride, vector<Driver*>& drivers) override {\n        Driver* best = nullptr;                                                  // best empty candidate found so far\n        double bestDistance = 1e18;                                                 // distance of the best candidate\n        for (auto* driver : drivers) {                                                 // scan every registered driver\n            if (!driver->isEmpty()) continue;                                             // solo never shares, skip occupied drivers\n            double d = distanceBetween(driver->locationX, driver->locationY, ride.pickupX, ride.pickupY);\n            if (d < bestDistance) {                                                          // closer than anything seen so far\n                bestDistance = d;                                                               // remember the new best distance\n                best = driver;                                                                    // remember the new best driver\n            }\n        }\n        return best; // the nearest empty driver, or nullptr if none exist\n    }\n};\n\n// Tries a detour constrained insertion into an occupied driver first, falls back to the nearest empty driver.\nclass PooledMatchingStrategy : public MatchingStrategy {\n    double maxDetourDistance; // how much extra distance a pooling insertion may add\n\npublic:\n    PooledMatchingStrategy(double maxDetour) : maxDetourDistance(maxDetour) {} // store the detour tolerance\n\n    double computeDetour(Driver& driver, Ride& ride) {\n        double originalDistance = distanceBetween(driver.activePickupX, driver.activePickupY, driver.activeDropoffX, driver.activeDropoffY);\n        double toNewPickup = distanceBetween(driver.activePickupX, driver.activePickupY, ride.pickupX, ride.pickupY);\n        double acrossNewRide = distanceBetween(ride.pickupX, ride.pickupY, ride.dropoffX, ride.dropoffY);\n        double toOriginalDropoff = distanceBetween(ride.dropoffX, ride.dropoffY, driver.activeDropoffX, driver.activeDropoffY);\n        double newDistance = toNewPickup + acrossNewRide + toOriginalDropoff; // full route with the insertion\n        return newDistance-originalDistance; // the extra distance this insertion would add\n    }\n\n    Driver* findDriver(Ride& ride, vector<Driver*>& drivers) override {\n        Driver* bestPoolCandidate = nullptr;                                       // best occupied candidate found so far\n        double bestDetour = 1e18;                                                     // detour of the best candidate\n        for (auto* driver : drivers) {                                                   // scan every registered driver\n            if (driver->isEmpty() || !driver->hasSpareSeat()) continue;                     // only consider occupied drivers with room\n            double detour = computeDetour(*driver, ride);                                     // extra distance this insertion would add\n            if (detour <= maxDetourDistance && detour < bestDetour) {                            // within tolerance and better than seen so far\n                bestDetour = detour;                                                                // remember the new best detour\n                bestPoolCandidate = driver;                                                            // remember the new best pool candidate\n            }\n        }\n        if (bestPoolCandidate != nullptr) return bestPoolCandidate; // a pooling opportunity qualified\n        DirectMatchingStrategy direct;                                    // otherwise fall back to the nearest empty driver\n        return direct.findDriver(ride, drivers);\n    }\n};\n\n// Observer interface: reacts to ride lifecycle events.\nclass RideObserver {\npublic:\n    virtual void onRideMatched(const Ride& ride, const Driver& driver) = 0;\n    virtual void onMatchFailed(const string& rideId, const string& reason) = 0;\n    virtual void onRideCompleted(const Ride& ride) = 0;\n    virtual ~RideObserver() {}\n};\n\n// Simple observer that prints events to the console.\nclass ConsoleRideObserver : public RideObserver {\npublic:\n    void onRideMatched(const Ride& ride, const Driver& driver) override {\n        cout << \"Ride \" << ride.rideId << \" matched to \" << driver.driverId << \", riders now \" << driver.currentRiders << endl;\n    }\n    void onMatchFailed(const string& rideId, const string& reason) override {\n        cout << \"Match failed for \" << rideId << \": \" << reason << endl;\n    }\n    void onRideCompleted(const Ride& ride) override {\n        cout << \"Ride \" << ride.rideId << \" completed\" << endl;\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "RideDispatchService, including requestRide, poolManually, calculateFare and completeRide:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Custom exceptions for the realistic failure modes.\nclass NoDriverAvailableException extends RuntimeException {\n    public NoDriverAvailableException(String msg) { super(msg); }\n}\nclass InvalidRideStateException extends RuntimeException {\n    public InvalidRideStateException(String msg) { super(msg); }\n}\nclass DetourLimitExceededException extends RuntimeException {\n    public DetourLimitExceededException(String msg) { super(msg); }\n}\n\n// The core ride matching engine tying every piece together.\nclass RideDispatchService {\n    private static final double BASE_FARE = 5.0;                                                     // flat fare component\n    private static final double PER_KM_RATE = 2.0;                                                       // distance based fare component\n    private static final double POOL_DISCOUNT = 0.8;                                                        // multiplier applied when a ride ends up shared\n    private final java.util.Map<String, Driver> drivers = new java.util.HashMap<>();                          // driverId -> Driver\n    private final java.util.Map<String, Ride> rides = new java.util.HashMap<>();                                 // rideId -> Ride\n    private final PooledMatchingStrategy pooledMatchingStrategy;                                                    // shared instance, so its detour limit is reused\n    private final java.util.List<RideObserver> observers = new java.util.ArrayList<>();                               // listeners\n\n    public RideDispatchService(double maxDetourDistance) {\n        this.pooledMatchingStrategy = new PooledMatchingStrategy(maxDetourDistance); // configure the detour tolerance once\n    }\n\n    public void addDriver(Driver driver) { drivers.put(driver.getDriverId(), driver); } // register a driver\n    public void addObserver(RideObserver observer) { observers.add(observer); }            // register a listener\n\n    private MatchingStrategy strategyFor(RideType type) {\n        return type == RideType.SOLO ? new DirectMatchingStrategy() : pooledMatchingStrategy; // solo never pools, pooled tries to\n    }\n\n    // Matches a new ride request using the strategy appropriate to its type.\n    public synchronized Ride requestRide(String riderName, double pickupX, double pickupY, double dropoffX, double dropoffY, RideType type, RideIdFactory factory) {\n        String rideId = factory.nextRideId();                                             // build id\n        Ride ride = new Ride(rideId, riderName, pickupX, pickupY, dropoffX, dropoffY, type);  // build the ride\n        rides.put(rideId, ride);                                                               // register it\n        MatchingStrategy strategy = strategyFor(type);                                           // pick the matching algorithm for this type\n        Driver driver = strategy.findDriver(ride, drivers.values());                               // ask it for a driver\n        if (driver == null) {                                                                        // nobody qualifies\n            for (RideObserver obs : observers) obs.onMatchFailed(rideId, \"No driver available\");\n            throw new NoDriverAvailableException(\"No driver available for ride \" + rideId);\n        }\n        if (driver.isEmpty()) driver.assignFresh(pickupX, pickupY, dropoffX, dropoffY); // this driver's first rider defines the reference route\n        else driver.addPooledRider();                                                     // otherwise this rider joins the existing reference route\n        ride.setAssignedDriverId(driver.getDriverId());                                     // record the assignment\n        ride.setStatus(RideStatus.MATCHED);                                                   // advance the lifecycle\n        for (RideObserver obs : observers) obs.onRideMatched(ride, driver);                      // notify\n        return ride; // hand back the now-matched ride\n    }\n\n    // Directly attempts to pool a ride onto a specific driver, still detour-checked.\n    public synchronized Ride poolManually(String rideId, String driverId, RideIdFactory factory) {\n        Ride ride = rides.get(rideId);                                                // the ride to pool\n        Driver driver = drivers.get(driverId);                                           // the requested driver\n        if (driver.isEmpty() || !driver.hasSpareSeat()) {                                   // must already be occupied with room, or this is not a pooling case\n            throw new DetourLimitExceededException(\"Driver \" + driverId + \" is not a valid pooling target\");\n        }\n        double detour = pooledMatchingStrategy.computeDetour(driver, ride);                    // extra distance this insertion would add\n        if (detour > pooledMatchingStrategy.maxDetourDistance) {\n            throw new DetourLimitExceededException(\"Pooling onto \" + driverId + \" would add a detour of \" + detour);\n        }\n        driver.addPooledRider();                                                                 // this rider joins the existing reference route\n        ride.setAssignedDriverId(driverId);                                                         // record the assignment\n        ride.setStatus(RideStatus.MATCHED);                                                           // advance the lifecycle\n        for (RideObserver obs : observers) obs.onRideMatched(ride, driver);                              // notify\n        return ride; // hand back the now-matched ride\n    }\n\n    // Computes the price for a ride, applying the pooled discount if the ride's driver currently carries more than one rider.\n    public double calculateFare(String rideId) {\n        Ride ride = rides.get(rideId);                                                    // the ride to price\n        Driver driver = drivers.get(ride.getAssignedDriverId());                              // its assigned driver\n        double distance = DistanceUtil.distance(ride.getPickupX(), ride.getPickupY(), ride.getDropoffX(), ride.getDropoffY()); // direct trip distance\n        double fare = BASE_FARE + PER_KM_RATE * distance;                                         // base plus distance based component\n        if (driver.getCurrentRiders() > 1) fare *= POOL_DISCOUNT;                                     // apply the pooled discount if actually shared\n        return fare; // the computed price\n    }\n\n    // Transitions a matched ride to completed, freeing its driver's occupied seat.\n    public Ride completeRide(String rideId) {\n        Ride ride = rides.get(rideId);                                        // the ride to complete\n        if (ride.getStatus() != RideStatus.MATCHED) {                            // must currently be matched\n            throw new InvalidRideStateException(\"Ride \" + rideId + \" is not matched, cannot be completed\");\n        }\n        Driver driver = drivers.get(ride.getAssignedDriverId());                    // its assigned driver\n        driver.removeRider();                                                          // free up their seat\n        ride.setStatus(RideStatus.COMPLETED);                                            // advance the lifecycle\n        for (RideObserver obs : observers) obs.onRideCompleted(ride);                       // notify\n        return ride; // hand back the updated ride\n    }\n}",
+            "python": "# Custom exceptions for the realistic failure modes.\nclass NoDriverAvailableException(Exception): pass\nclass InvalidRideStateException(Exception): pass\nclass DetourLimitExceededException(Exception): pass\n\n# The core ride matching engine tying every piece together.\nclass RideDispatchService:\n    BASE_FARE = 5.0        # flat fare component\n    PER_KM_RATE = 2.0        # distance based fare component\n    POOL_DISCOUNT = 0.8        # multiplier applied when a ride ends up shared\n\n    def __init__(self, max_detour_distance):\n        self.drivers = {}    # driverId -> Driver\n        self.rides = {}         # rideId -> Ride\n        self.pooled_matching_strategy = PooledMatchingStrategy(max_detour_distance)  # shared instance, so its detour limit is reused\n        self.observers = []                                                              # listeners\n\n    def add_driver(self, driver):\n        self.drivers[driver.driver_id] = driver  # register a driver\n\n    def add_observer(self, observer):\n        self.observers.append(observer)  # register a listener\n\n    def _strategy_for(self, ride_type):\n        return DirectMatchingStrategy() if ride_type == RideType.SOLO else self.pooled_matching_strategy  # solo never pools, pooled tries to\n\n    def request_ride(self, rider_name, pickup_x, pickup_y, dropoff_x, dropoff_y, ride_type, factory):\n        ride_id = factory.next_ride_id()  # build id\n        ride = Ride(ride_id, rider_name, pickup_x, pickup_y, dropoff_x, dropoff_y, ride_type)  # build the ride\n        self.rides[ride_id] = ride  # register it\n        strategy = self._strategy_for(ride_type)  # pick the matching algorithm for this type\n        driver = strategy.find_driver(ride, self.drivers.values())  # ask it for a driver\n        if driver is None:  # nobody qualifies\n            for obs in self.observers:\n                obs.on_match_failed(ride_id, \"No driver available\")\n            raise NoDriverAvailableException(f\"No driver available for ride {ride_id}\")\n        if driver.is_empty():\n            driver.assign_fresh(pickup_x, pickup_y, dropoff_x, dropoff_y)  # this driver's first rider defines the reference route\n        else:\n            driver.add_pooled_rider()  # otherwise this rider joins the existing reference route\n        ride.assigned_driver_id = driver.driver_id  # record the assignment\n        ride.status = RideStatus.MATCHED  # advance the lifecycle\n        for obs in self.observers:\n            obs.on_ride_matched(ride, driver)  # notify\n        return ride  # hand back the now-matched ride\n\n    def pool_manually(self, ride_id, driver_id, factory):\n        ride = self.rides[ride_id]  # the ride to pool\n        driver = self.drivers[driver_id]  # the requested driver\n        if driver.is_empty() or not driver.has_spare_seat():  # must already be occupied with room, or this is not a pooling case\n            raise DetourLimitExceededException(f\"Driver {driver_id} is not a valid pooling target\")\n        detour = self.pooled_matching_strategy.compute_detour(driver, ride)  # extra distance this insertion would add\n        if detour > self.pooled_matching_strategy.max_detour_distance:\n            raise DetourLimitExceededException(f\"Pooling onto {driver_id} would add a detour of {detour}\")\n        driver.add_pooled_rider()  # this rider joins the existing reference route\n        ride.assigned_driver_id = driver_id  # record the assignment\n        ride.status = RideStatus.MATCHED  # advance the lifecycle\n        for obs in self.observers:\n            obs.on_ride_matched(ride, driver)  # notify\n        return ride  # hand back the now-matched ride\n\n    def calculate_fare(self, ride_id):\n        ride = self.rides[ride_id]  # the ride to price\n        driver = self.drivers[ride.assigned_driver_id]  # its assigned driver\n        trip_distance = distance(ride.pickup_x, ride.pickup_y, ride.dropoff_x, ride.dropoff_y)  # direct trip distance\n        fare = RideDispatchService.BASE_FARE + RideDispatchService.PER_KM_RATE * trip_distance  # base plus distance based component\n        if driver.current_riders > 1:\n            fare *= RideDispatchService.POOL_DISCOUNT  # apply the pooled discount if actually shared\n        return fare  # the computed price\n\n    def complete_ride(self, ride_id):\n        ride = self.rides[ride_id]  # the ride to complete\n        if ride.status != RideStatus.MATCHED:  # must currently be matched\n            raise InvalidRideStateException(f\"Ride {ride_id} is not matched, cannot be completed\")\n        driver = self.drivers[ride.assigned_driver_id]  # its assigned driver\n        driver.remove_rider()  # free up their seat\n        ride.status = RideStatus.COMPLETED  # advance the lifecycle\n        for obs in self.observers:\n            obs.on_ride_completed(ride)  # notify\n        return ride  # hand back the updated ride",
+            "cpp": "#include <string>\n#include <vector>\n#include <map>\n#include <memory>\n#include <stdexcept>\nusing namespace std;\n\n// Custom exceptions for the realistic failure modes.\nclass NoDriverAvailableException : public runtime_error {\npublic: NoDriverAvailableException(const string& msg) : runtime_error(msg) {}\n};\nclass InvalidRideStateException : public runtime_error {\npublic: InvalidRideStateException(const string& msg) : runtime_error(msg) {}\n};\nclass DetourLimitExceededException : public runtime_error {\npublic: DetourLimitExceededException(const string& msg) : runtime_error(msg) {}\n};\n\n// The core ride matching engine tying every piece together.\nclass RideDispatchService {\n    static constexpr double BASE_FARE = 5.0;             // flat fare component\n    static constexpr double PER_KM_RATE = 2.0;              // distance based fare component\n    static constexpr double POOL_DISCOUNT = 0.8;               // multiplier applied when a ride ends up shared\n    map<string, Driver> drivers;                                  // driverId -> Driver\n    map<string, Ride> rides;                                         // rideId -> Ride\n    PooledMatchingStrategy pooledMatchingStrategy;                      // shared instance, so its detour limit is reused\n    vector<shared_ptr<RideObserver>> observers;                            // listeners\n\n    shared_ptr<MatchingStrategy> strategyFor(RideType type) {\n        if (type == RideType::SOLO) return make_shared<DirectMatchingStrategy>(); // solo never pools\n        return shared_ptr<MatchingStrategy>(&pooledMatchingStrategy, [](MatchingStrategy*){}); // pooled reuses the shared instance, no-op deleter since it is not heap owned\n    }\n\npublic:\n    RideDispatchService(double maxDetourDistance) : pooledMatchingStrategy(maxDetourDistance) {} // configure the detour tolerance once\n\n    void addDriver(Driver driver) { drivers[driver.driverId] = driver; }        // register a driver\n    void addObserver(shared_ptr<RideObserver> observer) { observers.push_back(observer); } // register a listener\n\n    Ride requestRide(string riderName, double pickupX, double pickupY, double dropoffX, double dropoffY, RideType type, RideIdFactory& factory) {\n        string rideId = factory.nextRideId();                                                // build id\n        Ride ride(rideId, riderName, pickupX, pickupY, dropoffX, dropoffY, type);               // build the ride\n        rides[rideId] = ride;                                                                      // register it\n        auto strategy = strategyFor(type);                                                           // pick the matching algorithm for this type\n        vector<Driver*> pointers;                                                                        // strategy needs pointers so it can mutate occupancy\n        for (auto& pair : drivers) pointers.push_back(&pair.second);                                        // collect every registered driver\n        Driver* driver = strategy->findDriver(ride, pointers);                                                // ask it for a driver\n        if (driver == nullptr) {                                                                                // nobody qualifies\n            for (auto& obs : observers) obs->onMatchFailed(rideId, \"No driver available\");\n            throw NoDriverAvailableException(\"No driver available for ride \" + rideId);\n        }\n        if (driver->isEmpty()) driver->assignFresh(pickupX, pickupY, dropoffX, dropoffY); // this driver's first rider defines the reference route\n        else driver->addPooledRider();                                                      // otherwise this rider joins the existing reference route\n        Ride& storedRide = rides.at(rideId);                                                  // work against the stored copy\n        storedRide.assignedDriverId = driver->driverId;                                          // record the assignment\n        storedRide.status = RideStatus::MATCHED;                                                    // advance the lifecycle\n        for (auto& obs : observers) obs->onRideMatched(storedRide, *driver);                           // notify\n        return storedRide; // hand back the now-matched ride\n    }\n\n    Ride poolManually(string rideId, string driverId, RideIdFactory& factory) {\n        Ride& ride = rides.at(rideId);                                                // the ride to pool\n        Driver& driver = drivers.at(driverId);                                           // the requested driver\n        if (driver.isEmpty() || !driver.hasSpareSeat()) {                                   // must already be occupied with room, or this is not a pooling case\n            throw DetourLimitExceededException(\"Driver \" + driverId + \" is not a valid pooling target\");\n        }\n        double detour = pooledMatchingStrategy.computeDetour(driver, ride);                    // extra distance this insertion would add\n        if (detour > pooledMatchingStrategy.getMaxDetourDistance()) {\n            throw DetourLimitExceededException(\"Pooling onto \" + driverId + \" would add a detour of \" + to_string(detour));\n        }\n        driver.addPooledRider();                                                                 // this rider joins the existing reference route\n        ride.assignedDriverId = driverId;                                                           // record the assignment\n        ride.status = RideStatus::MATCHED;                                                            // advance the lifecycle\n        for (auto& obs : observers) obs->onRideMatched(ride, driver);                                    // notify\n        return ride; // hand back the now-matched ride\n    }\n\n    double calculateFare(string rideId) {\n        Ride& ride = rides.at(rideId);                                                    // the ride to price\n        Driver& driver = drivers.at(ride.assignedDriverId);                                   // its assigned driver\n        double tripDistance = distanceBetween(ride.pickupX, ride.pickupY, ride.dropoffX, ride.dropoffY); // direct trip distance\n        double fare = BASE_FARE + PER_KM_RATE * tripDistance;                                       // base plus distance based component\n        if (driver.currentRiders > 1) fare *= POOL_DISCOUNT;                                            // apply the pooled discount if actually shared\n        return fare; // the computed price\n    }\n\n    Ride completeRide(string rideId) {\n        Ride& ride = rides.at(rideId);                                        // the ride to complete\n        if (ride.status != RideStatus::MATCHED) {                                // must currently be matched\n            throw InvalidRideStateException(\"Ride \" + rideId + \" is not matched, cannot be completed\");\n        }\n        Driver& driver = drivers.at(ride.assignedDriverId);                        // its assigned driver\n        driver.removeRider();                                                         // free up their seat\n        ride.status = RideStatus::COMPLETED;                                             // advance the lifecycle\n        for (auto& obs : observers) obs->onRideCompleted(ride);                             // notify\n        return ride; // hand back the updated ride\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Complete, self-contained, directly runnable file (every class above combined into one file per language, exactly as you would actually copy, compile and run it), demonstrating a fresh assignment, a successful pooled match, a solo rejection when only an occupied driver remains, a manual pooling rejection for exceeding the detour limit, and fare calculation with the pooled discount applied:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        RideDispatchService service = new RideDispatchService(3.0);\n        service.addObserver(new ConsoleRideObserver());\n        RideIdFactory factory = new RideIdFactory();\n\n        Driver d1 = new Driver(\"D1\", 0.0, 0.0, 2);\n        Driver d2 = new Driver(\"D2\", 10.0, 10.0, 2);\n        service.addDriver(d1);\n        service.addDriver(d2);\n\n        Ride alice = service.requestRide(\"Alice\", 1.0, 1.0, 3.0, 3.0, RideType.POOLED, factory);\n        Ride bob = service.requestRide(\"Bob\", 2.0, 2.0, 4.0, 2.0, RideType.POOLED, factory);\n        Ride carol = service.requestRide(\"Carol\", 11.0, 11.0, 13.0, 13.0, RideType.POOLED, factory);\n\n        try {\n            service.requestRide(\"Dave\", 10.5, 10.5, 12.0, 12.0, RideType.SOLO, factory);\n        } catch (NoDriverAvailableException e) {\n            System.out.println(\"Caught expected: \" + e.getMessage());\n        }\n\n        System.out.println(\"Alice fare: \" + service.calculateFare(alice.getRideId()));\n        System.out.println(\"Bob fare: \" + service.calculateFare(bob.getRideId()));\n        System.out.println(\"Carol fare: \" + service.calculateFare(carol.getRideId()));\n\n        Driver d3 = new Driver(\"D3\", 50.0, 50.0, 2);\n        service.addDriver(d3);\n\n        Ride eve = service.requestRide(\"Eve\", 50.0, 50.0, 60.0, 60.0, RideType.POOLED, factory);\n        try {\n            service.poolManually(eve.getRideId(), \"D2\", factory);\n        } catch (DetourLimitExceededException e) {\n            System.out.println(\"Caught expected: detour limit exceeded\");\n        }\n\n        service.completeRide(alice.getRideId());\n    }\n}\n\nenum RideType { SOLO, POOLED }\nenum RideStatus { REQUESTED, MATCHED, COMPLETED }\n\nclass Driver {\n    private final String driverId;\n    private final double locationX;\n    private final double locationY;\n    private final int capacity;\n    private int currentRiders;\n    private double activePickupX;\n    private double activePickupY;\n    private double activeDropoffX;\n    private double activeDropoffY;\n\n    public Driver(String driverId, double locationX, double locationY, int capacity) {\n        this.driverId = driverId;\n        this.locationX = locationX;\n        this.locationY = locationY;\n        this.capacity = capacity;\n        this.currentRiders = 0;\n    }\n\n    public String getDriverId() { return driverId; }\n    public double getLocationX() { return locationX; }\n    public double getLocationY() { return locationY; }\n    public int getCapacity() { return capacity; }\n    public int getCurrentRiders() { return currentRiders; }\n    public boolean isEmpty() { return currentRiders == 0; }\n    public boolean hasSpareSeat() { return currentRiders < capacity; }\n    public double getActivePickupX() { return activePickupX; }\n    public double getActivePickupY() { return activePickupY; }\n    public double getActiveDropoffX() { return activeDropoffX; }\n    public double getActiveDropoffY() { return activeDropoffY; }\n\n    public void assignFresh(double pickupX, double pickupY, double dropoffX, double dropoffY) {\n        this.activePickupX = pickupX;\n        this.activePickupY = pickupY;\n        this.activeDropoffX = dropoffX;\n        this.activeDropoffY = dropoffY;\n        this.currentRiders = 1;\n    }\n\n    public void addPooledRider() { currentRiders++; }\n    public void removeRider() { currentRiders--; }\n}\n\nclass Ride {\n    private final String rideId;\n    private final String riderName;\n    private final double pickupX;\n    private final double pickupY;\n    private final double dropoffX;\n    private final double dropoffY;\n    private final RideType type;\n    private String assignedDriverId;\n    private RideStatus status;\n\n    public Ride(String rideId, String riderName, double pickupX, double pickupY, double dropoffX, double dropoffY, RideType type) {\n        this.rideId = rideId;\n        this.riderName = riderName;\n        this.pickupX = pickupX;\n        this.pickupY = pickupY;\n        this.dropoffX = dropoffX;\n        this.dropoffY = dropoffY;\n        this.type = type;\n        this.status = RideStatus.REQUESTED;\n    }\n\n    public String getRideId() { return rideId; }\n    public String getRiderName() { return riderName; }\n    public double getPickupX() { return pickupX; }\n    public double getPickupY() { return pickupY; }\n    public double getDropoffX() { return dropoffX; }\n    public double getDropoffY() { return dropoffY; }\n    public RideType getType() { return type; }\n    public String getAssignedDriverId() { return assignedDriverId; }\n    public void setAssignedDriverId(String driverId) { this.assignedDriverId = driverId; }\n    public RideStatus getStatus() { return status; }\n    public void setStatus(RideStatus status) { this.status = status; }\n}\n\nclass RideIdFactory {\n    private int rideCounter = 0;\n\n    public String nextRideId() {\n        rideCounter++;\n        return \"RIDE\" + rideCounter;\n    }\n}\n\nclass DistanceUtil {\n    public static double distance(double x1, double y1, double x2, double y2) {\n        double dx = x2-x1;\n        double dy = y2-y1;\n        return Math.sqrt(dx * dx + dy * dy);\n    }\n}\n\ninterface MatchingStrategy {\n    Driver findDriver(Ride ride, Collection<Driver> drivers);\n}\n\nclass DirectMatchingStrategy implements MatchingStrategy {\n    @Override\n    public Driver findDriver(Ride ride, Collection<Driver> drivers) {\n        Driver best = null;\n        double bestDistance = Double.MAX_VALUE;\n        for (Driver driver : drivers) {\n            if (!driver.isEmpty()) continue;\n            double distance = DistanceUtil.distance(driver.getLocationX(), driver.getLocationY(), ride.getPickupX(), ride.getPickupY());\n            if (distance < bestDistance) {\n                bestDistance = distance;\n                best = driver;\n            }\n        }\n        return best;\n    }\n}\n\nclass PooledMatchingStrategy implements MatchingStrategy {\n    private final double maxDetourDistance;\n\n    public PooledMatchingStrategy(double maxDetourDistance) {\n        this.maxDetourDistance = maxDetourDistance;\n    }\n\n    public double computeDetour(Driver driver, Ride ride) {\n        double originalDistance = DistanceUtil.distance(driver.getActivePickupX(), driver.getActivePickupY(), driver.getActiveDropoffX(), driver.getActiveDropoffY());\n        double toNewPickup = DistanceUtil.distance(driver.getActivePickupX(), driver.getActivePickupY(), ride.getPickupX(), ride.getPickupY());\n        double acrossNewRide = DistanceUtil.distance(ride.getPickupX(), ride.getPickupY(), ride.getDropoffX(), ride.getDropoffY());\n        double toOriginalDropoff = DistanceUtil.distance(ride.getDropoffX(), ride.getDropoffY(), driver.getActiveDropoffX(), driver.getActiveDropoffY());\n        double newDistance = toNewPickup + acrossNewRide + toOriginalDropoff;\n        return newDistance-originalDistance;\n    }\n\n    public double getMaxDetourDistance() { return maxDetourDistance; }\n\n    @Override\n    public Driver findDriver(Ride ride, Collection<Driver> drivers) {\n        Driver bestPoolCandidate = null;\n        double bestDetour = Double.MAX_VALUE;\n        for (Driver driver : drivers) {\n            if (driver.isEmpty() || !driver.hasSpareSeat()) continue;\n            double detour = computeDetour(driver, ride);\n            if (detour <= maxDetourDistance && detour < bestDetour) {\n                bestDetour = detour;\n                bestPoolCandidate = driver;\n            }\n        }\n        if (bestPoolCandidate != null) return bestPoolCandidate;\n        return new DirectMatchingStrategy().findDriver(ride, drivers);\n    }\n}\n\ninterface RideObserver {\n    void onRideMatched(Ride ride, Driver driver);\n    void onMatchFailed(String rideId, String reason);\n    void onRideCompleted(Ride ride);\n}\n\nclass ConsoleRideObserver implements RideObserver {\n    @Override\n    public void onRideMatched(Ride ride, Driver driver) {\n        System.out.println(\"Ride \" + ride.getRideId() + \" matched to \" + driver.getDriverId() + \", riders now \" + driver.getCurrentRiders());\n    }\n\n    @Override\n    public void onMatchFailed(String rideId, String reason) {\n        System.out.println(\"Match failed for \" + rideId + \": \" + reason);\n    }\n\n    @Override\n    public void onRideCompleted(Ride ride) {\n        System.out.println(\"Ride \" + ride.getRideId() + \" completed\");\n    }\n}\n\nclass NoDriverAvailableException extends RuntimeException {\n    public NoDriverAvailableException(String msg) { super(msg); }\n}\nclass InvalidRideStateException extends RuntimeException {\n    public InvalidRideStateException(String msg) { super(msg); }\n}\nclass DetourLimitExceededException extends RuntimeException {\n    public DetourLimitExceededException(String msg) { super(msg); }\n}\n\nclass RideDispatchService {\n    private static final double BASE_FARE = 5.0;\n    private static final double PER_KM_RATE = 2.0;\n    private static final double POOL_DISCOUNT = 0.8;\n    private final Map<String, Driver> drivers = new HashMap<>();\n    private final Map<String, Ride> rides = new HashMap<>();\n    private final PooledMatchingStrategy pooledMatchingStrategy;\n    private final List<RideObserver> observers = new ArrayList<>();\n\n    public RideDispatchService(double maxDetourDistance) {\n        this.pooledMatchingStrategy = new PooledMatchingStrategy(maxDetourDistance);\n    }\n\n    public void addDriver(Driver driver) { drivers.put(driver.getDriverId(), driver); }\n    public void addObserver(RideObserver observer) { observers.add(observer); }\n\n    private MatchingStrategy strategyFor(RideType type) {\n        return type == RideType.SOLO ? new DirectMatchingStrategy() : pooledMatchingStrategy;\n    }\n\n    public synchronized Ride requestRide(String riderName, double pickupX, double pickupY, double dropoffX, double dropoffY, RideType type, RideIdFactory factory) {\n        String rideId = factory.nextRideId();\n        Ride ride = new Ride(rideId, riderName, pickupX, pickupY, dropoffX, dropoffY, type);\n        rides.put(rideId, ride);\n        MatchingStrategy strategy = strategyFor(type);\n        Driver driver = strategy.findDriver(ride, drivers.values());\n        if (driver == null) {\n            for (RideObserver obs : observers) obs.onMatchFailed(rideId, \"No driver available\");\n            throw new NoDriverAvailableException(\"No driver available for ride \" + rideId);\n        }\n        if (driver.isEmpty()) driver.assignFresh(pickupX, pickupY, dropoffX, dropoffY);\n        else driver.addPooledRider();\n        ride.setAssignedDriverId(driver.getDriverId());\n        ride.setStatus(RideStatus.MATCHED);\n        for (RideObserver obs : observers) obs.onRideMatched(ride, driver);\n        return ride;\n    }\n\n    public synchronized Ride poolManually(String rideId, String driverId, RideIdFactory factory) {\n        Ride ride = rides.get(rideId);\n        Driver driver = drivers.get(driverId);\n        if (driver.isEmpty() || !driver.hasSpareSeat()) {\n            throw new DetourLimitExceededException(\"Driver \" + driverId + \" is not a valid pooling target\");\n        }\n        double detour = pooledMatchingStrategy.computeDetour(driver, ride);\n        if (detour > pooledMatchingStrategy.getMaxDetourDistance()) {\n            throw new DetourLimitExceededException(\"Pooling onto \" + driverId + \" would add a detour of \" + detour);\n        }\n        driver.addPooledRider();\n        ride.setAssignedDriverId(driverId);\n        ride.setStatus(RideStatus.MATCHED);\n        for (RideObserver obs : observers) obs.onRideMatched(ride, driver);\n        return ride;\n    }\n\n    public double calculateFare(String rideId) {\n        Ride ride = rides.get(rideId);\n        Driver driver = drivers.get(ride.getAssignedDriverId());\n        double distance = DistanceUtil.distance(ride.getPickupX(), ride.getPickupY(), ride.getDropoffX(), ride.getDropoffY());\n        double fare = BASE_FARE + PER_KM_RATE * distance;\n        if (driver.getCurrentRiders() > 1) fare *= POOL_DISCOUNT;\n        return fare;\n    }\n\n    public Ride completeRide(String rideId) {\n        Ride ride = rides.get(rideId);\n        if (ride.getStatus() != RideStatus.MATCHED) {\n            throw new InvalidRideStateException(\"Ride \" + rideId + \" is not matched, cannot be completed\");\n        }\n        Driver driver = drivers.get(ride.getAssignedDriverId());\n        driver.removeRider();\n        ride.setStatus(RideStatus.COMPLETED);\n        for (RideObserver obs : observers) obs.onRideCompleted(ride);\n        return ride;\n    }\n}",
+            "python": "class RideType:\n    SOLO = \"SOLO\"\n    POOLED = \"POOLED\"\n\nclass RideStatus:\n    REQUESTED = \"REQUESTED\"\n    MATCHED = \"MATCHED\"\n    COMPLETED = \"COMPLETED\"\n\nclass Driver:\n    def __init__(self, driver_id, location_x, location_y, capacity):\n        self.driver_id = driver_id\n        self.location_x = location_x\n        self.location_y = location_y\n        self.capacity = capacity\n        self.current_riders = 0\n        self.active_pickup_x = 0.0\n        self.active_pickup_y = 0.0\n        self.active_dropoff_x = 0.0\n        self.active_dropoff_y = 0.0\n\n    def is_empty(self):\n        return self.current_riders == 0\n\n    def has_spare_seat(self):\n        return self.current_riders < self.capacity\n\n    def assign_fresh(self, pickup_x, pickup_y, dropoff_x, dropoff_y):\n        self.active_pickup_x = pickup_x\n        self.active_pickup_y = pickup_y\n        self.active_dropoff_x = dropoff_x\n        self.active_dropoff_y = dropoff_y\n        self.current_riders = 1\n\n    def add_pooled_rider(self):\n        self.current_riders += 1\n\n    def remove_rider(self):\n        self.current_riders -= 1\n\nclass Ride:\n    def __init__(self, ride_id, rider_name, pickup_x, pickup_y, dropoff_x, dropoff_y, ride_type):\n        self.ride_id = ride_id\n        self.rider_name = rider_name\n        self.pickup_x = pickup_x\n        self.pickup_y = pickup_y\n        self.dropoff_x = dropoff_x\n        self.dropoff_y = dropoff_y\n        self.type = ride_type\n        self.assigned_driver_id = None\n        self.status = RideStatus.REQUESTED\n\nclass RideIdFactory:\n    def __init__(self):\n        self.ride_counter = 0\n\n    def next_ride_id(self):\n        self.ride_counter += 1\n        return f\"RIDE{self.ride_counter}\"\n\nimport math\n\ndef distance(x1, y1, x2, y2):\n    dx = x2-x1\n    dy = y2-y1\n    return math.sqrt(dx * dx + dy * dy)\n\nclass MatchingStrategy:\n    def find_driver(self, ride, drivers): raise NotImplementedError\n\nclass DirectMatchingStrategy(MatchingStrategy):\n    def find_driver(self, ride, drivers):\n        best = None\n        best_distance = float(\"inf\")\n        for driver in drivers:\n            if not driver.is_empty():\n                continue\n            d = distance(driver.location_x, driver.location_y, ride.pickup_x, ride.pickup_y)\n            if d < best_distance:\n                best_distance = d\n                best = driver\n        return best\n\nclass PooledMatchingStrategy(MatchingStrategy):\n    def __init__(self, max_detour_distance):\n        self.max_detour_distance = max_detour_distance\n\n    def compute_detour(self, driver, ride):\n        original_distance = distance(driver.active_pickup_x, driver.active_pickup_y, driver.active_dropoff_x, driver.active_dropoff_y)\n        to_new_pickup = distance(driver.active_pickup_x, driver.active_pickup_y, ride.pickup_x, ride.pickup_y)\n        across_new_ride = distance(ride.pickup_x, ride.pickup_y, ride.dropoff_x, ride.dropoff_y)\n        to_original_dropoff = distance(ride.dropoff_x, ride.dropoff_y, driver.active_dropoff_x, driver.active_dropoff_y)\n        new_distance = to_new_pickup + across_new_ride + to_original_dropoff\n        return new_distance-original_distance\n\n    def find_driver(self, ride, drivers):\n        best_pool_candidate = None\n        best_detour = float(\"inf\")\n        for driver in drivers:\n            if driver.is_empty() or not driver.has_spare_seat():\n                continue\n            detour = self.compute_detour(driver, ride)\n            if detour <= self.max_detour_distance and detour < best_detour:\n                best_detour = detour\n                best_pool_candidate = driver\n        if best_pool_candidate is not None:\n            return best_pool_candidate\n        return DirectMatchingStrategy().find_driver(ride, drivers)\n\nclass RideObserver:\n    def on_ride_matched(self, ride, driver): raise NotImplementedError\n    def on_match_failed(self, ride_id, reason): raise NotImplementedError\n    def on_ride_completed(self, ride): raise NotImplementedError\n\nclass ConsoleRideObserver(RideObserver):\n    def on_ride_matched(self, ride, driver):\n        print(f\"Ride {ride.ride_id} matched to {driver.driver_id}, riders now {driver.current_riders}\")\n\n    def on_match_failed(self, ride_id, reason):\n        print(f\"Match failed for {ride_id}: {reason}\")\n\n    def on_ride_completed(self, ride):\n        print(f\"Ride {ride.ride_id} completed\")\n\nclass NoDriverAvailableException(Exception): pass\nclass InvalidRideStateException(Exception): pass\nclass DetourLimitExceededException(Exception): pass\n\nclass RideDispatchService:\n    BASE_FARE = 5.0\n    PER_KM_RATE = 2.0\n    POOL_DISCOUNT = 0.8\n\n    def __init__(self, max_detour_distance):\n        self.drivers = {}\n        self.rides = {}\n        self.pooled_matching_strategy = PooledMatchingStrategy(max_detour_distance)\n        self.observers = []\n\n    def add_driver(self, driver):\n        self.drivers[driver.driver_id] = driver\n\n    def add_observer(self, observer):\n        self.observers.append(observer)\n\n    def _strategy_for(self, ride_type):\n        return DirectMatchingStrategy() if ride_type == RideType.SOLO else self.pooled_matching_strategy\n\n    def request_ride(self, rider_name, pickup_x, pickup_y, dropoff_x, dropoff_y, ride_type, factory):\n        ride_id = factory.next_ride_id()\n        ride = Ride(ride_id, rider_name, pickup_x, pickup_y, dropoff_x, dropoff_y, ride_type)\n        self.rides[ride_id] = ride\n        strategy = self._strategy_for(ride_type)\n        driver = strategy.find_driver(ride, self.drivers.values())\n        if driver is None:\n            for obs in self.observers:\n                obs.on_match_failed(ride_id, \"No driver available\")\n            raise NoDriverAvailableException(f\"No driver available for ride {ride_id}\")\n        if driver.is_empty():\n            driver.assign_fresh(pickup_x, pickup_y, dropoff_x, dropoff_y)\n        else:\n            driver.add_pooled_rider()\n        ride.assigned_driver_id = driver.driver_id\n        ride.status = RideStatus.MATCHED\n        for obs in self.observers:\n            obs.on_ride_matched(ride, driver)\n        return ride\n\n    def pool_manually(self, ride_id, driver_id, factory):\n        ride = self.rides[ride_id]\n        driver = self.drivers[driver_id]\n        if driver.is_empty() or not driver.has_spare_seat():\n            raise DetourLimitExceededException(f\"Driver {driver_id} is not a valid pooling target\")\n        detour = self.pooled_matching_strategy.compute_detour(driver, ride)\n        if detour > self.pooled_matching_strategy.max_detour_distance:\n            raise DetourLimitExceededException(f\"Pooling onto {driver_id} would add a detour of {detour}\")\n        driver.add_pooled_rider()\n        ride.assigned_driver_id = driver_id\n        ride.status = RideStatus.MATCHED\n        for obs in self.observers:\n            obs.on_ride_matched(ride, driver)\n        return ride\n\n    def calculate_fare(self, ride_id):\n        ride = self.rides[ride_id]\n        driver = self.drivers[ride.assigned_driver_id]\n        trip_distance = distance(ride.pickup_x, ride.pickup_y, ride.dropoff_x, ride.dropoff_y)\n        fare = RideDispatchService.BASE_FARE + RideDispatchService.PER_KM_RATE * trip_distance\n        if driver.current_riders > 1:\n            fare *= RideDispatchService.POOL_DISCOUNT\n        return fare\n\n    def complete_ride(self, ride_id):\n        ride = self.rides[ride_id]\n        if ride.status != RideStatus.MATCHED:\n            raise InvalidRideStateException(f\"Ride {ride_id} is not matched, cannot be completed\")\n        driver = self.drivers[ride.assigned_driver_id]\n        driver.remove_rider()\n        ride.status = RideStatus.COMPLETED\n        for obs in self.observers:\n            obs.on_ride_completed(ride)\n        return ride\n\ndef main():\n    service = RideDispatchService(3.0)\n    service.add_observer(ConsoleRideObserver())\n    factory = RideIdFactory()\n\n    d1 = Driver(\"D1\", 0.0, 0.0, 2)\n    d2 = Driver(\"D2\", 10.0, 10.0, 2)\n    service.add_driver(d1)\n    service.add_driver(d2)\n\n    alice = service.request_ride(\"Alice\", 1.0, 1.0, 3.0, 3.0, RideType.POOLED, factory)\n    bob = service.request_ride(\"Bob\", 2.0, 2.0, 4.0, 2.0, RideType.POOLED, factory)\n    carol = service.request_ride(\"Carol\", 11.0, 11.0, 13.0, 13.0, RideType.POOLED, factory)\n\n    try:\n        service.request_ride(\"Dave\", 10.5, 10.5, 12.0, 12.0, RideType.SOLO, factory)\n    except NoDriverAvailableException as e:\n        print(f\"Caught expected: {e}\")\n\n    print(f\"Alice fare: {service.calculate_fare(alice.ride_id)}\")\n    print(f\"Bob fare: {service.calculate_fare(bob.ride_id)}\")\n    print(f\"Carol fare: {service.calculate_fare(carol.ride_id)}\")\n\n    d3 = Driver(\"D3\", 50.0, 50.0, 2)\n    service.add_driver(d3)\n\n    eve = service.request_ride(\"Eve\", 50.0, 50.0, 60.0, 60.0, RideType.POOLED, factory)\n    try:\n        service.pool_manually(eve.ride_id, \"D2\", factory)\n    except DetourLimitExceededException as e:\n        print(f\"Caught expected: detour limit exceeded\")\n\n    service.complete_ride(alice.ride_id)\n\nif __name__ == \"__main__\":\n    main()",
+            "cpp": "#include <iostream>\n#include <string>\n#include <vector>\n#include <map>\n#include <memory>\n#include <cmath>\n#include <stdexcept>\nusing namespace std;\n\nenum class RideType { SOLO, POOLED };\nenum class RideStatus { REQUESTED, MATCHED, COMPLETED };\n\nclass Driver {\npublic:\n    string driverId;\n    double locationX;\n    double locationY;\n    int capacity;\n    int currentRiders;\n    double activePickupX;\n    double activePickupY;\n    double activeDropoffX;\n    double activeDropoffY;\n\n    Driver() : locationX(0.0), locationY(0.0), capacity(0), currentRiders(0),\n               activePickupX(0.0), activePickupY(0.0), activeDropoffX(0.0), activeDropoffY(0.0) {}\n    Driver(string id, double x, double y, int cap)\n        : driverId(id), locationX(x), locationY(y), capacity(cap), currentRiders(0),\n          activePickupX(0.0), activePickupY(0.0), activeDropoffX(0.0), activeDropoffY(0.0) {}\n\n    bool isEmpty() { return currentRiders == 0; }\n    bool hasSpareSeat() { return currentRiders < capacity; }\n\n    void assignFresh(double pickupX, double pickupY, double dropoffX, double dropoffY) {\n        activePickupX = pickupX;\n        activePickupY = pickupY;\n        activeDropoffX = dropoffX;\n        activeDropoffY = dropoffY;\n        currentRiders = 1;\n    }\n\n    void addPooledRider() { currentRiders++; }\n    void removeRider() { currentRiders--; }\n};\n\nclass Ride {\npublic:\n    string rideId;\n    string riderName;\n    double pickupX;\n    double pickupY;\n    double dropoffX;\n    double dropoffY;\n    RideType type;\n    string assignedDriverId;\n    RideStatus status;\n\n    Ride() : pickupX(0.0), pickupY(0.0), dropoffX(0.0), dropoffY(0.0), type(RideType::SOLO), status(RideStatus::REQUESTED) {}\n    Ride(string id, string rider, double pX, double pY, double dX, double dY, RideType t)\n        : rideId(id), riderName(rider), pickupX(pX), pickupY(pY), dropoffX(dX), dropoffY(dY), type(t), status(RideStatus::REQUESTED) {}\n};\n\nclass RideIdFactory {\n    int rideCounter = 0;\n\npublic:\n    string nextRideId() {\n        rideCounter++;\n        return \"RIDE\" + to_string(rideCounter);\n    }\n};\n\ndouble distanceBetween(double x1, double y1, double x2, double y2) {\n    double dx = x2-x1;\n    double dy = y2-y1;\n    return sqrt(dx * dx + dy * dy);\n}\n\nclass MatchingStrategy {\npublic:\n    virtual Driver* findDriver(Ride& ride, vector<Driver*>& drivers) = 0;\n    virtual ~MatchingStrategy() {}\n};\n\nclass DirectMatchingStrategy : public MatchingStrategy {\npublic:\n    Driver* findDriver(Ride& ride, vector<Driver*>& drivers) override {\n        Driver* best = nullptr;\n        double bestDistance = 1e18;\n        for (auto* driver : drivers) {\n            if (!driver->isEmpty()) continue;\n            double d = distanceBetween(driver->locationX, driver->locationY, ride.pickupX, ride.pickupY);\n            if (d < bestDistance) {\n                bestDistance = d;\n                best = driver;\n            }\n        }\n        return best;\n    }\n};\n\nclass PooledMatchingStrategy : public MatchingStrategy {\n    double maxDetourDistance;\n\npublic:\n    PooledMatchingStrategy(double maxDetour) : maxDetourDistance(maxDetour) {}\n\n    double getMaxDetourDistance() { return maxDetourDistance; }\n\n    double computeDetour(Driver& driver, Ride& ride) {\n        double originalDistance = distanceBetween(driver.activePickupX, driver.activePickupY, driver.activeDropoffX, driver.activeDropoffY);\n        double toNewPickup = distanceBetween(driver.activePickupX, driver.activePickupY, ride.pickupX, ride.pickupY);\n        double acrossNewRide = distanceBetween(ride.pickupX, ride.pickupY, ride.dropoffX, ride.dropoffY);\n        double toOriginalDropoff = distanceBetween(ride.dropoffX, ride.dropoffY, driver.activeDropoffX, driver.activeDropoffY);\n        double newDistance = toNewPickup + acrossNewRide + toOriginalDropoff;\n        return newDistance-originalDistance;\n    }\n\n    Driver* findDriver(Ride& ride, vector<Driver*>& drivers) override {\n        Driver* bestPoolCandidate = nullptr;\n        double bestDetour = 1e18;\n        for (auto* driver : drivers) {\n            if (driver->isEmpty() || !driver->hasSpareSeat()) continue;\n            double detour = computeDetour(*driver, ride);\n            if (detour <= maxDetourDistance && detour < bestDetour) {\n                bestDetour = detour;\n                bestPoolCandidate = driver;\n            }\n        }\n        if (bestPoolCandidate != nullptr) return bestPoolCandidate;\n        DirectMatchingStrategy direct;\n        return direct.findDriver(ride, drivers);\n    }\n};\n\nclass RideObserver {\npublic:\n    virtual void onRideMatched(const Ride& ride, const Driver& driver) = 0;\n    virtual void onMatchFailed(const string& rideId, const string& reason) = 0;\n    virtual void onRideCompleted(const Ride& ride) = 0;\n    virtual ~RideObserver() {}\n};\n\nclass ConsoleRideObserver : public RideObserver {\npublic:\n    void onRideMatched(const Ride& ride, const Driver& driver) override {\n        cout << \"Ride \" << ride.rideId << \" matched to \" << driver.driverId << \", riders now \" << driver.currentRiders << endl;\n    }\n    void onMatchFailed(const string& rideId, const string& reason) override {\n        cout << \"Match failed for \" << rideId << \": \" << reason << endl;\n    }\n    void onRideCompleted(const Ride& ride) override {\n        cout << \"Ride \" << ride.rideId << \" completed\" << endl;\n    }\n};\n\nclass NoDriverAvailableException : public runtime_error {\npublic: NoDriverAvailableException(const string& msg) : runtime_error(msg) {}\n};\nclass InvalidRideStateException : public runtime_error {\npublic: InvalidRideStateException(const string& msg) : runtime_error(msg) {}\n};\nclass DetourLimitExceededException : public runtime_error {\npublic: DetourLimitExceededException(const string& msg) : runtime_error(msg) {}\n};\n\nclass RideDispatchService {\n    static constexpr double BASE_FARE = 5.0;\n    static constexpr double PER_KM_RATE = 2.0;\n    static constexpr double POOL_DISCOUNT = 0.8;\n    map<string, Driver> drivers;\n    map<string, Ride> rides;\n    PooledMatchingStrategy pooledMatchingStrategy;\n    vector<shared_ptr<RideObserver>> observers;\n\n    shared_ptr<MatchingStrategy> strategyFor(RideType type) {\n        if (type == RideType::SOLO) return make_shared<DirectMatchingStrategy>();\n        return shared_ptr<MatchingStrategy>(&pooledMatchingStrategy, [](MatchingStrategy*){});\n    }\n\npublic:\n    RideDispatchService(double maxDetourDistance) : pooledMatchingStrategy(maxDetourDistance) {}\n\n    void addDriver(Driver driver) { drivers[driver.driverId] = driver; }\n    void addObserver(shared_ptr<RideObserver> observer) { observers.push_back(observer); }\n\n    Ride requestRide(string riderName, double pickupX, double pickupY, double dropoffX, double dropoffY, RideType type, RideIdFactory& factory) {\n        string rideId = factory.nextRideId();\n        Ride ride(rideId, riderName, pickupX, pickupY, dropoffX, dropoffY, type);\n        rides[rideId] = ride;\n        auto strategy = strategyFor(type);\n        vector<Driver*> pointers;\n        for (auto& pair : drivers) pointers.push_back(&pair.second);\n        Driver* driver = strategy->findDriver(ride, pointers);\n        if (driver == nullptr) {\n            for (auto& obs : observers) obs->onMatchFailed(rideId, \"No driver available\");\n            throw NoDriverAvailableException(\"No driver available for ride \" + rideId);\n        }\n        if (driver->isEmpty()) driver->assignFresh(pickupX, pickupY, dropoffX, dropoffY);\n        else driver->addPooledRider();\n        Ride& storedRide = rides.at(rideId);\n        storedRide.assignedDriverId = driver->driverId;\n        storedRide.status = RideStatus::MATCHED;\n        for (auto& obs : observers) obs->onRideMatched(storedRide, *driver);\n        return storedRide;\n    }\n\n    Ride poolManually(string rideId, string driverId, RideIdFactory& factory) {\n        Ride& ride = rides.at(rideId);\n        Driver& driver = drivers.at(driverId);\n        if (driver.isEmpty() || !driver.hasSpareSeat()) {\n            throw DetourLimitExceededException(\"Driver \" + driverId + \" is not a valid pooling target\");\n        }\n        double detour = pooledMatchingStrategy.computeDetour(driver, ride);\n        if (detour > pooledMatchingStrategy.getMaxDetourDistance()) {\n            throw DetourLimitExceededException(\"Pooling onto \" + driverId + \" would add a detour of \" + to_string(detour));\n        }\n        driver.addPooledRider();\n        ride.assignedDriverId = driverId;\n        ride.status = RideStatus::MATCHED;\n        for (auto& obs : observers) obs->onRideMatched(ride, driver);\n        return ride;\n    }\n\n    double calculateFare(string rideId) {\n        Ride& ride = rides.at(rideId);\n        Driver& driver = drivers.at(ride.assignedDriverId);\n        double tripDistance = distanceBetween(ride.pickupX, ride.pickupY, ride.dropoffX, ride.dropoffY);\n        double fare = BASE_FARE + PER_KM_RATE * tripDistance;\n        if (driver.currentRiders > 1) fare *= POOL_DISCOUNT;\n        return fare;\n    }\n\n    Ride completeRide(string rideId) {\n        Ride& ride = rides.at(rideId);\n        if (ride.status != RideStatus::MATCHED) {\n            throw InvalidRideStateException(\"Ride \" + rideId + \" is not matched, cannot be completed\");\n        }\n        Driver& driver = drivers.at(ride.assignedDriverId);\n        driver.removeRider();\n        ride.status = RideStatus::COMPLETED;\n        for (auto& obs : observers) obs->onRideCompleted(ride);\n        return ride;\n    }\n};\n\nint main() {\n    RideDispatchService service(3.0);\n    service.addObserver(make_shared<ConsoleRideObserver>());\n    RideIdFactory factory;\n\n    Driver d1(\"D1\", 0.0, 0.0, 2);\n    Driver d2(\"D2\", 10.0, 10.0, 2);\n    service.addDriver(d1);\n    service.addDriver(d2);\n\n    Ride alice = service.requestRide(\"Alice\", 1.0, 1.0, 3.0, 3.0, RideType::POOLED, factory);\n    Ride bob = service.requestRide(\"Bob\", 2.0, 2.0, 4.0, 2.0, RideType::POOLED, factory);\n    Ride carol = service.requestRide(\"Carol\", 11.0, 11.0, 13.0, 13.0, RideType::POOLED, factory);\n\n    try {\n        service.requestRide(\"Dave\", 10.5, 10.5, 12.0, 12.0, RideType::SOLO, factory);\n    } catch (NoDriverAvailableException& e) {\n        cout << \"Caught expected: \" << e.what() << endl;\n    }\n\n    cout << \"Alice fare: \" << service.calculateFare(alice.rideId) << endl;\n    cout << \"Bob fare: \" << service.calculateFare(bob.rideId) << endl;\n    cout << \"Carol fare: \" << service.calculateFare(carol.rideId) << endl;\n\n    Driver d3(\"D3\", 50.0, 50.0, 2);\n    service.addDriver(d3);\n\n    Ride eve = service.requestRide(\"Eve\", 50.0, 50.0, 60.0, 60.0, RideType::POOLED, factory);\n    try {\n        service.poolManually(eve.rideId, \"D2\", factory);\n    } catch (DetourLimitExceededException& e) {\n        cout << \"Caught expected: detour limit exceeded\" << endl;\n    }\n\n    service.completeRide(alice.rideId);\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Folder Structure",
+          "content": "Folder Structure"
+        },
+        {
+          "type": "paragraph",
+          "text": "A real project would split these classes across files as follows:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "src/main/java/ridesharing/\n  RideType.java\n  RideStatus.java\n  Driver.java\n  Ride.java\n  RideIdFactory.java\n  DistanceUtil.java\n  MatchingStrategy.java\n  DirectMatchingStrategy.java\n  PooledMatchingStrategy.java\n  RideObserver.java\n  ConsoleRideObserver.java\n  RideDispatchService.java\n  exceptions/\n    NoDriverAvailableException.java\n    InvalidRideStateException.java\n    DetourLimitExceededException.java\n  Main.java",
+            "python": "ridesharing/\n  __init__.py\n  driver.py\n  ride.py\n  ride_id_factory.py\n  distance_util.py\n  matching_strategy.py\n  ride_observer.py\n  exceptions.py\n  ride_dispatch_service.py\n  main.py",
+            "cpp": "ridesharing/\n  include/\n    Driver.h\n    Ride.h\n    RideIdFactory.h\n    DistanceUtil.h\n    MatchingStrategy.h\n    RideObserver.h\n    Exceptions.h\n    RideDispatchService.h\n  src/\n    RideIdFactory.cpp\n    PooledMatchingStrategy.cpp\n    RideDispatchService.cpp\n    main.cpp"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Interview Discussion Points",
+          "content": "Interview Discussion Points"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Why measure detour as the extra distance a route-insertion adds, rather than simply the distance from the driver to the new rider's pickup? Because a driver could be close to a new pickup yet the insertion could still force a large, unacceptable backtrack before reaching their original destination, the insertion-based detour captures the full cost the existing rider actually experiences.",
+            "Why does SOLO refuse to even consider an occupied driver whose detour would technically qualify? Because a rider explicitly choosing not to share is a business rule, not a performance optimization, and DirectMatchingStrategy encodes that rule directly rather than leaving it as an afterthought.",
+            "How would you extend this beyond two riders per driver? Represent the driver's route as an ordered list of stops instead of a single pickup and dropoff pair, and generalize the detour calculation to test every valid insertion position for the new stop pair."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Trade-offs & Alternative Designs",
+          "content": "Trade-offs & Alternative Designs"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Detour-constrained greedy insertion vs a full route-optimization solver:</strong> greedy insertion is simple, fast, and easy to reason about, at the cost of not finding the globally optimal pooling arrangement across every driver and rider at once; a full solver could do better but is far more complex and slower to compute at scale.",
+            "<strong>Capping pooling at two riders vs a full multi-stop route:</strong> a two-rider cap keeps the detour math tractable and easy to verify, at the cost of missing pooling opportunities across three or more riders that a full route representation could capture.",
+            "<strong>Fare computed at completion vs fare locked in at match time:</strong> computing at completion correctly rewards early poolers if someone joins them later, at the cost of a rider not knowing their exact final fare the moment they are matched."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Production Considerations & Best Practices",
+          "content": "Production Considerations & Best Practices"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Persist drivers and rides in a database using the schema in the Database Design section, with driver location and occupancy also cached in a fast key-value store for low-latency matching.",
+            "Emit match and completion events to a message queue so downstream systems (rider notifications, driver apps, analytics) can consume them asynchronously instead of via in-process observers.",
+            "Shard driver tracking by geographic region in a large-scale deployment, so a ride request only scans nearby drivers instead of every driver system-wide.",
+            "Track driver location via periodic GPS updates rather than a static coordinate, and re-run detour calculations against the freshest available location."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

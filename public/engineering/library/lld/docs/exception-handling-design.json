@@ -1,0 +1,448 @@
+{
+  "title": "Exception Handling Design",
+  "slug": "exception-handling-design",
+  "content": [
+    {
+      "id": "exception-handling-design",
+      "title": "Exception Handling Design",
+      "blocks": [
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Knowing what a checked exception is takes five minutes. Knowing&nbsp;<em>where</em>&nbsp;to catch it,&nbsp;<em>how</em>&nbsp;to name it, what to put in the message, and how to make sure it never swallows a root cause that takes experience.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781594629200-985439621.png\" alt=\"Vehicle Parking Process Flow-2026-06-16-072009.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b style=\"letter-spacing: -0.003em;\">This lesson is about the design side:</b><span style=\"letter-spacing: -0.003em;\"> how to structure exception handling across an entire system so failures are informative, recoverable where possible, and never silently lost.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "blockQuote",
+          "content": "Topics: layered exception design, exception translation, fail-fast vs graceful degradation, global handlers, logging discipline, and the most costly mistakes in production systems."
+        },
+        {
+          "type": "heading2",
+          "content": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">",
+          "text": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The three responsibilities of exception handling",
+          "text": "1. The three responsibilities of exception handling"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every exception handling decision in a system boils down to three questions: who detects the failure, who decides what to do about it, and who informs the outside world. Conflating these is the root of most messy exception code."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781598238688-897174829.png",
+          "alt": "image.png",
+          "width": 2924,
+          "height": 410
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">",
+          "text": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">"
+        },
+        {
+          "type": "heading2",
+          "content": "<span style=\"font-size: 2rem; letter-spacing: -0.003em;\">1. Layered exception design</span><br>",
+          "text": "<span style=\"font-size: 2rem; letter-spacing: -0.003em;\">1. Layered exception design</span><br>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781594630097-128125326.png\" alt=\"Vehicle Parking Process Flow-2026-06-16-072336.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">A well-designed system organises exceptions in layers that mirror the architecture. Each layer only exposes exception types that make sense at that abstraction level.&nbsp;</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "The database layer knows about connection failures. The service layer knows about payment failures. The API layer knows about HTTP error codes. None of them leak the details of the layer below to the layer above."
+        },
+        {
+          "type": "code",
+          "content": "// Layer 1 — repository (data access)\n\nclass AccountRepository {\n    Account findById(long id) throws DataAccessException {\n        try {\n            return db.query(\"SELECT * FROM accounts WHERE id=?\", id);\n        } catch (SQLException e) {\n            // translate: SQL detail stays here, not exposed upward\n            throw new DataAccessException(\"Account lookup failed\", e);\n        }\n    }\n}\n\n// Layer 2 — service (domain)\n\nclass PaymentService {\n    void transfer(long fromId, long toId, double amount)\n            throws PaymentException {\n        try {\n            Account from = repo.findById(fromId);\n            Account to   = repo.findById(toId);\n            from.debit(amount);\n            to.credit(amount);\n        } catch (DataAccessException e) {\n            throw new PaymentException(\"Transfer failed: accounts unavailable\", e);\n        } catch (InsufficientFundsException e) {\n            throw new PaymentException(\"Transfer failed: insufficient funds\", e);\n        }\n    }\n}\n\n// Layer 3 — controller (boundary)\n\nclass PaymentController {\n    Response transfer(Request req) {\n        try {\n            service.transfer(req.from, req.to, req.amount);\n            return Response.ok(\"Transfer complete\");\n        } catch (PaymentException e) {\n            log.error(\"Transfer failed\", e);\n            return Response.error(400, e.getMessage());\n        }\n    }\n}",
+          "code": "// Layer 1 — repository (data access)\n\nclass AccountRepository {\n    Account findById(long id) throws DataAccessException {\n        try {\n            return db.query(\"SELECT * FROM accounts WHERE id=?\", id);\n        } catch (SQLException e) {\n            // translate: SQL detail stays here, not exposed upward\n            throw new DataAccessException(\"Account lookup failed\", e);\n        }\n    }\n}\n\n// Layer 2 — service (domain)\n\nclass PaymentService {\n    void transfer(long fromId, long toId, double amount)\n            throws PaymentException {\n        try {\n            Account from = repo.findById(fromId);\n            Account to   = repo.findById(toId);\n            from.debit(amount);\n            to.credit(amount);\n        } catch (DataAccessException e) {\n            throw new PaymentException(\"Transfer failed: accounts unavailable\", e);\n        } catch (InsufficientFundsException e) {\n            throw new PaymentException(\"Transfer failed: insufficient funds\", e);\n        }\n    }\n}\n\n// Layer 3 — controller (boundary)\n\nclass PaymentController {\n    Response transfer(Request req) {\n        try {\n            service.transfer(req.from, req.to, req.amount);\n            return Response.ok(\"Transfer complete\");\n        } catch (PaymentException e) {\n            log.error(\"Transfer failed\", e);\n            return Response.error(400, e.getMessage());\n        }\n    }\n}",
+          "codes": {
+            "javascript": "// Layer 1 — repository (data access)\n\nclass AccountRepository {\n    Account findById(long id) throws DataAccessException {\n        try {\n            return db.query(\"SELECT * FROM accounts WHERE id=?\", id);\n        } catch (SQLException e) {\n            // translate: SQL detail stays here, not exposed upward\n            throw new DataAccessException(\"Account lookup failed\", e);\n        }\n    }\n}\n\n// Layer 2 — service (domain)\n\nclass PaymentService {\n    void transfer(long fromId, long toId, double amount)\n            throws PaymentException {\n        try {\n            Account from = repo.findById(fromId);\n            Account to   = repo.findById(toId);\n            from.debit(amount);\n            to.credit(amount);\n        } catch (DataAccessException e) {\n            throw new PaymentException(\"Transfer failed: accounts unavailable\", e);\n        } catch (InsufficientFundsException e) {\n            throw new PaymentException(\"Transfer failed: insufficient funds\", e);\n        }\n    }\n}\n\n// Layer 3 — controller (boundary)\n\nclass PaymentController {\n    Response transfer(Request req) {\n        try {\n            service.transfer(req.from, req.to, req.amount);\n            return Response.ok(\"Transfer complete\");\n        } catch (PaymentException e) {\n            log.error(\"Transfer failed\", e);\n            return Response.error(400, e.getMessage());\n        }\n    }\n}",
+            "python": "class DataAccessException(Exception):\n    def __init__(self, message, cause=None):\n        super().__init__(message)\n        self.__cause__ = cause\n\n\nclass PaymentException(Exception):\n    def __init__(self, message, cause=None):\n        super().__init__(message)\n        self.__cause__ = cause\n\n\nclass InsufficientFundsException(Exception):\n    pass\n\n\nclass Account:\n    def __init__(self, account_id: int, balance: float):\n        self.account_id = account_id\n        self.balance = balance\n\n    def debit(self, amount: float):\n        if amount > self.balance:\n            raise InsufficientFundsException(f\"Balance too low for account {self.account_id}\")\n        self.balance -= amount\n\n    def credit(self, amount: float):\n        self.balance += amount\n\n\nclass Database:\n    def __init__(self):\n        self._accounts = {1: Account(1, 500.0), 2: Account(2, 100.0)}\n\n    def query(self, account_id: int) -> Account:\n        account = self._accounts.get(account_id)\n        if account is None:\n            raise RuntimeError(f\"SQL error: no row for id={account_id}\")\n        return account\n\n\n# Layer 1 - repository (data access)\nclass AccountRepository:\n    def __init__(self):\n        self.db = Database()\n\n    def find_by_id(self, account_id: int) -> Account:\n        try:\n            return self.db.query(account_id)\n        except RuntimeError as e:\n            # translate: SQL detail stays here, not exposed upward\n            raise DataAccessException(\"Account lookup failed\", e) from e\n\n\n# Layer 2 - service (domain)\nclass PaymentService:\n    def __init__(self):\n        self.repo = AccountRepository()\n\n    def transfer(self, from_id: int, to_id: int, amount: float):\n        try:\n            from_account = self.repo.find_by_id(from_id)\n            to_account = self.repo.find_by_id(to_id)\n            from_account.debit(amount)\n            to_account.credit(amount)\n        except DataAccessException as e:\n            raise PaymentException(\"Transfer failed: accounts unavailable\", e) from e\n        except InsufficientFundsException as e:\n            raise PaymentException(\"Transfer failed: insufficient funds\", e) from e\n\n\nclass Response:\n    def __init__(self, status: int, message: str):\n        self.status = status\n        self.message = message\n\n    @staticmethod\n    def ok(message: str):\n        return Response(200, message)\n\n    @staticmethod\n    def error(status: int, message: str):\n        return Response(status, message)\n\n    def __repr__(self):\n        return f\"Response(status={self.status}, message={self.message})\"\n\n\n# Layer 3 - controller (boundary)\nclass PaymentController:\n    def __init__(self):\n        self.service = PaymentService()\n\n    def transfer(self, from_id: int, to_id: int, amount: float):\n        try:\n            self.service.transfer(from_id, to_id, amount)\n            return Response.ok(\"Transfer complete\")\n        except PaymentException as e:\n            print(f\"[log] Transfer failed: {e}\")\n            return Response.error(400, str(e))\n\n\nif __name__ == \"__main__\":\n    controller = PaymentController()\n    print(controller.transfer(1, 2, 50.0))\n    print(controller.transfer(2, 1, 1000.0))",
+            "java": "import java.util.HashMap;\nimport java.util.Map;\n\nclass DataAccessException extends RuntimeException {\n    DataAccessException(String msg, Throwable cause) { super(msg, cause); }\n}\n\nclass PaymentException extends RuntimeException {\n    PaymentException(String msg, Throwable cause) { super(msg, cause); }\n    PaymentException(String msg) { super(msg); }\n}\n\nclass InsufficientFundsException extends RuntimeException {\n    InsufficientFundsException(String msg) { super(msg); }\n}\n\nclass Account {\n    long id;\n    double balance;\n\n    Account(long id, double balance) {\n        this.id = id;\n        this.balance = balance;\n    }\n\n    void debit(double amount) {\n        if (amount > balance) {\n            throw new InsufficientFundsException(\"Balance too low for account \" + id);\n        }\n        balance -= amount;\n    }\n\n    void credit(double amount) {\n        balance += amount;\n    }\n}\n\nclass Database {\n    private final Map<Long, Account> accounts = new HashMap<>();\n\n    Database() {\n        accounts.put(1L, new Account(1, 500.0));\n        accounts.put(2L, new Account(2, 100.0));\n    }\n\n    Account query(long id) {\n        Account account = accounts.get(id);\n        if (account == null) {\n            throw new RuntimeException(\"SQL error: no row for id=\" + id);\n        }\n        return account;\n    }\n}\n\n// Layer 1 - repository (data access)\n\nclass AccountRepository {\n    private final Database db = new Database();\n\n    Account findById(long id) {\n        try {\n            return db.query(id);\n        } catch (RuntimeException e) {\n            // translate: SQL detail stays here, not exposed upward\n            throw new DataAccessException(\"Account lookup failed\", e);\n        }\n    }\n}\n\n// Layer 2 - service (domain)\n\nclass PaymentService {\n    private final AccountRepository repo = new AccountRepository();\n\n    void transfer(long fromId, long toId, double amount) {\n        try {\n            Account from = repo.findById(fromId);\n            Account to = repo.findById(toId);\n            from.debit(amount);\n            to.credit(amount);\n        } catch (DataAccessException e) {\n            throw new PaymentException(\"Transfer failed: accounts unavailable\", e);\n        } catch (InsufficientFundsException e) {\n            throw new PaymentException(\"Transfer failed: insufficient funds\", e);\n        }\n    }\n}\n\nclass Response {\n    int status;\n    String message;\n\n    private Response(int status, String message) {\n        this.status = status;\n        this.message = message;\n    }\n\n    static Response ok(String message) { return new Response(200, message); }\n    static Response error(int status, String message) { return new Response(status, message); }\n\n    @Override\n    public String toString() {\n        return \"Response{status=\" + status + \", message=\" + message + \"}\";\n    }\n}\n\n// Layer 3 - controller (boundary)\n\nclass PaymentController {\n    private final PaymentService service = new PaymentService();\n\n    Response transfer(long from, long to, double amount) {\n        try {\n            service.transfer(from, to, amount);\n            return Response.ok(\"Transfer complete\");\n        } catch (PaymentException e) {\n            System.out.println(\"[log] Transfer failed: \" + e.getMessage());\n            return Response.error(400, e.getMessage());\n        }\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        PaymentController controller = new PaymentController();\n        System.out.println(controller.transfer(1, 2, 50.0));\n        System.out.println(controller.transfer(2, 1, 1000.0));\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n#include <unordered_map>\n#include <stdexcept>\n\nclass DataAccessException : public std::runtime_error {\npublic:\n    explicit DataAccessException(const std::string& msg) : std::runtime_error(msg) {}\n};\n\nclass PaymentException : public std::runtime_error {\npublic:\n    explicit PaymentException(const std::string& msg) : std::runtime_error(msg) {}\n};\n\nclass InsufficientFundsException : public std::runtime_error {\npublic:\n    explicit InsufficientFundsException(const std::string& msg) : std::runtime_error(msg) {}\n};\n\nclass Account {\npublic:\n    long id;\n    double balance;\n\n    Account(long id = 0, double balance = 0.0) : id(id), balance(balance) {}\n\n    void debit(double amount) {\n        if (amount > balance) {\n            throw InsufficientFundsException(\"Balance too low for account \" + std::to_string(id));\n        }\n        balance -= amount;\n    }\n\n    void credit(double amount) {\n        balance += amount;\n    }\n};\n\nclass Database {\n    std::unordered_map<long, Account> accounts;\npublic:\n    Database() {\n        accounts[1] = Account(1, 500.0);\n        accounts[2] = Account(2, 100.0);\n    }\n\n    Account& query(long id) {\n        auto it = accounts.find(id);\n        if (it == accounts.end()) {\n            throw std::runtime_error(\"SQL error: no row for id=\" + std::to_string(id));\n        }\n        return it->second;\n    }\n};\n\n// Layer 1 - repository (data access)\nclass AccountRepository {\n    Database db;\npublic:\n    Account& findById(long id) {\n        try {\n            return db.query(id);\n        } catch (const std::exception& e) {\n            // translate: SQL detail stays here, not exposed upward\n            throw DataAccessException(std::string(\"Account lookup failed: \") + e.what());\n        }\n    }\n};\n\n// Layer 2 - service (domain)\nclass PaymentService {\n    AccountRepository repo;\npublic:\n    void transfer(long fromId, long toId, double amount) {\n        try {\n            Account& from = repo.findById(fromId);\n            Account& to = repo.findById(toId);\n            from.debit(amount);\n            to.credit(amount);\n        } catch (const DataAccessException& e) {\n            throw PaymentException(\"Transfer failed: accounts unavailable\");\n        } catch (const InsufficientFundsException& e) {\n            throw PaymentException(\"Transfer failed: insufficient funds\");\n        }\n    }\n};\n\nstruct Response {\n    int status;\n    std::string message;\n\n    static Response ok(const std::string& message) { return Response{200, message}; }\n    static Response error(int status, const std::string& message) { return Response{status, message}; }\n};\n\nstd::ostream& operator<<(std::ostream& os, const Response& r) {\n    os << \"Response{status=\" << r.status << \", message=\" << r.message << \"}\";\n    return os;\n}\n\n// Layer 3 - controller (boundary)\nclass PaymentController {\n    PaymentService service;\npublic:\n    Response transfer(long from, long to, double amount) {\n        try {\n            service.transfer(from, to, amount);\n            return Response::ok(\"Transfer complete\");\n        } catch (const PaymentException& e) {\n            std::cout << \"[log] Transfer failed: \" << e.what() << std::endl;\n            return Response::error(400, e.what());\n        }\n    }\n};\n\nint main() {\n    PaymentController controller;\n    std::cout << controller.transfer(1, 2, 50.0) << std::endl;\n    std::cout << controller.transfer(2, 1, 1000.0) << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b style=\"letter-spacing: -0.003em;\">The key rule:</b><span style=\"letter-spacing: -0.003em;\"> each layer catches the exception types from the layer below and re-throws an exception that belongs to its own vocabulary. The controller never catches a&nbsp;</span><code style=\"letter-spacing: -0.003em;\">SQLException</code><span style=\"letter-spacing: -0.003em;\">.&nbsp;</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">The service never catches a raw&nbsp;</span><code style=\"letter-spacing: -0.003em;\">DatabaseError</code><span style=\"letter-spacing: -0.003em;\">. The hierarchy stays clean and each layer can be tested independently.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2. Exception hierarchy design",
+          "text": "2. Exception hierarchy design"
+        },
+        {
+          "type": "paragraph",
+          "content": "Good exception hierarchies are shallow and domain-driven. One base class per module, a small number of specific subclasses for failure modes that genuinely need different handling.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "Callers who want to handle everything catch the base; callers who care about a specific failure catch the subclass."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781598239426-901882704.png",
+          "alt": "Vehicle Parking Process Flow-2026-06-16-070912.png",
+          "width": 3182,
+          "height": 885
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "catch PaymentException for any payment failure catch subclass only when the response differs"
+        },
+        {
+          "type": "code",
+          "content": "// Base — all payment failures\n\nclass PaymentException extends RuntimeException {\n    public PaymentException(String msg, Throwable cause) { super(msg, cause); }\n    public PaymentException(String msg) { super(msg); }\n}\n\n// Specific subclasses only when the caller needs to react differently\n\nclass InsufficientFundsException extends PaymentException {\n    private final double shortfall;\n    public InsufficientFundsException(double shortfall) {\n        super(\"Short by $\" + shortfall);\n        this.shortfall = shortfall;\n    }\n    public double getShortfall() { return shortfall; }\n}\n\nclass AccountNotFoundException extends PaymentException {\n    public AccountNotFoundException(long id) {\n        super(\"No account with id=\" + id);\n    }\n}\n\n// caller catches base for generic handling, subclass when response differs\n\ntry {\n    service.transfer(from, to, amount);\n} catch (InsufficientFundsException e) {\n    ui.showTopUp(e.getShortfall());   // specific UX\n} catch (PaymentException e) {\n    ui.showGenericError(e.getMessage());\n}",
+          "code": "// Base — all payment failures\n\nclass PaymentException extends RuntimeException {\n    public PaymentException(String msg, Throwable cause) { super(msg, cause); }\n    public PaymentException(String msg) { super(msg); }\n}\n\n// Specific subclasses only when the caller needs to react differently\n\nclass InsufficientFundsException extends PaymentException {\n    private final double shortfall;\n    public InsufficientFundsException(double shortfall) {\n        super(\"Short by $\" + shortfall);\n        this.shortfall = shortfall;\n    }\n    public double getShortfall() { return shortfall; }\n}\n\nclass AccountNotFoundException extends PaymentException {\n    public AccountNotFoundException(long id) {\n        super(\"No account with id=\" + id);\n    }\n}\n\n// caller catches base for generic handling, subclass when response differs\n\ntry {\n    service.transfer(from, to, amount);\n} catch (InsufficientFundsException e) {\n    ui.showTopUp(e.getShortfall());   // specific UX\n} catch (PaymentException e) {\n    ui.showGenericError(e.getMessage());\n}",
+          "codes": {
+            "javascript": "// Base — all payment failures\n\nclass PaymentException extends RuntimeException {\n    public PaymentException(String msg, Throwable cause) { super(msg, cause); }\n    public PaymentException(String msg) { super(msg); }\n}\n\n// Specific subclasses only when the caller needs to react differently\n\nclass InsufficientFundsException extends PaymentException {\n    private final double shortfall;\n    public InsufficientFundsException(double shortfall) {\n        super(\"Short by $\" + shortfall);\n        this.shortfall = shortfall;\n    }\n    public double getShortfall() { return shortfall; }\n}\n\nclass AccountNotFoundException extends PaymentException {\n    public AccountNotFoundException(long id) {\n        super(\"No account with id=\" + id);\n    }\n}\n\n// caller catches base for generic handling, subclass when response differs\n\ntry {\n    service.transfer(from, to, amount);\n} catch (InsufficientFundsException e) {\n    ui.showTopUp(e.getShortfall());   // specific UX\n} catch (PaymentException e) {\n    ui.showGenericError(e.getMessage());\n}",
+            "python": "class PaymentException(Exception):\n    def __init__(self, message, cause=None):\n        super().__init__(message)\n        self.__cause__ = cause\n\n\n# Specific subclasses only when the caller needs to react differently\nclass InsufficientFundsException(PaymentException):\n    def __init__(self, shortfall: float):\n        super().__init__(f\"Short by ${shortfall}\")\n        self.shortfall = shortfall\n\n\nclass AccountNotFoundException(PaymentException):\n    def __init__(self, account_id: int):\n        super().__init__(f\"No account with id={account_id}\")\n\n\nclass Ui:\n    def show_top_up(self, shortfall: float):\n        print(f\"Show top-up prompt: need ${shortfall} more\")\n\n    def show_generic_error(self, message: str):\n        print(f\"Show generic error: {message}\")\n\n\nclass PaymentServiceDemo:\n    def transfer(self, from_id: int, to_id: int, amount: float):\n        if amount > 200:\n            raise InsufficientFundsException(amount - 200)\n        if to_id == 99:\n            raise AccountNotFoundException(to_id)\n\n\nif __name__ == \"__main__\":\n    service = PaymentServiceDemo()\n    ui = Ui()\n\n    # caller catches base for generic handling, subclass when response differs\n    try:\n        service.transfer(1, 2, 500.0)\n    except InsufficientFundsException as e:\n        ui.show_top_up(e.shortfall)  # specific UX\n    except PaymentException as e:\n        ui.show_generic_error(str(e))\n\n    try:\n        service.transfer(1, 99, 50.0)\n    except InsufficientFundsException as e:\n        ui.show_top_up(e.shortfall)\n    except PaymentException as e:\n        ui.show_generic_error(str(e))",
+            "java": "// Base - all payment failures\n\nclass PaymentException extends RuntimeException {\n    public PaymentException(String msg, Throwable cause) { super(msg, cause); }\n    public PaymentException(String msg) { super(msg); }\n}\n\n// Specific subclasses only when the caller needs to react differently\n\nclass InsufficientFundsException extends PaymentException {\n    private final double shortfall;\n    public InsufficientFundsException(double shortfall) {\n        super(\"Short by $\" + shortfall);\n        this.shortfall = shortfall;\n    }\n    public double getShortfall() { return shortfall; }\n}\n\nclass AccountNotFoundException extends PaymentException {\n    public AccountNotFoundException(long id) {\n        super(\"No account with id=\" + id);\n    }\n}\n\nclass Ui {\n    void showTopUp(double shortfall) {\n        System.out.println(\"Show top-up prompt: need $\" + shortfall + \" more\");\n    }\n    void showGenericError(String message) {\n        System.out.println(\"Show generic error: \" + message);\n    }\n}\n\nclass PaymentServiceDemo {\n    void transfer(long from, long to, double amount) {\n        if (amount > 200) {\n            throw new InsufficientFundsException(amount - 200);\n        }\n        if (to == 99) {\n            throw new AccountNotFoundException(to);\n        }\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        PaymentServiceDemo service = new PaymentServiceDemo();\n        Ui ui = new Ui();\n\n        // caller catches base for generic handling, subclass when response differs\n        try {\n            service.transfer(1, 2, 500.0);\n        } catch (InsufficientFundsException e) {\n            ui.showTopUp(e.getShortfall());   // specific UX\n        } catch (PaymentException e) {\n            ui.showGenericError(e.getMessage());\n        }\n\n        try {\n            service.transfer(1, 99, 50.0);\n        } catch (InsufficientFundsException e) {\n            ui.showTopUp(e.getShortfall());\n        } catch (PaymentException e) {\n            ui.showGenericError(e.getMessage());\n        }\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n#include <stdexcept>\n\n// Base - all payment failures\nclass PaymentException : public std::runtime_error {\npublic:\n    explicit PaymentException(const std::string& msg) : std::runtime_error(msg) {}\n};\n\n// Specific subclasses only when the caller needs to react differently\nclass InsufficientFundsException : public PaymentException {\npublic:\n    double shortfall;\n    explicit InsufficientFundsException(double shortfall)\n        : PaymentException(\"Short by $\" + std::to_string(shortfall)), shortfall(shortfall) {}\n};\n\nclass AccountNotFoundException : public PaymentException {\npublic:\n    explicit AccountNotFoundException(long id)\n        : PaymentException(\"No account with id=\" + std::to_string(id)) {}\n};\n\nclass Ui {\npublic:\n    void showTopUp(double shortfall) {\n        std::cout << \"Show top-up prompt: need $\" << shortfall << \" more\" << std::endl;\n    }\n    void showGenericError(const std::string& message) {\n        std::cout << \"Show generic error: \" << message << std::endl;\n    }\n};\n\nclass PaymentServiceDemo {\npublic:\n    void transfer(long from, long to, double amount) {\n        if (amount > 200) {\n            throw InsufficientFundsException(amount - 200);\n        }\n        if (to == 99) {\n            throw AccountNotFoundException(to);\n        }\n    }\n};\n\nint main() {\n    PaymentServiceDemo service;\n    Ui ui;\n\n    // caller catches base for generic handling, subclass when response differs\n    try {\n        service.transfer(1, 2, 500.0);\n    } catch (const InsufficientFundsException& e) {\n        ui.showTopUp(e.shortfall);   // specific UX\n    } catch (const PaymentException& e) {\n        ui.showGenericError(e.what());\n    }\n\n    try {\n        service.transfer(1, 99, 50.0);\n    } catch (const InsufficientFundsException& e) {\n        ui.showTopUp(e.shortfall);\n    } catch (const PaymentException& e) {\n        ui.showGenericError(e.what());\n    }\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading3",
+          "content": "Fail-fast vs graceful degradation",
+          "text": "Fail-fast vs graceful degradation"
+        },
+        {
+          "type": "paragraph",
+          "content": "Two opposite philosophies for handling failures and both are right in different situations."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong style=\\\"letter-spacing: -0.003em;\\\">Fail-fast&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Crash immediately on the first sign of something wrong. Makes bugs visible early, prevents corrupt state from spreading.&nbsp;</span><br>\",\"<b style=\\\"letter-spacing: -0.003em;\\\">Right for:</b><span style=\\\"letter-spacing: -0.003em;\\\"> invalid constructor arguments, missing required config, programming errors, startup checks.</span><br>\"]",
+          "items": [
+            "<strong style=\"letter-spacing: -0.003em;\">Fail-fast&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Crash immediately on the first sign of something wrong. Makes bugs visible early, prevents corrupt state from spreading.&nbsp;</span><br>",
+            "<b style=\"letter-spacing: -0.003em;\">Right for:</b><span style=\"letter-spacing: -0.003em;\"> invalid constructor arguments, missing required config, programming errors, startup checks.</span><br>"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Graceful degradation&nbsp;</strong>Catch the failure, log it, and continue with a reduced-quality response. Right for: optional external services, non-critical features, user-facing APIs where a partial result is better than nothing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3. Global exception handlers",
+          "text": "3. Global exception handlers"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781594630176-230869282.png\" alt=\"Vehicle Parking Process Flow-2026-06-16-072231.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">No matter how carefully you design per-layer handling, some exceptions escape to the top.&nbsp;</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "A global handler is the safety net it logs the failure, returns a clean error response to the caller, and prevents a raw stack trace from leaking to end users or API clients."
+        },
+        {
+          "type": "code",
+          "content": "@ControllerAdvice\nclass GlobalExceptionHandler {\n\n    @ExceptionHandler(PaymentException.class)\n    ResponseEntity<ErrorResponse> handlePayment(PaymentException e) {\n        log.error(\"Payment error\", e);\n        return ResponseEntity.badRequest()\n            .body(new ErrorResponse(\"PAYMENT_FAILED\", e.getMessage()));\n    }\n\n    @ExceptionHandler(Exception.class)\n    ResponseEntity<ErrorResponse> handleAll(Exception e) {\n        log.error(\"Unexpected error\", e);\n        // never leak internal details to the client\n        return ResponseEntity.internalServerError()\n            .body(new ErrorResponse(\"INTERNAL_ERROR\", \"An unexpected error occurred\"));\n    }\n}",
+          "code": "@ControllerAdvice\nclass GlobalExceptionHandler {\n\n    @ExceptionHandler(PaymentException.class)\n    ResponseEntity<ErrorResponse> handlePayment(PaymentException e) {\n        log.error(\"Payment error\", e);\n        return ResponseEntity.badRequest()\n            .body(new ErrorResponse(\"PAYMENT_FAILED\", e.getMessage()));\n    }\n\n    @ExceptionHandler(Exception.class)\n    ResponseEntity<ErrorResponse> handleAll(Exception e) {\n        log.error(\"Unexpected error\", e);\n        // never leak internal details to the client\n        return ResponseEntity.internalServerError()\n            .body(new ErrorResponse(\"INTERNAL_ERROR\", \"An unexpected error occurred\"));\n    }\n}",
+          "codes": {
+            "javascript": "@ControllerAdvice\nclass GlobalExceptionHandler {\n\n    @ExceptionHandler(PaymentException.class)\n    ResponseEntity<ErrorResponse> handlePayment(PaymentException e) {\n        log.error(\"Payment error\", e);\n        return ResponseEntity.badRequest()\n            .body(new ErrorResponse(\"PAYMENT_FAILED\", e.getMessage()));\n    }\n\n    @ExceptionHandler(Exception.class)\n    ResponseEntity<ErrorResponse> handleAll(Exception e) {\n        log.error(\"Unexpected error\", e);\n        // never leak internal details to the client\n        return ResponseEntity.internalServerError()\n            .body(new ErrorResponse(\"INTERNAL_ERROR\", \"An unexpected error occurred\"));\n    }\n}",
+            "python": "class PaymentException(Exception):\n    pass\n\n\nclass ErrorResponse:\n    def __init__(self, code: str, message: str):\n        self.code = code\n        self.message = message\n\n    def __repr__(self):\n        return f\"ErrorResponse(code={self.code}, message={self.message})\"\n\n\nclass ResponseEntity:\n    def __init__(self, status: int, body: ErrorResponse):\n        self.status = status\n        self.body = body\n\n    @staticmethod\n    def bad_request(body: ErrorResponse):\n        return ResponseEntity(400, body)\n\n    @staticmethod\n    def internal_server_error(body: ErrorResponse):\n        return ResponseEntity(500, body)\n\n    def __repr__(self):\n        return f\"ResponseEntity(status={self.status}, body={self.body})\"\n\n\n# simulates a framework-level global exception handler (e.g. @ControllerAdvice)\nclass GlobalExceptionHandler:\n    def handle_payment(self, e: PaymentException):\n        print(f\"[log] Payment error: {e}\")\n        return ResponseEntity.bad_request(ErrorResponse(\"PAYMENT_FAILED\", str(e)))\n\n    def handle_all(self, e: Exception):\n        print(f\"[log] Unexpected error: {e}\")\n        # never leak internal details to the client\n        return ResponseEntity.internal_server_error(ErrorResponse(\"INTERNAL_ERROR\", \"An unexpected error occurred\"))\n\n    # the framework routes to the most specific handler automatically\n    def dispatch(self, e: Exception):\n        if isinstance(e, PaymentException):\n            return self.handle_payment(e)\n        return self.handle_all(e)\n\n\nif __name__ == \"__main__\":\n    handler = GlobalExceptionHandler()\n\n    try:\n        raise PaymentException(\"card declined\")\n    except Exception as e:\n        print(handler.dispatch(e))\n\n    try:\n        raise RuntimeError(\"null pointer somewhere\")\n    except Exception as e:\n        print(handler.dispatch(e))",
+            "java": "class PaymentException extends RuntimeException {\n    PaymentException(String msg) { super(msg); }\n}\n\nclass ErrorResponse {\n    String code;\n    String message;\n\n    ErrorResponse(String code, String message) {\n        this.code = code;\n        this.message = message;\n    }\n\n    @Override\n    public String toString() {\n        return \"ErrorResponse{code=\" + code + \", message=\" + message + \"}\";\n    }\n}\n\nclass ResponseEntity {\n    int status;\n    ErrorResponse body;\n\n    ResponseEntity(int status, ErrorResponse body) {\n        this.status = status;\n        this.body = body;\n    }\n\n    static ResponseEntity badRequest(ErrorResponse body) { return new ResponseEntity(400, body); }\n    static ResponseEntity internalServerError(ErrorResponse body) { return new ResponseEntity(500, body); }\n\n    @Override\n    public String toString() {\n        return \"ResponseEntity{status=\" + status + \", body=\" + body + \"}\";\n    }\n}\n\n// simulates a framework-level global exception handler (e.g. @ControllerAdvice)\nclass GlobalExceptionHandler {\n\n    ResponseEntity handlePayment(PaymentException e) {\n        System.out.println(\"[log] Payment error: \" + e.getMessage());\n        return ResponseEntity.badRequest(new ErrorResponse(\"PAYMENT_FAILED\", e.getMessage()));\n    }\n\n    ResponseEntity handleAll(Exception e) {\n        System.out.println(\"[log] Unexpected error: \" + e.getMessage());\n        // never leak internal details to the client\n        return ResponseEntity.internalServerError(new ErrorResponse(\"INTERNAL_ERROR\", \"An unexpected error occurred\"));\n    }\n\n    // the framework routes to the most specific handler automatically\n    ResponseEntity dispatch(Exception e) {\n        if (e instanceof PaymentException) {\n            return handlePayment((PaymentException) e);\n        }\n        return handleAll(e);\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        GlobalExceptionHandler handler = new GlobalExceptionHandler();\n\n        try {\n            throw new PaymentException(\"card declined\");\n        } catch (Exception e) {\n            System.out.println(handler.dispatch(e));\n        }\n\n        try {\n            throw new RuntimeException(\"null pointer somewhere\");\n        } catch (Exception e) {\n            System.out.println(handler.dispatch(e));\n        }\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n#include <stdexcept>\n\nclass PaymentException : public std::runtime_error {\npublic:\n    explicit PaymentException(const std::string& msg) : std::runtime_error(msg) {}\n};\n\nclass ErrorResponse {\npublic:\n    std::string code;\n    std::string message;\n    ErrorResponse(const std::string& code, const std::string& message) : code(code), message(message) {}\n};\n\nstd::ostream& operator<<(std::ostream& os, const ErrorResponse& r) {\n    os << \"ErrorResponse{code=\" << r.code << \", message=\" << r.message << \"}\";\n    return os;\n}\n\nclass ResponseEntity {\npublic:\n    int status;\n    ErrorResponse body;\n    ResponseEntity(int status, ErrorResponse body) : status(status), body(body) {}\n\n    static ResponseEntity badRequest(ErrorResponse body) { return ResponseEntity(400, body); }\n    static ResponseEntity internalServerError(ErrorResponse body) { return ResponseEntity(500, body); }\n};\n\nstd::ostream& operator<<(std::ostream& os, const ResponseEntity& r) {\n    os << \"ResponseEntity{status=\" << r.status << \", body=\" << r.body << \"}\";\n    return os;\n}\n\n// simulates a framework-level global exception handler (e.g. @ControllerAdvice)\nclass GlobalExceptionHandler {\npublic:\n    ResponseEntity handlePayment(const PaymentException& e) {\n        std::cout << \"[log] Payment error: \" << e.what() << std::endl;\n        return ResponseEntity::badRequest(ErrorResponse(\"PAYMENT_FAILED\", e.what()));\n    }\n\n    ResponseEntity handleAll(const std::exception& e) {\n        std::cout << \"[log] Unexpected error: \" << e.what() << std::endl;\n        // never leak internal details to the client\n        return ResponseEntity::internalServerError(ErrorResponse(\"INTERNAL_ERROR\", \"An unexpected error occurred\"));\n    }\n\n    // the framework routes to the most specific handler automatically\n    ResponseEntity dispatch(const std::exception& e) {\n        if (const auto* pe = dynamic_cast<const PaymentException*>(&e)) {\n            return handlePayment(*pe);\n        }\n        return handleAll(e);\n    }\n};\n\nint main() {\n    GlobalExceptionHandler handler;\n\n    try {\n        throw PaymentException(\"card declined\");\n    } catch (const std::exception& e) {\n        std::cout << handler.dispatch(e) << std::endl;\n    }\n\n    try {\n        throw std::runtime_error(\"null pointer somewhere\");\n    } catch (const std::exception& e) {\n        std::cout << handler.dispatch(e) << std::endl;\n    }\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">",
+          "text": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Logging discipline",
+          "text": "2. Logging discipline"
+        },
+        {
+          "type": "paragraph",
+          "content": "Exception handling and logging are inseparable. The most common logging mistake is logging the same exception at multiple layers you get five lines of stack trace in your logs for a single payment failure, all saying slightly different things.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>The rule is simple:</b> log once, at the boundary where the exception is finally handled."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong style=\\\"letter-spacing: -0.003em;\\\">Log at the boundary, once.</strong><span style=\\\"letter-spacing: -0.003em;\\\">The layer that handles the exception (not re-throws it) writes the log line. Inner layers translate and re-throw silently.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Include the original cause.</strong><span style=\\\"letter-spacing: -0.003em;\\\">Always pass the root exception as the second argument to the logger&nbsp;</span><code style=\\\"letter-spacing: -0.003em;\\\">log.error(\\\"msg\\\", e)</code><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;so the full stack trace appears in the log.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Use structured context.</strong><span style=\\\"letter-spacing: -0.003em;\\\">Log the relevant IDs alongside the message: account ID, transaction ID, user ID. Makes filtering logs in production 10× faster.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Never log then re-throw.</strong><span style=\\\"letter-spacing: -0.003em;\\\">Writing</span><code style=\\\"letter-spacing: -0.003em;\\\">log.error(e); throw e;</code><span style=\\\"letter-spacing: -0.003em;\\\">then logging again one layer up produces duplicate stack traces and hides which layer actually owns the problem.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Never log then swallow.</strong><span style=\\\"letter-spacing: -0.003em;\\\">Writing</span><code style=\\\"letter-spacing: -0.003em;\\\">log.warn(e)</code><span style=\\\"letter-spacing: -0.003em;\\\">and returning a fallback when the failure was actually serious misleads whoever reads the logs into thinking the system handled it gracefully.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Choose the right log level.</strong><code style=\\\"letter-spacing: -0.003em;\\\">ERROR</code><span style=\\\"letter-spacing: -0.003em;\\\">for failures that need human attention.</span><code style=\\\"letter-spacing: -0.003em;\\\">WARN</code><span style=\\\"letter-spacing: -0.003em;\\\">for expected degraded states.</span><code style=\\\"letter-spacing: -0.003em;\\\">INFO</code><span style=\\\"letter-spacing: -0.003em;\\\">for normal but notable events.</span><code style=\\\"letter-spacing: -0.003em;\\\">DEBUG</code><span style=\\\"letter-spacing: -0.003em;\\\">for trace data. Miscategorised levels drown alert dashboards in noise.</span><br>\"]",
+          "items": [
+            "<strong style=\"letter-spacing: -0.003em;\">Log at the boundary, once.</strong><span style=\"letter-spacing: -0.003em;\">The layer that handles the exception (not re-throws it) writes the log line. Inner layers translate and re-throw silently.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Include the original cause.</strong><span style=\"letter-spacing: -0.003em;\">Always pass the root exception as the second argument to the logger&nbsp;</span><code style=\"letter-spacing: -0.003em;\">log.error(\"msg\", e)</code><span style=\"letter-spacing: -0.003em;\">&nbsp;so the full stack trace appears in the log.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Use structured context.</strong><span style=\"letter-spacing: -0.003em;\">Log the relevant IDs alongside the message: account ID, transaction ID, user ID. Makes filtering logs in production 10× faster.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Never log then re-throw.</strong><span style=\"letter-spacing: -0.003em;\">Writing</span><code style=\"letter-spacing: -0.003em;\">log.error(e); throw e;</code><span style=\"letter-spacing: -0.003em;\">then logging again one layer up produces duplicate stack traces and hides which layer actually owns the problem.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Never log then swallow.</strong><span style=\"letter-spacing: -0.003em;\">Writing</span><code style=\"letter-spacing: -0.003em;\">log.warn(e)</code><span style=\"letter-spacing: -0.003em;\">and returning a fallback when the failure was actually serious misleads whoever reads the logs into thinking the system handled it gracefully.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Choose the right log level.</strong><code style=\"letter-spacing: -0.003em;\">ERROR</code><span style=\"letter-spacing: -0.003em;\">for failures that need human attention.</span><code style=\"letter-spacing: -0.003em;\">WARN</code><span style=\"letter-spacing: -0.003em;\">for expected degraded states.</span><code style=\"letter-spacing: -0.003em;\">INFO</code><span style=\"letter-spacing: -0.003em;\">for normal but notable events.</span><code style=\"letter-spacing: -0.003em;\">DEBUG</code><span style=\"letter-spacing: -0.003em;\">for trace data. Miscategorised levels drown alert dashboards in noise.</span><br>"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "code",
+          "content": "// Inner layer — translate only, NO logging here\n\nclass PaymentService {\n    void transfer(long from, long to, double amount) throws PaymentException {\n        try {\n            repo.findById(from).debit(amount);\n        } catch (DataAccessException e) {\n            throw new PaymentException(\"Transfer failed\", e); // no log here\n        }\n    }\n}\n\n// Boundary layer — log ONCE here with full context\n\nclass PaymentController {\n    Response transfer(Request req) {\n        try {\n            service.transfer(req.from, req.to, req.amount);\n            return Response.ok();\n        } catch (PaymentException e) {\n            log.error(\"Transfer failed from={} to={} amount={}\",\n                      req.from, req.to, req.amount, e); // context + cause\n            return Response.error(400, e.getMessage());\n        }\n    }\n}",
+          "code": "// Inner layer — translate only, NO logging here\n\nclass PaymentService {\n    void transfer(long from, long to, double amount) throws PaymentException {\n        try {\n            repo.findById(from).debit(amount);\n        } catch (DataAccessException e) {\n            throw new PaymentException(\"Transfer failed\", e); // no log here\n        }\n    }\n}\n\n// Boundary layer — log ONCE here with full context\n\nclass PaymentController {\n    Response transfer(Request req) {\n        try {\n            service.transfer(req.from, req.to, req.amount);\n            return Response.ok();\n        } catch (PaymentException e) {\n            log.error(\"Transfer failed from={} to={} amount={}\",\n                      req.from, req.to, req.amount, e); // context + cause\n            return Response.error(400, e.getMessage());\n        }\n    }\n}",
+          "codes": {
+            "javascript": "// Inner layer — translate only, NO logging here\n\nclass PaymentService {\n    void transfer(long from, long to, double amount) throws PaymentException {\n        try {\n            repo.findById(from).debit(amount);\n        } catch (DataAccessException e) {\n            throw new PaymentException(\"Transfer failed\", e); // no log here\n        }\n    }\n}\n\n// Boundary layer — log ONCE here with full context\n\nclass PaymentController {\n    Response transfer(Request req) {\n        try {\n            service.transfer(req.from, req.to, req.amount);\n            return Response.ok();\n        } catch (PaymentException e) {\n            log.error(\"Transfer failed from={} to={} amount={}\",\n                      req.from, req.to, req.amount, e); // context + cause\n            return Response.error(400, e.getMessage());\n        }\n    }\n}",
+            "python": "class DataAccessException(Exception):\n    pass\n\n\nclass PaymentException(Exception):\n    def __init__(self, message, cause=None):\n        super().__init__(message)\n        self.__cause__ = cause\n\n\nclass Account:\n    def __init__(self, account_id: int, balance: float):\n        self.account_id = account_id\n        self.balance = balance\n\n    def debit(self, amount: float):\n        if amount > self.balance:\n            raise DataAccessException(f\"Insufficient balance for account {self.account_id}\")\n        self.balance -= amount\n\n\nclass AccountRepository:\n    def find_by_id(self, account_id: int) -> Account:\n        return Account(account_id, 100.0)\n\n\n# Inner layer - translate only, NO logging here\nclass PaymentService:\n    def __init__(self):\n        self.repo = AccountRepository()\n\n    def transfer(self, from_id: int, to_id: int, amount: float):\n        try:\n            self.repo.find_by_id(from_id).debit(amount)\n        except DataAccessException as e:\n            raise PaymentException(\"Transfer failed\", e) from e  # no log here\n\n\nclass Request:\n    def __init__(self, from_id: int, to_id: int, amount: float):\n        self.from_id = from_id\n        self.to_id = to_id\n        self.amount = amount\n\n\nclass Response:\n    def __init__(self, status: int, message: str):\n        self.status = status\n        self.message = message\n\n    @staticmethod\n    def ok():\n        return Response(200, \"OK\")\n\n    @staticmethod\n    def error(status: int, message: str):\n        return Response(status, message)\n\n    def __repr__(self):\n        return f\"Response(status={self.status}, message={self.message})\"\n\n\n# Boundary layer - log ONCE here with full context\nclass PaymentController:\n    def __init__(self):\n        self.service = PaymentService()\n\n    def transfer(self, req: Request):\n        try:\n            self.service.transfer(req.from_id, req.to_id, req.amount)\n            return Response.ok()\n        except PaymentException as e:\n            print(f\"[log] Transfer failed from={req.from_id} to={req.to_id} \"\n                  f\"amount={req.amount:.2f} cause={e}\")  # context + cause\n            return Response.error(400, str(e))\n\n\nif __name__ == \"__main__\":\n    controller = PaymentController()\n    print(controller.transfer(Request(1, 2, 500.0)))",
+            "java": "class DataAccessException extends RuntimeException {\n    DataAccessException(String msg) { super(msg); }\n}\n\nclass PaymentException extends RuntimeException {\n    PaymentException(String msg, Throwable cause) { super(msg, cause); }\n}\n\nclass Account {\n    long id;\n    double balance;\n    Account(long id, double balance) { this.id = id; this.balance = balance; }\n    void debit(double amount) {\n        if (amount > balance) {\n            throw new DataAccessException(\"Insufficient balance for account \" + id);\n        }\n        balance -= amount;\n    }\n}\n\nclass AccountRepository {\n    Account findById(long id) {\n        return new Account(id, 100.0);\n    }\n}\n\n// Inner layer - translate only, NO logging here\n\nclass PaymentService {\n    private final AccountRepository repo = new AccountRepository();\n\n    void transfer(long from, long to, double amount) {\n        try {\n            repo.findById(from).debit(amount);\n        } catch (DataAccessException e) {\n            throw new PaymentException(\"Transfer failed\", e); // no log here\n        }\n    }\n}\n\nclass Request {\n    long from, to;\n    double amount;\n    Request(long from, long to, double amount) { this.from = from; this.to = to; this.amount = amount; }\n}\n\nclass Response {\n    int status;\n    String message;\n    private Response(int status, String message) { this.status = status; this.message = message; }\n    static Response ok() { return new Response(200, \"OK\"); }\n    static Response error(int status, String message) { return new Response(status, message); }\n    @Override\n    public String toString() { return \"Response{status=\" + status + \", message=\" + message + \"}\"; }\n}\n\n// Boundary layer - log ONCE here with full context\n\nclass PaymentController {\n    private final PaymentService service = new PaymentService();\n\n    Response transfer(Request req) {\n        try {\n            service.transfer(req.from, req.to, req.amount);\n            return Response.ok();\n        } catch (PaymentException e) {\n            System.out.printf(\"[log] Transfer failed from=%d to=%d amount=%.2f cause=%s%n\",\n                      req.from, req.to, req.amount, e.getMessage()); // context + cause\n            return Response.error(400, e.getMessage());\n        }\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        PaymentController controller = new PaymentController();\n        System.out.println(controller.transfer(new Request(1, 2, 500.0)));\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n#include <stdexcept>\n#include <cstdio>\n\nclass DataAccessException : public std::runtime_error {\npublic:\n    explicit DataAccessException(const std::string& msg) : std::runtime_error(msg) {}\n};\n\nclass PaymentException : public std::runtime_error {\npublic:\n    explicit PaymentException(const std::string& msg) : std::runtime_error(msg) {}\n};\n\nclass Account {\npublic:\n    long id;\n    double balance;\n    Account(long id, double balance) : id(id), balance(balance) {}\n    void debit(double amount) {\n        if (amount > balance) {\n            throw DataAccessException(\"Insufficient balance for account \" + std::to_string(id));\n        }\n        balance -= amount;\n    }\n};\n\nclass AccountRepository {\npublic:\n    Account findById(long id) {\n        return Account(id, 100.0);\n    }\n};\n\n// Inner layer - translate only, NO logging here\nclass PaymentService {\n    AccountRepository repo;\npublic:\n    void transfer(long from, long to, double amount) {\n        try {\n            Account account = repo.findById(from);\n            account.debit(amount);\n        } catch (const DataAccessException& e) {\n            throw PaymentException(\"Transfer failed\"); // no log here\n        }\n    }\n};\n\nstruct Request {\n    long from, to;\n    double amount;\n    Request(long from, long to, double amount) : from(from), to(to), amount(amount) {}\n};\n\nstruct Response {\n    int status;\n    std::string message;\n    static Response ok() { return Response{200, \"OK\"}; }\n    static Response error(int status, const std::string& message) { return Response{status, message}; }\n};\n\nstd::ostream& operator<<(std::ostream& os, const Response& r) {\n    os << \"Response{status=\" << r.status << \", message=\" << r.message << \"}\";\n    return os;\n}\n\n// Boundary layer - log ONCE here with full context\nclass PaymentController {\n    PaymentService service;\npublic:\n    Response transfer(const Request& req) {\n        try {\n            service.transfer(req.from, req.to, req.amount);\n            return Response::ok();\n        } catch (const PaymentException& e) {\n            char buf[128];\n            snprintf(buf, sizeof(buf), \"[log] Transfer failed from=%ld to=%ld amount=%.2f cause=%s\",\n                     req.from, req.to, req.amount, e.what()); // context + cause\n            std::cout << buf << std::endl;\n            return Response::error(400, e.what());\n        }\n    }\n};\n\nint main() {\n    PaymentController controller;\n    std::cout << controller.transfer(Request(1, 2, 500.0)) << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Exception messages&nbsp;",
+          "text": "3. Exception messages&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "A good exception message is a first-responder tool. Someone reads it at 2 AM during an incident. It must tell them what happened, which entity was involved, and what value caused the failure without requiring them to read source code."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong style=\\\"letter-spacing: -0.003em;\\\">Include the offending value:</strong><code style=\\\"letter-spacing: -0.003em;\\\">\\\"Transfer amount -50.0 must be positive\\\"</code><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;not just</span><code style=\\\"letter-spacing: -0.003em;\\\">\\\"Invalid amount\\\"</code><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Include the entity ID:</strong><code style=\\\"letter-spacing: -0.003em;\\\">\\\"Account id=4821 not found\\\"</code><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;something you can paste into a database query immediately</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">State the constraint that was violated:</strong><code style=\\\"letter-spacing: -0.003em;\\\">\\\"Transfer $1500.00 exceeds daily limit $1000.00\\\"</code><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;tells you both what happened and why it was wrong</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Never include passwords, tokens, or PII&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">in exception messages they end up in logs, which end up in log aggregators, which are far less secured than your database</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Avoid vague messages:</strong><code style=\\\"letter-spacing: -0.003em;\\\">\\\"Something went wrong\\\"</code><span style=\\\"letter-spacing: -0.003em;\\\">,</span><code style=\\\"letter-spacing: -0.003em;\\\">\\\"Error occurred\\\"</code><span style=\\\"letter-spacing: -0.003em;\\\">,</span><code style=\\\"letter-spacing: -0.003em;\\\">\\\"Failed\\\"</code><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;these are noise that make log search impossible</span><br>\"]",
+          "items": [
+            "<strong style=\"letter-spacing: -0.003em;\">Include the offending value:</strong><code style=\"letter-spacing: -0.003em;\">\"Transfer amount -50.0 must be positive\"</code><span style=\"letter-spacing: -0.003em;\">&nbsp;not just</span><code style=\"letter-spacing: -0.003em;\">\"Invalid amount\"</code><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Include the entity ID:</strong><code style=\"letter-spacing: -0.003em;\">\"Account id=4821 not found\"</code><span style=\"letter-spacing: -0.003em;\">&nbsp;something you can paste into a database query immediately</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">State the constraint that was violated:</strong><code style=\"letter-spacing: -0.003em;\">\"Transfer $1500.00 exceeds daily limit $1000.00\"</code><span style=\"letter-spacing: -0.003em;\">&nbsp;tells you both what happened and why it was wrong</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Never include passwords, tokens, or PII&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">in exception messages they end up in logs, which end up in log aggregators, which are far less secured than your database</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Avoid vague messages:</strong><code style=\"letter-spacing: -0.003em;\">\"Something went wrong\"</code><span style=\"letter-spacing: -0.003em;\">,</span><code style=\"letter-spacing: -0.003em;\">\"Error occurred\"</code><span style=\"letter-spacing: -0.003em;\">,</span><code style=\"letter-spacing: -0.003em;\">\"Failed\"</code><span style=\"letter-spacing: -0.003em;\">&nbsp;these are noise that make log search impossible</span><br>"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Common design mistakes",
+          "text": "4. Common design mistakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 1: exception hierarchy too deep</strong>"
+        },
+        {
+          "type": "paragraph",
+          "content": "Five levels of inheritance for exceptions that all end in the same log line. If you never catch the subclass differently from the parent, the subclass adds nothing. Keep hierarchies flat &nbsp;one or two levels below the module base is almost always enough."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 2: using exceptions for flow control</strong>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Throwing<code>ItemNotFoundException</code>to signal \"this item simply doesn't exist in a cache lookup\" and then catching it one line later to return a default is not exception handling it is a slow, misleading goto. Use<code>Optional</code>, a sentinel value, or a boolean return for expected absence."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 3: leaking internal exception types across module boundaries</strong>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Letting<code>SQLException</code>propagate from the repository layer to the controller, or letting a<code>std::filesystem::filesystem_error</code>reach your REST handler, couples layers that should be independent. Always translate at the boundary."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 4: catching then re-throwing without chaining</strong>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "In Python,<code>raise PaymentError(\"failed\")</code>inside an except block silently drops the original traceback.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "In Java,<code>throw new PaymentException(\"failed\")</code>without passing the caught exception as a cause loses the root. Both make post-incident debugging dramatically harder. Always chain: pass the cause explicitly."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 5: no global handler in a web service</strong>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Any unhandled exception that reaches an HTTP framework without a global handler either returns a raw 500 with a stack trace (security leak) or silently returns a 200 with an empty body (worse). Always wire a catch-all handler that returns a clean error shape and logs the details."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 6: retry without idempotency check</strong>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Catching a timeout and retrying a payment transfer without verifying idempotency can charge a user twice. Transient failures that touch mutable state need a token-based deduplication strategy before the retry is safe."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Design checklist",
+          "text": "5. Design checklist"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong style=\\\"letter-spacing: -0.003em;\\\">One base per module&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Each module or service has its own base exception class. Callers import that, not the implementation details underneath.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Translate at layer boundaries&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Catch the lower layer's exception type, throw your own. The root cause travels as a chained cause, not as a leaked type.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Global safety net&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Every web service has a catch-all handler that logs the full trace and returns a sanitised error response never a raw stack trace.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Log once at the boundary&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Inner layers translate silently. The outermost handler that resolves the exception writes the one log line with context IDs and the original cause.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Message tells the story&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Every exception message includes the entity, the offending value, and the constraint violated. No vague strings, no PII.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Fail-fast on programming errors&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Null arguments, invalid config, broken invariants throw immediately. Don't let corrupt state propagate silently through the system.</span>\"]",
+          "items": [
+            "<strong style=\"letter-spacing: -0.003em;\">One base per module&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Each module or service has its own base exception class. Callers import that, not the implementation details underneath.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Translate at layer boundaries&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Catch the lower layer's exception type, throw your own. The root cause travels as a chained cause, not as a leaked type.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Global safety net&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Every web service has a catch-all handler that logs the full trace and returns a sanitised error response never a raw stack trace.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Log once at the boundary&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Inner layers translate silently. The outermost handler that resolves the exception writes the one log line with context IDs and the original cause.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Message tells the story&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Every exception message includes the entity, the offending value, and the constraint violated. No vague strings, no PII.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Fail-fast on programming errors&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Null arguments, invalid config, broken invariants throw immediately. Don't let corrupt state propagate silently through the system.</span>"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,514 @@
+{
+  "slug": "kappa-architecture",
+  "title": "Kappa Architecture",
+  "content": [
+    {
+      "id": "kappa-architecture",
+      "title": "Kappa Architecture",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Picture a food delivery app that needs a \"most ordered dish this month\" report and also a live \"trending right now\" widget on the home screen."
+        },
+        {
+          "type": "paragraph",
+          "content": "One obvious way to build this is to write two pipelines. A nightly batch job crunches the full order history for the monthly report, and a separate realtime job watches the live order stream for the trending widget."
+        },
+        {
+          "type": "paragraph",
+          "content": "That sounds fine until someone changes the definition of \"counts as an order\" and now you have to update the counting logic in two different codebases, in two different languages, and hope they agree. This is exactly the pain that Kappa architecture was invented to remove."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Kappa architecture is a way of building data pipelines where there is only one processing path, not two. Everything, old data and new data alike, flows through a single stream processing pipeline."
+        },
+        {
+          "type": "paragraph",
+          "content": "It was proposed as a direct response to a well known older pattern called Lambda architecture, which asks you to maintain a batch layer and a speed layer side by side. Before Kappa makes sense, you need to feel why Lambda is painful in practice."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327872-668261630.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327872-668261630.png",
+          "alt": "Lambda architecture sends new events into both a batch layer and a speed layer, which are merged later"
+        },
+        {
+          "type": "paragraph",
+          "content": "Look at the diagram above. The same events get processed twice, once by a batch job and once by a stream job, then a merge layer stitches the two views together for whoever is reading the data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 The Problem With Doing Everything Twice",
+          "text": "1.1 The Problem With Doing Everything Twice"
+        },
+        {
+          "type": "paragraph",
+          "content": "Lambda architecture is not a bad idea. It solves a real problem, batch engines are great at correctness over huge historical datasets, and stream engines are great at low latency on fresh data. But it comes with a maintenance tax that grows over time."
+        },
+        {
+          "type": "list",
+          "content": "[\"You write your business logic once for the batch layer, usually in something like Spark, and again for the speed layer, usually in something like Kafka Streams or Flink.\",\"The two implementations drift. Someone fixes a bug in the streaming job and forgets the batch job exists, or vice versa.\",\"Testing effectively doubles, because every change to counting or aggregation logic needs to be verified in two separate systems.\",\"On boarding a new engineer means teaching them two pipelines instead of one, and explaining why they sometimes disagree.\"]",
+          "items": [
+            "You write your business logic once for the batch layer, usually in something like Spark, and again for the speed layer, usually in something like Kafka Streams or Flink.",
+            "The two implementations drift. Someone fixes a bug in the streaming job and forgets the batch job exists, or vice versa.",
+            "Testing effectively doubles, because every change to counting or aggregation logic needs to be verified in two separate systems.",
+            "On boarding a new engineer means teaching them two pipelines instead of one, and explaining why they sometimes disagree."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "None of these problems are exotic. They show up constantly on real teams, and they get worse the longer the system lives and the more people touch it."
+        },
+        {
+          "type": "note",
+          "title": "Common misconception",
+          "content": "The pain in Lambda architecture is not that batch and stream processing exist. It is that the same business logic has to be written and kept in sync twice, in two different systems."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Quick Recap: Lambda Architecture",
+          "text": "2. Quick Recap: Lambda Architecture"
+        },
+        {
+          "type": "paragraph",
+          "content": "It helps to name the three pieces Lambda architecture is built from before you see how Kappa collapses them."
+        },
+        {
+          "type": "list",
+          "content": "[\"Batch layer, a job that periodically recomputes correct, complete views from the full historical dataset.\",\"Speed layer, a stream job that computes approximate, low latency views from only the most recent data.\",\"Serving layer, which merges the batch view and the speed view so a query looks like it is reading one consistent answer.\"]",
+          "items": [
+            "Batch layer, a job that periodically recomputes correct, complete views from the full historical dataset.",
+            "Speed layer, a stream job that computes approximate, low latency views from only the most recent data.",
+            "Serving layer, which merges the batch view and the speed view so a query looks like it is reading one consistent answer."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The serving layer is where the seams show. It has to reconcile two views that were produced by two different code paths, and any mismatch between them becomes a confusing bug for whoever is debugging the numbers."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Two implementations of the same logic will eventually disagree. It is not a question of if, only when."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Core Idea Behind Kappa Architecture",
+          "text": "3. The Core Idea Behind Kappa Architecture"
+        },
+        {
+          "type": "paragraph",
+          "content": "Kappa architecture throws out the batch layer entirely. There is exactly one processing path, and it is a stream processing pipeline. Historical data and brand new data both flow through it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327873-663132393.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327873-663132393.png",
+          "alt": "Kappa architecture has a single event log feeding a single stream processor into one serving layer"
+        },
+        {
+          "type": "paragraph",
+          "content": "Compare this to the Lambda diagram from section one. There is no merge layer here, because there is nothing to merge. There is only one output, produced by one piece of logic."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Treat All Data As One Append-Only Stream",
+          "text": "3.1 Treat All Data As One Append-Only Stream"
+        },
+        {
+          "type": "paragraph",
+          "content": "The foundational move in Kappa architecture is to treat all of your data, no matter how old, as events sitting in a single append-only log. Kafka is the usual technology for this, though the idea itself is not tied to any one product."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327874-206503178.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327874-206503178.png",
+          "alt": "Both historical events and new events land in the same append only log before reaching the stream processor"
+        },
+        {
+          "type": "paragraph",
+          "content": "Nothing is special about \"historical\" data in this model. It is just older entries further back in the same log. New data is just entries appended at the end. Your processing logic reads the log the same way regardless of when an event happened."
+        },
+        {
+          "type": "list",
+          "content": "[\"No separate historical database format to maintain.\",\"No separate batch export pipeline to keep in sync with the live stream.\",\"One schema, one serialization format, one source of truth for what an event looks like.\"]",
+          "items": [
+            "No separate historical database format to maintain.",
+            "No separate batch export pipeline to keep in sync with the live stream.",
+            "One schema, one serialization format, one source of truth for what an event looks like."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 One Pipeline, No Separate Batch Layer",
+          "text": "3.2 One Pipeline, No Separate Batch Layer"
+        },
+        {
+          "type": "paragraph",
+          "content": "With everything living in one log, you only need one stream processing job. It reads from the source topic, applies your business logic, keeps whatever state it needs, and writes results out."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327874-583549027.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327874-583549027.png",
+          "alt": "A single Kafka Streams job reads the source topic, keeps a state store, and writes to an output topic"
+        },
+        {
+          "type": "paragraph",
+          "content": "That is the entire architecture. There is no second job computing the \"correct\" version overnight. The stream job is the only version, and it is always running."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Handling Batch Style Reprocessing Without a Batch Layer",
+          "text": "4. Handling Batch Style Reprocessing Without a Batch Layer"
+        },
+        {
+          "type": "paragraph",
+          "content": "A fair question at this point is, what happens when your processing logic needs to change? In Lambda architecture, you would fix the batch job and let it recompute history. Kappa architecture has no batch job to run, so it needs a different trick."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327875-509025829.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327875-509025829.png",
+          "alt": "Resetting to offset zero replays the whole log through updated logic to produce fresh state"
+        },
+        {
+          "type": "paragraph",
+          "content": "The trick is replay. Because the log keeps history, you can rewind your stream processor all the way back to the beginning and run the updated logic over every event again, from the very first one to the most recent one."
+        },
+        {
+          "type": "list",
+          "content": "[\"Deploy the new version of your stream processing logic.\",\"Reset its consumption point back to the earliest offset in the log, or spin up a fresh instance pointed at offset zero.\",\"Let it churn through the entire history again, rebuilding whatever counts, aggregates, or tables it needs.\",\"Once it catches up to the live end of the log, it is now processing in realtime with the corrected logic, and you can retire the old output.\"]",
+          "items": [
+            "Deploy the new version of your stream processing logic.",
+            "Reset its consumption point back to the earliest offset in the log, or spin up a fresh instance pointed at offset zero.",
+            "Let it churn through the entire history again, rebuilding whatever counts, aggregates, or tables it needs.",
+            "Once it catches up to the live end of the log, it is now processing in realtime with the corrected logic, and you can retire the old output."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Watch your state store",
+          "content": "If your stream processor keeps running totals in a state store, make sure that store is cleared or rebuilt fresh before replay starts. Replaying events into an old state store just adds duplicate counts on top of what is already there."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Why This Is Simpler to Maintain",
+          "text": "5. Why This Is Simpler to Maintain"
+        },
+        {
+          "type": "paragraph",
+          "content": "The maintenance win is not subtle. You write your business logic exactly once. There is exactly one codebase, one language, one set of unit tests, and one deploy pipeline."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327875-189440626.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327875-189440626.png",
+          "alt": "Lambda splits logic into a batch codebase and a speed codebase, Kappa keeps one streaming codebase"
+        },
+        {
+          "type": "paragraph",
+          "content": "There is nothing to keep in sync because there is nothing else to drift from. When you fix a bug, you fix it once, and both \"historical\" and \"live\" results are automatically consistent, because they came from the same run of the same code."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. What Kappa Actually Requires",
+          "text": "6. What Kappa Actually Requires"
+        },
+        {
+          "type": "paragraph",
+          "content": "This simplicity is not free. Kappa architecture only works if two specific pieces of infrastructure are genuinely up to the job."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 A Log That Can Retain Enough History",
+          "text": "6.1 A Log That Can Retain Enough History"
+        },
+        {
+          "type": "paragraph",
+          "content": "Your event log needs to hold onto enough history to make replay meaningful. If Kafka is configured to delete events after a few days, you cannot replay a full year of data, because it is simply gone."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327875-793251094.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327875-793251094.png",
+          "alt": "A wide enough retention window keeps events stored long enough to be replayed later"
+        },
+        {
+          "type": "paragraph",
+          "content": "Teams that need very long replay windows either configure long retention directly on the topic, or archive older events to cheaper storage such as S3 and read from there when a full replay is needed."
+        },
+        {
+          "type": "note",
+          "title": "Retention is a cost decision",
+          "content": "Keeping years of events in Kafka is not free, storage and broker capacity both cost money. Many teams keep a shorter hot window in Kafka and archive the rest to cold storage, replaying from cold storage only when a real logic change demands it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 A Stream Processor Capable of Both Modes",
+          "text": "6.2 A Stream Processor Capable of Both Modes"
+        },
+        {
+          "type": "paragraph",
+          "content": "The second requirement is a stream processing engine that can genuinely do two different jobs well. It has to handle a steady trickle of realtime events with low latency, and it also has to be able to blast through millions or billions of historical events at real throughput when a replay is triggered."
+        },
+        {
+          "type": "list",
+          "content": "[\"Kafka Streams, a library that runs inside your own application and reads directly from Kafka topics.\",\"Apache Flink, a full stream processing engine with strong support for both realtime and bulk reprocessing.\",\"Both of these are built to treat \\\"catching up on history\\\" as just a faster version of the same normal processing loop, not a different mode entirely.\"]",
+          "items": [
+            "Kafka Streams, a library that runs inside your own application and reads directly from Kafka topics.",
+            "Apache Flink, a full stream processing engine with strong support for both realtime and bulk reprocessing.",
+            "Both of these are built to treat \"catching up on history\" as just a faster version of the same normal processing loop, not a different mode entirely."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "If your stream processor cannot comfortably chew through a full historical replay, this entire pattern falls apart, because replay is the only tool Kappa gives you for correcting the past."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Trade-offs of Kappa Architecture",
+          "text": "7. Trade-offs of Kappa Architecture"
+        },
+        {
+          "type": "paragraph",
+          "content": "Kappa is not strictly better than Lambda in every situation, it is a different set of trade-offs that happens to fit most modern streaming-first teams very well."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"One codebase, one set of business logic, nothing to keep in sync\",\"Replaying an enormous history through a stream engine can still be slower than a purpose built batch engine for a single giant one-time job\"],[\"Simpler to reason about, test, and onboard new engineers into\",\"Long replay windows mean paying for log retention or building an archive and replay path for cold storage\"],[\"No merge layer needed to reconcile two different views of the data\",\"Requires a stream processor that is genuinely strong at both realtime and full historical throughput\"],[\"Bug fixes apply uniformly to history and live data in one deploy\",\"Some very heavy analytical workloads are still better served by dedicated batch tools\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "In short, you are trading a small amount of raw throughput on rare, enormous one-time jobs for a large, ongoing reduction in maintenance burden. For most teams that trade is a clear win."
+        },
+        {
+          "type": "note",
+          "title": "It is not all or nothing",
+          "content": "Kappa does not claim batch processing is useless. It claims you do not need a permanently separate batch codebase. Occasional bulk analytical jobs can still exist alongside a Kappa pipeline, they just are not part of the core serving path."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Real World Usage",
+          "text": "8. Real World Usage"
+        },
+        {
+          "type": "paragraph",
+          "content": "Kappa architecture has become something like the default mental model for teams building streaming-first systems today. Log based platforms like Kafka made the append-only event log a normal, boring piece of infrastructure rather than a novelty, and stream processors matured enough to trust with full replays."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327876-320246180.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396327876-320246180.png",
+          "alt": "Teams that build streaming first systems tend to converge on the Kappa pattern for unified pipelines"
+        },
+        {
+          "type": "list",
+          "content": "[\"Companies running large scale clickstream, metrics, and activity pipelines commonly settle on one streaming pipeline instead of a batch plus speed pair.\",\"Fraud detection and monitoring systems favor Kappa because the \\\"historical view\\\" and the \\\"live view\\\" genuinely need to agree exactly.\",\"Many newer data platforms are designed Kappa-first from day one, since it avoids building a batch layer that may never actually be needed.\"]",
+          "items": [
+            "Companies running large scale clickstream, metrics, and activity pipelines commonly settle on one streaming pipeline instead of a batch plus speed pair.",
+            "Fraud detection and monitoring systems favor Kappa because the \"historical view\" and the \"live view\" genuinely need to agree exactly.",
+            "Many newer data platforms are designed Kappa-first from day one, since it avoids building a batch layer that may never actually be needed."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "That said, plenty of older systems still run Lambda architecture successfully, especially where a mature batch layer already exists and the cost of rewriting it is not justified."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Worked Example: View Counts on Kappa",
+          "text": "9. Worked Example: View Counts on Kappa"
+        },
+        {
+          "type": "paragraph",
+          "content": "Let's revisit the video view count problem, but this time build it the Kappa way instead of the Lambda way."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396329392-724012868.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396329392-724012868.png",
+          "alt": "View events flow through one Kafka Streams counter into a counts store that the serving API reads"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every view generates one event on a view-events topic. A single Kafka Streams application consumes that topic, keeps a running count per video in a local state store, and writes updated counts to an output topic that the serving API reads from. That is the whole system, one job, one place where counting logic lives."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 The Kafka Streams Pipeline",
+          "text": "9.1 The Kafka Streams Pipeline"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is roughly what that counting job looks like using the Kafka Streams library."
+        },
+        {
+          "type": "code",
+          "content": "public class ViewCountProcessor {\n\n    public static void main(String[] args) {\n        StreamsBuilder builder = new StreamsBuilder();\n\n        KStream<String, String> viewEvents = builder.stream(\"view-events\");\n\n        KTable<String, Long> viewCounts = viewEvents\n            .groupBy((key, value) -> extractVideoId(value))\n            .count(Materialized.as(\"view-counts-store\"));\n\n        viewCounts\n            .toStream()\n            .to(\"view-counts-output\", Produced.with(Serdes.String(), Serdes.Long()));\n\n        KafkaStreams streams = new KafkaStreams(builder.build(), streamsConfig());\n        streams.start();\n\n        Runtime.getRuntime().addShutdownHook(new Thread(streams::close));\n    }\n\n    private static String extractVideoId(String eventJson) {\n        // parse the event payload and pull out the videoId field\n        return JsonUtil.parse(eventJson).get(\"videoId\").asText();\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "public class ViewCountProcessor {\n\n    public static void main(String[] args) {\n        StreamsBuilder builder = new StreamsBuilder();\n\n        KStream<String, String> viewEvents = builder.stream(\"view-events\");\n\n        KTable<String, Long> viewCounts = viewEvents\n            .groupBy((key, value) -> extractVideoId(value))\n            .count(Materialized.as(\"view-counts-store\"));\n\n        viewCounts\n            .toStream()\n            .to(\"view-counts-output\", Produced.with(Serdes.String(), Serdes.Long()));\n\n        KafkaStreams streams = new KafkaStreams(builder.build(), streamsConfig());\n        streams.start();\n\n        Runtime.getRuntime().addShutdownHook(new Thread(streams::close));\n    }\n\n    private static String extractVideoId(String eventJson) {\n        // parse the event payload and pull out the videoId field\n        return JsonUtil.parse(eventJson).get(\"videoId\").asText();\n    }\n}"
+          },
+          "codes": {
+            "java": "public class ViewCountProcessor {\n\n    public static void main(String[] args) {\n        StreamsBuilder builder = new StreamsBuilder();\n\n        KStream<String, String> viewEvents = builder.stream(\"view-events\");\n\n        KTable<String, Long> viewCounts = viewEvents\n            .groupBy((key, value) -> extractVideoId(value))\n            .count(Materialized.as(\"view-counts-store\"));\n\n        viewCounts\n            .toStream()\n            .to(\"view-counts-output\", Produced.with(Serdes.String(), Serdes.Long()));\n\n        KafkaStreams streams = new KafkaStreams(builder.build(), streamsConfig());\n        streams.start();\n\n        Runtime.getRuntime().addShutdownHook(new Thread(streams::close));\n    }\n\n    private static String extractVideoId(String eventJson) {\n        // parse the event payload and pull out the videoId field\n        return JsonUtil.parse(eventJson).get(\"videoId\").asText();\n    }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This same job handles a burst of live views right now and a multi year backlog of historical views the same way. There is no separate code path for \"old\" data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 Reprocessing From Offset Zero",
+          "text": "9.2 Reprocessing From Offset Zero"
+        },
+        {
+          "type": "paragraph",
+          "content": "Now say product asks for a change, bot generated views should no longer count. In a Lambda world you would patch two jobs. In Kappa, you patch the one job and replay."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396329393-109528298.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396329393-109528298.png",
+          "alt": "Stopping the old job, resetting to offset zero, then restarting with the new logic rebuilds correct counts"
+        },
+        {
+          "type": "code",
+          "content": "# Stop the running application first, then reset its consumer group\n# so the next run starts reading from the very first event again.\n./kafka-streams-application-reset.sh \\\n  --application-id view-count-app \\\n  --input-topics view-events \\\n  --to-earliest\n\n# Deploy the updated ViewCountProcessor jar, which now filters out\n# events flagged as bot traffic before counting them.\n# Restart it, and it will replay every view event from offset zero\n# through the new filtering logic, rebuilding view-counts-store\n# from scratch with corrected totals.",
+          "code": {
+            "language": "bash",
+            "content": "# Stop the running application first, then reset its consumer group\n# so the next run starts reading from the very first event again.\n./kafka-streams-application-reset.sh \\\n  --application-id view-count-app \\\n  --input-topics view-events \\\n  --to-earliest\n\n# Deploy the updated ViewCountProcessor jar, which now filters out\n# events flagged as bot traffic before counting them.\n# Restart it, and it will replay every view event from offset zero\n# through the new filtering logic, rebuilding view-counts-store\n# from scratch with corrected totals."
+          },
+          "codes": {
+            "bash": "# Stop the running application first, then reset its consumer group\n# so the next run starts reading from the very first event again.\n./kafka-streams-application-reset.sh \\\n  --application-id view-count-app \\\n  --input-topics view-events \\\n  --to-earliest\n\n# Deploy the updated ViewCountProcessor jar, which now filters out\n# events flagged as bot traffic before counting them.\n# Restart it, and it will replay every view event from offset zero\n# through the new filtering logic, rebuilding view-counts-store\n# from scratch with corrected totals."
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Once the replay catches up to the live end of the topic, the job just keeps running as a normal realtime counter, now with the corrected logic baked in permanently."
+        },
+        {
+          "type": "note",
+          "title": "Reset the state store too",
+          "content": "Resetting the consumer offset alone is not enough. Also clear or recreate the local state store, otherwise the replay adds new counts on top of old ones instead of rebuilding clean totals."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. The Interview Angle",
+          "text": "10. The Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "When an interviewer asks you to unify batch and stream processing, Kappa is usually the stronger modern answer compared to Lambda, and you should be ready to say why, not just name-drop it."
+        },
+        {
+          "type": "list",
+          "content": "[\"Lead with the core complaint about Lambda, maintaining the same logic twice causes drift, not that batch or streaming individually are bad ideas.\",\"State the core Kappa move plainly, treat all data as one append only log and process it with a single streaming pipeline.\",\"Mention replay as the mechanism for \\\"batch style\\\" recomputation, this is the detail that shows you actually understand the trade-off, not just the buzzword.\",\"Be upfront about the requirements, sufficient log retention and a stream processor strong enough for full historical replay, since naming the cost shows depth.\"]",
+          "items": [
+            "Lead with the core complaint about Lambda, maintaining the same logic twice causes drift, not that batch or streaming individually are bad ideas.",
+            "State the core Kappa move plainly, treat all data as one append only log and process it with a single streaming pipeline.",
+            "Mention replay as the mechanism for \"batch style\" recomputation, this is the detail that shows you actually understand the trade-off, not just the buzzword.",
+            "Be upfront about the requirements, sufficient log retention and a stream processor strong enough for full historical replay, since naming the cost shows depth."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "Kappa does not remove the need for batch style recomputation, it removes the need for a second codebase to do it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Summary",
+          "text": "11. Summary"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396329394-580406331.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396329394-580406331.png",
+          "alt": "Lambda carries drift risk from two layers, Kappa trades that for simpler operations with one layer"
+        },
+        {
+          "type": "list",
+          "content": "[\"Lambda architecture maintains a batch layer and a speed layer, doubling business logic and causing drift over time.\",\"Kappa architecture replaces both with a single stream processing pipeline reading from a single append only event log.\",\"Reprocessing happens by replaying the log from offset zero through updated logic, not by running a separate batch job.\",\"It requires a log with enough retention to replay and a stream processor capable of both realtime and full historical throughput.\",\"The trade-off is occasional slower bulk replays and retention cost, in exchange for one codebase and far less ongoing maintenance.\"]",
+          "items": [
+            "Lambda architecture maintains a batch layer and a speed layer, doubling business logic and causing drift over time.",
+            "Kappa architecture replaces both with a single stream processing pipeline reading from a single append only event log.",
+            "Reprocessing happens by replaying the log from offset zero through updated logic, not by running a separate batch job.",
+            "It requires a log with enough retention to replay and a stream processor capable of both realtime and full historical throughput.",
+            "The trade-off is occasional slower bulk replays and retention cost, in exchange for one codebase and far less ongoing maintenance."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "For most streaming-first systems built today, that trade is worth it, which is exactly why Kappa has become the default many teams reach for over Lambda."
+        }
+      ]
+    }
+  ]
+}

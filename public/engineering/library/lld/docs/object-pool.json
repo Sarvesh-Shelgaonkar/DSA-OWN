@@ -1,0 +1,552 @@
+{
+  "slug": "object-pool",
+  "title": "Object Pool",
+  "content": [
+    {
+      "id": "object-pool",
+      "title": "Object Pool",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Some objects are expensive to build. A database connection has to open a socket, authenticate, and negotiate a session. A thread needs the operating system to allocate a stack and register it with the scheduler. Creating one of these on every request is wasteful, and destroying it right after is worse."
+        },
+        {
+          "type": "paragraph",
+          "content": "Object Pool is the pattern that says: build a handful of these expensive objects up front, hand them out when someone needs one, and take them back when they are done. Nobody creates or destroys anything mid request."
+        },
+        {
+          "type": "paragraph",
+          "content": "The pool becomes the single place that owns the lifecycle of these objects. Everyone else just borrows and returns."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson walks through why pooling matters, how a pool tracks what is free and what is busy, how acquire and release actually work, how to size a pool, and where you will meet this pattern in real systems."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Object Pool reuses a fixed set of expensive objects by handing them out on acquire and taking them back on release, instead of constructing and discarding them on every use."
+        },
+        {
+          "type": "paragraph",
+          "content": "It sounds almost too simple to be a named pattern. The value is entirely in the discipline it enforces: a clear boundary between \"who owns this object\" and \"who is currently using it\"."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The problem: objects that are expensive to create",
+          "text": "1. The problem: objects that are expensive to create"
+        },
+        {
+          "type": "paragraph",
+          "content": "Not every object is cheap. A plain data holder costs almost nothing to allocate. A database connection, a thread, a large in memory buffer, or a network socket costs real time and real system resources."
+        },
+        {
+          "type": "paragraph",
+          "content": "If your code creates one of these per request and throws it away when the request finishes, you pay that setup cost again and again. Under light load this is invisible. Under heavy load it becomes the bottleneck."
+        },
+        {
+          "type": "heading3",
+          "content": "Symptoms of the missing pool",
+          "text": "Symptoms of the missing pool"
+        },
+        {
+          "type": "list",
+          "content": "[\"Latency spikes that track request volume, not actual work done\",\"A database or connection limit gets hit even though traffic looks modest\",\"Garbage collection pauses grow because short lived heavyweight objects churn constantly\",\"Thread creation shows up high in a profiler even though the real work is elsewhere\"]",
+          "items": [
+            "Latency spikes that track request volume, not actual work done",
+            "A database or connection limit gets hit even though traffic looks modest",
+            "Garbage collection pauses grow because short lived heavyweight objects churn constantly",
+            "Thread creation shows up high in a profiler even though the real work is elsewhere"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Each of these traces back to the same root cause: construction and teardown cost is being paid on the hot path, over and over, for objects that could have been reused."
+        },
+        {
+          "type": "note",
+          "title": "Not every expensive object should be pooled",
+          "content": "Pooling adds bookkeeping and shared state. It pays off when creation cost is high and the object can be safely reset between uses. For cheap objects, just create a new one."
+        },
+        {
+          "type": "heading1",
+          "content": "2. Anatomy of a pool: available versus in use",
+          "text": "2. Anatomy of a pool: available versus in use"
+        },
+        {
+          "type": "paragraph",
+          "content": "A pool is really just two collections plus some rules for moving items between them."
+        },
+        {
+          "type": "heading3",
+          "content": "The two sets",
+          "text": "The two sets"
+        },
+        {
+          "type": "list",
+          "content": "[\"Available: objects that are idle and ready to be handed out\",\"In use: objects currently checked out by some caller\"]",
+          "items": [
+            "Available: objects that are idle and ready to be handed out",
+            "In use: objects currently checked out by some caller"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "When a client asks for an object, the pool moves one entry from available to in use and returns it. When the client is done, the pool moves it back."
+        },
+        {
+          "type": "paragraph",
+          "content": "The diagram below shows this movement. Objects flow from available into in use when acquired, and flow back when released. A brand new object only gets created if available is empty and the pool still has room to grow."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494415215-627802773.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494415215-627802773.png",
+          "alt": "Objects flowing between the available pool and the in use set as they are acquired and released"
+        },
+        {
+          "type": "paragraph",
+          "content": "That is the entire mental model. Everything else in this lesson is refinement on top of these two moves: acquire and release."
+        },
+        {
+          "type": "heading1",
+          "content": "3. Acquire and release: the core lifecycle",
+          "text": "3. Acquire and release: the core lifecycle"
+        },
+        {
+          "type": "paragraph",
+          "content": "Acquire and release are the only two operations a caller ever touches. Everything about creation, validation, and reset happens behind them."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499560515-679386238.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499560515-679386238.png",
+          "alt": "State transitions between available and in use, showing acquire, release, and what happens when the pool is full"
+        },
+        {
+          "type": "heading3",
+          "content": "Acquire",
+          "text": "Acquire"
+        },
+        {
+          "type": "list",
+          "content": "[\"Check the available set for an idle object\",\"If one exists, move it to in use and return it\",\"If none exists and the pool has not hit its maximum size, create a new one and mark it in use\",\"If none exists and the pool is already at maximum size, either wait or fail, depending on policy\"]",
+          "items": [
+            "Check the available set for an idle object",
+            "If one exists, move it to in use and return it",
+            "If none exists and the pool has not hit its maximum size, create a new one and mark it in use",
+            "If none exists and the pool is already at maximum size, either wait or fail, depending on policy"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "heading3",
+          "content": "Release",
+          "text": "Release"
+        },
+        {
+          "type": "list",
+          "content": "[\"Caller signals it is done with the object\",\"The pool resets the object to a clean state, for example clearing a buffer or rolling back an open transaction\",\"The object moves from in use back to available\",\"If a caller is waiting on acquire, it gets woken up and handed this object directly\"]",
+          "items": [
+            "Caller signals it is done with the object",
+            "The pool resets the object to a clean state, for example clearing a buffer or rolling back an open transaction",
+            "The object moves from in use back to available",
+            "If a caller is waiting on acquire, it gets woken up and handed this object directly"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "note",
+          "title": "Reset before reuse, not before handoff",
+          "content": "Reset the object when it is released, not when it is acquired next. That way a crashed or forgotten release leaves an obviously stale object in the pool instead of silently handing dirty state to the next caller."
+        },
+        {
+          "type": "paragraph",
+          "content": "A pool that forgets to reset state is worse than no pool at all, because bugs from leftover state are intermittent and hard to reproduce."
+        },
+        {
+          "type": "heading1",
+          "content": "4. Sizing the pool: too small, too big, and just right",
+          "text": "4. Sizing the pool: too small, too big, and just right"
+        },
+        {
+          "type": "paragraph",
+          "content": "The pool size is the one knob that decides whether pooling helps or hurts. Get it wrong in either direction and you lose the benefit."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499563087-671138830.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499563087-671138830.png",
+          "alt": "Three sizing outcomes for a pool: too small causes queueing, sized to peak gives smooth latency, too big wastes idle resources"
+        },
+        {
+          "type": "heading3",
+          "content": "Too small",
+          "text": "Too small"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the pool has fewer objects than concurrent demand, callers queue up waiting for one to free. Latency rises even though the underlying resource, say the database, is not actually overloaded. This is contention caused purely by the pool being undersized."
+        },
+        {
+          "type": "heading3",
+          "content": "Too big",
+          "text": "Too big"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the pool holds far more objects than are ever used concurrently, you are paying the memory and resource cost of all of them sitting idle. A connection pool sized at one thousand against a database that can handle a hundred concurrent connections can crash the database."
+        },
+        {
+          "type": "heading3",
+          "content": "Just right",
+          "text": "Just right"
+        },
+        {
+          "type": "list",
+          "content": "[\"Measure actual peak concurrent usage, not average usage\",\"Add a small margin above peak, not a large multiple\",\"Respect the hard limit of the backing resource, such as a database connection cap\",\"Prefer a pool that can grow a little under burst and shrink back down when idle\"]",
+          "items": [
+            "Measure actual peak concurrent usage, not average usage",
+            "Add a small margin above peak, not a large multiple",
+            "Respect the hard limit of the backing resource, such as a database connection cap",
+            "Prefer a pool that can grow a little under burst and shrink back down when idle"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Sizing choice\",\"What happens\",\"When it is right\"],\"rows\":[[\"Too small\",\"Callers wait, latency spikes under load\",\"Never intentionally\"],[\"Too big\",\"Wasted memory, may overload the backing resource\",\"Rarely, only if resource is nearly free\"],[\"Matched to peak concurrency plus margin\",\"Smooth latency, resource stays within its own limits\",\"Almost always the target\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sizing is not a one time decision. Traffic patterns shift, so a pool that was correctly sized at launch can become undersized or oversized months later."
+        },
+        {
+          "type": "example-box",
+          "title": "A quick sizing sanity check",
+          "text": "If a typical request holds a connection for 20 milliseconds and your service handles 500 requests per second, expected concurrent usage is roughly 500 times 0.02, which is 10 connections. A pool of 15 to 20 gives headroom without wildly over provisioning."
+        },
+        {
+          "type": "heading1",
+          "content": "5. Choosing an acquire policy: block, fail fast, or grow",
+          "text": "5. Choosing an acquire policy: block, fail fast, or grow"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sizing decides how many objects exist. Policy decides what happens the moment every single one of them is already checked out."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499565366-125626463.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499565366-125626463.png",
+          "alt": "Acquire policy decision when the pool is at capacity: block until one frees, fail fast, or grow beyond normal size"
+        },
+        {
+          "type": "heading3",
+          "content": "Block until one frees up",
+          "text": "Block until one frees up"
+        },
+        {
+          "type": "paragraph",
+          "content": "The caller waits, usually with a timeout, until another caller releases an object. This is the most common default for connection pools, since a short wait is usually cheaper than a failed request."
+        },
+        {
+          "type": "heading3",
+          "content": "Fail fast",
+          "text": "Fail fast"
+        },
+        {
+          "type": "paragraph",
+          "content": "The pool immediately rejects the request when it is at capacity. This suits latency sensitive paths where waiting even briefly is worse than failing and letting the caller retry elsewhere or shed load."
+        },
+        {
+          "type": "heading3",
+          "content": "Grow beyond the normal size",
+          "text": "Grow beyond the normal size"
+        },
+        {
+          "type": "paragraph",
+          "content": "The pool allows a small number of extra objects beyond its normal size during a burst, then shrinks back down once demand falls. This trades a temporary resource spike for smoother latency during short bursts."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Policy\",\"Behaviour at capacity\",\"Best fit\"],\"rows\":[[\"Block with timeout\",\"Caller waits briefly, then gets an object or a timeout error\",\"Steady traffic with occasional short bursts\"],[\"Fail fast\",\"Caller is rejected immediately\",\"Latency sensitive paths, systems with their own retry logic\"],[\"Grow with a cap\",\"Pool briefly exceeds its normal size, then shrinks\",\"Bursty traffic against a resource with some spare headroom\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Pick one policy on purpose",
+          "content": "The default in most off the shelf pool libraries is block with a timeout. That is a reasonable default, but confirm it matches your traffic shape rather than inheriting it silently."
+        },
+        {
+          "type": "heading1",
+          "content": "6. Worked example: a simple object pool",
+          "text": "6. Worked example: a simple object pool"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is a minimal pool that manages a fixed set of reusable objects. It exposes just two operations to callers: acquire and release."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 1: the pooled object",
+          "text": "Step 1: the pooled object"
+        },
+        {
+          "type": "paragraph",
+          "content": "We will pool a stand in for a database connection. In a real system this would wrap an actual socket and protocol handshake; here it is simplified to keep the pool logic visible."
+        },
+        {
+          "type": "code",
+          "content": "class PooledConnection {\n  constructor(id) {\n    this.id = id;\n    this.inUse = false;\n  }\n\n  reset() {\n    // clear any leftover query state before returning to the pool\n    this.lastQuery = null;\n  }\n\n  query(sql) {\n    this.lastQuery = sql;\n    return `result for [${sql}] on connection ${this.id}`;\n  }\n}\n\nmodule.exports = PooledConnection;",
+          "code": {
+            "language": "javascript",
+            "content": "class PooledConnection {\n  constructor(id) {\n    this.id = id;\n    this.inUse = false;\n  }\n\n  reset() {\n    // clear any leftover query state before returning to the pool\n    this.lastQuery = null;\n  }\n\n  query(sql) {\n    this.lastQuery = sql;\n    return `result for [${sql}] on connection ${this.id}`;\n  }\n}\n\nmodule.exports = PooledConnection;"
+          },
+          "codes": {
+            "javascript": "class PooledConnection {\n  constructor(id) {\n    this.id = id;\n    this.inUse = false;\n  }\n\n  reset() {\n    // clear any leftover query state before returning to the pool\n    this.lastQuery = null;\n  }\n\n  query(sql) {\n    this.lastQuery = sql;\n    return `result for [${sql}] on connection ${this.id}`;\n  }\n}\n\nmodule.exports = PooledConnection;",
+            "python": "class PooledConnection:\n    def __init__(self, conn_id):\n        self.id = conn_id\n        self.in_use = False\n        self.last_query = None\n\n    def reset(self):\n        # clear any leftover query state before returning to the pool\n        self.last_query = None\n\n    def query(self, sql):\n        self.last_query = sql\n        return f\"result for [{sql}] on connection {self.id}\"\n\n\nif __name__ == \"__main__\":\n    conn = PooledConnection(1)\n    print(conn.query(\"SELECT * FROM orders WHERE id = 42\"))\n    conn.reset()\n    print(f\"connection {conn.id} reset and ready for reuse\")",
+            "java": "class PooledConnection {\n    private final int id;\n    private boolean inUse;\n    private String lastQuery;\n\n    public PooledConnection(int id) {\n        this.id = id;\n    }\n\n    public void reset() {\n        // clear any leftover query state before returning to the pool\n        this.lastQuery = null;\n    }\n\n    public String query(String sql) {\n        this.lastQuery = sql;\n        return \"result for [\" + sql + \"] on connection \" + id;\n    }\n\n    public int getId() {\n        return id;\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        PooledConnection conn = new PooledConnection(1);\n        System.out.println(conn.query(\"SELECT * FROM orders WHERE id = 42\"));\n        conn.reset();\n        System.out.println(\"connection \" + conn.getId() + \" reset and ready for reuse\");\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n\nclass PooledConnection {\npublic:\n    explicit PooledConnection(int id) : id_(id), inUse_(false) {}\n\n    void reset() {\n        // clear any leftover query state before returning to the pool\n        lastQuery_.clear();\n    }\n\n    std::string query(const std::string& sql) {\n        lastQuery_ = sql;\n        return \"result for [\" + sql + \"] on connection \" + std::to_string(id_);\n    }\n\n    int getId() const { return id_; }\n\nprivate:\n    int id_;\n    bool inUse_;\n    std::string lastQuery_;\n};\n\nint main() {\n    PooledConnection conn(1);\n    std::cout << conn.query(\"SELECT * FROM orders WHERE id = 42\") << std::endl;\n    conn.reset();\n    std::cout << \"connection \" << conn.getId() << \" reset and ready for reuse\" << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "heading3",
+          "content": "Step 2: the pool itself",
+          "text": "Step 2: the pool itself"
+        },
+        {
+          "type": "paragraph",
+          "content": "The pool owns two lists, available and in use, plus a maximum size. Acquire moves an object across the boundary, release moves it back after resetting it."
+        },
+        {
+          "type": "code",
+          "content": "class ConnectionPool {\n  constructor(maxSize) {\n    this.maxSize = maxSize;\n    this.available = [];\n    this.inUse = new Set();\n    this.nextId = 1;\n  }\n\n  acquire() {\n    let conn;\n    if (this.available.length > 0) {\n      conn = this.available.pop();\n    } else if (this.inUse.size < this.maxSize) {\n      conn = new PooledConnection(this.nextId++);\n    } else {\n      throw new Error('pool exhausted: all connections in use');\n    }\n    conn.inUse = true;\n    this.inUse.add(conn);\n    return conn;\n  }\n\n  release(conn) {\n    if (!this.inUse.has(conn)) return;\n    conn.reset();\n    conn.inUse = false;\n    this.inUse.delete(conn);\n    this.available.push(conn);\n  }\n\n  stats() {\n    return { available: this.available.length, inUse: this.inUse.size };\n  }\n}\n\nmodule.exports = ConnectionPool;",
+          "code": {
+            "language": "javascript",
+            "content": "class ConnectionPool {\n  constructor(maxSize) {\n    this.maxSize = maxSize;\n    this.available = [];\n    this.inUse = new Set();\n    this.nextId = 1;\n  }\n\n  acquire() {\n    let conn;\n    if (this.available.length > 0) {\n      conn = this.available.pop();\n    } else if (this.inUse.size < this.maxSize) {\n      conn = new PooledConnection(this.nextId++);\n    } else {\n      throw new Error('pool exhausted: all connections in use');\n    }\n    conn.inUse = true;\n    this.inUse.add(conn);\n    return conn;\n  }\n\n  release(conn) {\n    if (!this.inUse.has(conn)) return;\n    conn.reset();\n    conn.inUse = false;\n    this.inUse.delete(conn);\n    this.available.push(conn);\n  }\n\n  stats() {\n    return { available: this.available.length, inUse: this.inUse.size };\n  }\n}\n\nmodule.exports = ConnectionPool;"
+          },
+          "codes": {
+            "javascript": "class ConnectionPool {\n  constructor(maxSize) {\n    this.maxSize = maxSize;\n    this.available = [];\n    this.inUse = new Set();\n    this.nextId = 1;\n  }\n\n  acquire() {\n    let conn;\n    if (this.available.length > 0) {\n      conn = this.available.pop();\n    } else if (this.inUse.size < this.maxSize) {\n      conn = new PooledConnection(this.nextId++);\n    } else {\n      throw new Error('pool exhausted: all connections in use');\n    }\n    conn.inUse = true;\n    this.inUse.add(conn);\n    return conn;\n  }\n\n  release(conn) {\n    if (!this.inUse.has(conn)) return;\n    conn.reset();\n    conn.inUse = false;\n    this.inUse.delete(conn);\n    this.available.push(conn);\n  }\n\n  stats() {\n    return { available: this.available.length, inUse: this.inUse.size };\n  }\n}\n\nmodule.exports = ConnectionPool;",
+            "python": "class PooledConnection:\n    def __init__(self, conn_id):\n        self.id = conn_id\n        self.in_use = False\n        self.last_query = None\n\n    def reset(self):\n        self.last_query = None\n\n    def query(self, sql):\n        self.last_query = sql\n        return f\"result for [{sql}] on connection {self.id}\"\n\n\nclass ConnectionPool:\n    def __init__(self, max_size):\n        self.max_size = max_size\n        self.available = []\n        self.in_use = set()\n        self.next_id = 1\n\n    def acquire(self):\n        if self.available:\n            conn = self.available.pop()\n        elif len(self.in_use) < self.max_size:\n            conn = PooledConnection(self.next_id)\n            self.next_id += 1\n        else:\n            raise RuntimeError(\"pool exhausted: all connections in use\")\n        self.in_use.add(conn)\n        return conn\n\n    def release(self, conn):\n        if conn not in self.in_use:\n            return\n        self.in_use.discard(conn)\n        conn.reset()\n        self.available.append(conn)\n\n    def stats(self):\n        return {\"available\": len(self.available), \"in_use\": len(self.in_use)}\n\n\nif __name__ == \"__main__\":\n    pool = ConnectionPool(max_size=2)\n    first = pool.acquire()\n    second = pool.acquire()\n    print(\"acquired two:\", pool.stats())\n    pool.release(first)\n    print(\"released one:\", pool.stats())\n    third = pool.acquire()\n    print(\"acquired again:\", pool.stats())",
+            "java": "import java.util.*;\n\nclass PooledConnection {\n    private final int id;\n    private boolean inUse;\n    private String lastQuery;\n\n    public PooledConnection(int id) {\n        this.id = id;\n    }\n\n    public void reset() {\n        this.lastQuery = null;\n    }\n\n    public String query(String sql) {\n        this.lastQuery = sql;\n        return \"result for [\" + sql + \"] on connection \" + id;\n    }\n\n    public int getId() {\n        return id;\n    }\n}\n\nclass ConnectionPool {\n    private final int maxSize;\n    private final Deque<PooledConnection> available = new ArrayDeque<>();\n    private final Set<PooledConnection> inUse = new HashSet<>();\n    private int nextId = 1;\n\n    public ConnectionPool(int maxSize) {\n        this.maxSize = maxSize;\n    }\n\n    public synchronized PooledConnection acquire() {\n        PooledConnection conn;\n        if (!available.isEmpty()) {\n            conn = available.pop();\n        } else if (inUse.size() < maxSize) {\n            conn = new PooledConnection(nextId++);\n        } else {\n            throw new IllegalStateException(\"pool exhausted: all connections in use\");\n        }\n        inUse.add(conn);\n        return conn;\n    }\n\n    public synchronized void release(PooledConnection conn) {\n        if (!inUse.remove(conn)) return;\n        conn.reset();\n        available.push(conn);\n    }\n\n    public synchronized Map<String, Integer> stats() {\n        Map<String, Integer> s = new HashMap<>();\n        s.put(\"available\", available.size());\n        s.put(\"inUse\", inUse.size());\n        return s;\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        ConnectionPool pool = new ConnectionPool(2);\n        PooledConnection first = pool.acquire();\n        PooledConnection second = pool.acquire();\n        System.out.println(\"acquired two: \" + pool.stats());\n        pool.release(first);\n        System.out.println(\"released one: \" + pool.stats());\n        PooledConnection third = pool.acquire();\n        System.out.println(\"acquired again: \" + pool.stats());\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n#include <deque>\n#include <unordered_set>\n#include <stdexcept>\n#include <memory>\n\nclass PooledConnection {\npublic:\n    explicit PooledConnection(int id) : id_(id), inUse_(false) {}\n\n    void reset() {\n        lastQuery_.clear();\n    }\n\n    std::string query(const std::string& sql) {\n        lastQuery_ = sql;\n        return \"result for [\" + sql + \"] on connection \" + std::to_string(id_);\n    }\n\n    int getId() const { return id_; }\n\nprivate:\n    int id_;\n    bool inUse_;\n    std::string lastQuery_;\n};\n\nclass ConnectionPool {\npublic:\n    explicit ConnectionPool(int maxSize) : maxSize_(maxSize), nextId_(1) {}\n\n    std::shared_ptr<PooledConnection> acquire() {\n        std::shared_ptr<PooledConnection> conn;\n        if (!available_.empty()) {\n            conn = available_.back();\n            available_.pop_back();\n        } else if (static_cast<int>(inUse_.size()) < maxSize_) {\n            conn = std::make_shared<PooledConnection>(nextId_++);\n        } else {\n            throw std::runtime_error(\"pool exhausted: all connections in use\");\n        }\n        inUse_.insert(conn);\n        return conn;\n    }\n\n    void release(const std::shared_ptr<PooledConnection>& conn) {\n        if (inUse_.erase(conn) == 0) return;\n        conn->reset();\n        available_.push_back(conn);\n    }\n\n    void printStats() const {\n        std::cout << \"available=\" << available_.size() << \" inUse=\" << inUse_.size();\n    }\n\nprivate:\n    int maxSize_;\n    int nextId_;\n    std::deque<std::shared_ptr<PooledConnection>> available_;\n    std::unordered_set<std::shared_ptr<PooledConnection>> inUse_;\n};\n\nint main() {\n    ConnectionPool pool(2);\n    auto first = pool.acquire();\n    auto second = pool.acquire();\n    std::cout << \"acquired two: \";\n    pool.printStats();\n    std::cout << std::endl;\n\n    pool.release(first);\n    std::cout << \"released one: \";\n    pool.printStats();\n    std::cout << std::endl;\n\n    auto third = pool.acquire();\n    std::cout << \"acquired again: \";\n    pool.printStats();\n    std::cout << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice that acquire only ever does one of three things: reuse an idle object, create a new one within the cap, or refuse the request. There is no fourth path."
+        },
+        {
+          "type": "example-box",
+          "title": "Reading the acquire logic",
+          "text": "available.pop reuses the most recently returned object rather than the oldest. This tends to keep a warm subset of objects actively cycling, which plays nicely with connections that get closed by the server after being idle too long."
+        },
+        {
+          "type": "heading1",
+          "content": "7. Demonstration: managing a fixed number of objects under load",
+          "text": "7. Demonstration: managing a fixed number of objects under load"
+        },
+        {
+          "type": "paragraph",
+          "content": "A pool only proves itself under concurrency. Here is a small simulation that fires more work than the pool has capacity for and shows callers waiting instead of the pool over creating connections."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499567611-575437915.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499567611-575437915.png",
+          "alt": "Five tasks competing for a pool of two connections, with two running and three waiting until a connection is released"
+        },
+        {
+          "type": "heading3",
+          "content": "Simulating concurrent demand",
+          "text": "Simulating concurrent demand"
+        },
+        {
+          "type": "code",
+          "content": "const pool = new ConnectionPool(2); // only 2 connections allowed\n\nfunction runTask(taskId) {\n  let conn;\n  try {\n    conn = pool.acquire();\n    console.log(`task ${taskId} got connection ${conn.id}`, pool.stats());\n    console.log(conn.query(`SELECT * FROM orders WHERE id = ${taskId}`));\n  } finally {\n    if (conn) pool.release(conn);\n    console.log(`task ${taskId} released`, pool.stats());\n  }\n}\n\n// 5 tasks compete for only 2 connections\nfor (let i = 1; i <= 5; i++) {\n  runTask(i);\n}",
+          "code": {
+            "language": "javascript",
+            "content": "const pool = new ConnectionPool(2); // only 2 connections allowed\n\nfunction runTask(taskId) {\n  let conn;\n  try {\n    conn = pool.acquire();\n    console.log(`task ${taskId} got connection ${conn.id}`, pool.stats());\n    console.log(conn.query(`SELECT * FROM orders WHERE id = ${taskId}`));\n  } finally {\n    if (conn) pool.release(conn);\n    console.log(`task ${taskId} released`, pool.stats());\n  }\n}\n\n// 5 tasks compete for only 2 connections\nfor (let i = 1; i <= 5; i++) {\n  runTask(i);\n}"
+          },
+          "codes": {
+            "javascript": "const pool = new ConnectionPool(2); // only 2 connections allowed\n\nfunction runTask(taskId) {\n  let conn;\n  try {\n    conn = pool.acquire();\n    console.log(`task ${taskId} got connection ${conn.id}`, pool.stats());\n    console.log(conn.query(`SELECT * FROM orders WHERE id = ${taskId}`));\n  } finally {\n    if (conn) pool.release(conn);\n    console.log(`task ${taskId} released`, pool.stats());\n  }\n}\n\n// 5 tasks compete for only 2 connections\nfor (let i = 1; i <= 5; i++) {\n  runTask(i);\n}",
+            "python": "class PooledConnection:\n    def __init__(self, conn_id):\n        self.id = conn_id\n        self.in_use = False\n        self.last_query = None\n\n    def reset(self):\n        self.last_query = None\n\n    def query(self, sql):\n        self.last_query = sql\n        return f\"result for [{sql}] on connection {self.id}\"\n\n\nclass ConnectionPool:\n    def __init__(self, max_size):\n        self.max_size = max_size\n        self.available = []\n        self.in_use = set()\n        self.next_id = 1\n\n    def acquire(self):\n        if self.available:\n            conn = self.available.pop()\n        elif len(self.in_use) < self.max_size:\n            conn = PooledConnection(self.next_id)\n            self.next_id += 1\n        else:\n            raise RuntimeError(\"pool exhausted: all connections in use\")\n        self.in_use.add(conn)\n        return conn\n\n    def release(self, conn):\n        if conn not in self.in_use:\n            return\n        self.in_use.discard(conn)\n        conn.reset()\n        self.available.append(conn)\n\n    def stats(self):\n        return {\"available\": len(self.available), \"in_use\": len(self.in_use)}\n\n\ndef run_task(pool, task_id):\n    conn = pool.acquire()\n    try:\n        print(f\"task {task_id} got connection {conn.id}\", pool.stats())\n        print(conn.query(f\"SELECT * FROM orders WHERE id = {task_id}\"))\n    finally:\n        pool.release(conn)\n        print(f\"task {task_id} released\", pool.stats())\n\n\nif __name__ == \"__main__\":\n    pool = ConnectionPool(max_size=2)  # only 2 connections allowed\n    # 5 tasks compete for only 2 connections\n    for i in range(1, 6):\n        run_task(pool, i)",
+            "java": "import java.util.*;\n\nclass PooledConnection {\n    private final int id;\n    private boolean inUse;\n    private String lastQuery;\n\n    public PooledConnection(int id) {\n        this.id = id;\n    }\n\n    public void reset() {\n        this.lastQuery = null;\n    }\n\n    public String query(String sql) {\n        this.lastQuery = sql;\n        return \"result for [\" + sql + \"] on connection \" + id;\n    }\n\n    public int getId() {\n        return id;\n    }\n}\n\nclass ConnectionPool {\n    private final int maxSize;\n    private final Deque<PooledConnection> available = new ArrayDeque<>();\n    private final Set<PooledConnection> inUse = new HashSet<>();\n    private int nextId = 1;\n\n    public ConnectionPool(int maxSize) {\n        this.maxSize = maxSize;\n    }\n\n    public synchronized PooledConnection acquire() {\n        PooledConnection conn;\n        if (!available.isEmpty()) {\n            conn = available.pop();\n        } else if (inUse.size() < maxSize) {\n            conn = new PooledConnection(nextId++);\n        } else {\n            throw new IllegalStateException(\"pool exhausted: all connections in use\");\n        }\n        inUse.add(conn);\n        return conn;\n    }\n\n    public synchronized void release(PooledConnection conn) {\n        if (!inUse.remove(conn)) return;\n        conn.reset();\n        available.push(conn);\n    }\n\n    public synchronized Map<String, Integer> stats() {\n        Map<String, Integer> s = new HashMap<>();\n        s.put(\"available\", available.size());\n        s.put(\"inUse\", inUse.size());\n        return s;\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        ConnectionPool pool = new ConnectionPool(2); // only 2 connections allowed\n\n        for (int taskId = 1; taskId <= 5; taskId++) {\n            PooledConnection conn = pool.acquire();\n            try {\n                System.out.println(\"task \" + taskId + \" got connection \" + conn.getId() + \" \" + pool.stats());\n                System.out.println(conn.query(\"SELECT * FROM orders WHERE id = \" + taskId));\n            } finally {\n                pool.release(conn);\n                System.out.println(\"task \" + taskId + \" released \" + pool.stats());\n            }\n        }\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n#include <deque>\n#include <unordered_set>\n#include <stdexcept>\n#include <memory>\n\nclass PooledConnection {\npublic:\n    explicit PooledConnection(int id) : id_(id), inUse_(false) {}\n\n    void reset() {\n        lastQuery_.clear();\n    }\n\n    std::string query(const std::string& sql) {\n        lastQuery_ = sql;\n        return \"result for [\" + sql + \"] on connection \" + std::to_string(id_);\n    }\n\n    int getId() const { return id_; }\n\nprivate:\n    int id_;\n    bool inUse_;\n    std::string lastQuery_;\n};\n\nclass ConnectionPool {\npublic:\n    explicit ConnectionPool(int maxSize) : maxSize_(maxSize), nextId_(1) {}\n\n    std::shared_ptr<PooledConnection> acquire() {\n        std::shared_ptr<PooledConnection> conn;\n        if (!available_.empty()) {\n            conn = available_.back();\n            available_.pop_back();\n        } else if (static_cast<int>(inUse_.size()) < maxSize_) {\n            conn = std::make_shared<PooledConnection>(nextId_++);\n        } else {\n            throw std::runtime_error(\"pool exhausted: all connections in use\");\n        }\n        inUse_.insert(conn);\n        return conn;\n    }\n\n    void release(const std::shared_ptr<PooledConnection>& conn) {\n        if (inUse_.erase(conn) == 0) return;\n        conn->reset();\n        available_.push_back(conn);\n    }\n\n    void printStats() const {\n        std::cout << \"available=\" << available_.size() << \" inUse=\" << inUse_.size();\n    }\n\nprivate:\n    int maxSize_;\n    int nextId_;\n    std::deque<std::shared_ptr<PooledConnection>> available_;\n    std::unordered_set<std::shared_ptr<PooledConnection>> inUse_;\n};\n\nvoid runTask(ConnectionPool& pool, int taskId) {\n    auto conn = pool.acquire();\n    std::cout << \"task \" << taskId << \" got connection \" << conn->getId() << \" \";\n    pool.printStats();\n    std::cout << std::endl;\n    std::cout << conn->query(\"SELECT * FROM orders WHERE id = \" + std::to_string(taskId)) << std::endl;\n    pool.release(conn);\n    std::cout << \"task \" << taskId << \" released \";\n    pool.printStats();\n    std::cout << std::endl;\n}\n\nint main() {\n    ConnectionPool pool(2); // only 2 connections allowed\n    // 5 tasks compete for only 2 connections\n    for (int i = 1; i <= 5; ++i) {\n        runTask(pool, i);\n    }\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Because each task releases its connection before the next one starts, this sequential run only ever needs one connection at a time, and the pool happily creates one and keeps reusing it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Run the same tasks concurrently instead, five at once against a pool of two, and the third, fourth, and fifth tasks either block until one frees up or fail fast, depending on the acquire policy you chose. That behaviour, not the code shape, is the actual value of the pool: it caps concurrent resource usage at exactly the number you decided was safe."
+        },
+        {
+          "type": "note",
+          "title": "Always release in a finally block",
+          "content": "If acquire succeeds but the work after it throws, a missing release leaks that object out of the pool forever. Wrap the borrowed usage in a try or finally, or the language equivalent, every single time."
+        },
+        {
+          "type": "heading1",
+          "content": "8. Real world uses",
+          "text": "8. Real world uses"
+        },
+        {
+          "type": "paragraph",
+          "content": "Object Pool is not a theoretical pattern. It is running under most production systems you have used today."
+        },
+        {
+          "type": "heading3",
+          "content": "Database connection pools",
+          "text": "Database connection pools"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every serious database client library, from JDBC connection pools to modern async drivers, ships a connection pool. Opening a raw TCP connection and authenticating on every query would make databases the bottleneck of every application."
+        },
+        {
+          "type": "heading3",
+          "content": "Thread pools",
+          "text": "Thread pools"
+        },
+        {
+          "type": "paragraph",
+          "content": "Operating system threads are expensive to create and destroy. A thread pool pre spawns a fixed number of worker threads and hands them tasks to execute, reusing the same threads for the lifetime of the application."
+        },
+        {
+          "type": "heading3",
+          "content": "Other places you will meet it",
+          "text": "Other places you will meet it"
+        },
+        {
+          "type": "list",
+          "content": "[\"HTTP client connection pools that reuse TCP sockets across requests to the same host\",\"Game engines pooling bullets, particles, and enemy objects that spawn and despawn constantly\",\"Memory buffer pools in high throughput networking and serialization code\",\"Object pools for large parser or regex engine instances that are costly to initialize\"]",
+          "items": [
+            "HTTP client connection pools that reuse TCP sockets across requests to the same host",
+            "Game engines pooling bullets, particles, and enemy objects that spawn and despawn constantly",
+            "Memory buffer pools in high throughput networking and serialization code",
+            "Object pools for large parser or regex engine instances that are costly to initialize"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The common thread across every one of these is the same: a fixed, expensive resource, reused under a clear acquire and release contract."
+        },
+        {
+          "type": "heading1",
+          "content": "9. Object Pool versus just creating new objects",
+          "text": "9. Object Pool versus just creating new objects"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth being honest about the tradeoff, because pooling is not free."
+        },
+        {
+          "type": "pros-cons",
+          "content": "{\"pros\":[\"Avoids repeated expensive construction and teardown cost\",\"Caps concurrent usage of a limited backing resource\",\"Smooths out latency by removing setup cost from the hot path\",\"Gives one place to monitor how heavily a resource is used\"],\"cons\":[\"Adds shared, mutable state that must be synchronized correctly under concurrency\",\"A missing release leaks an object out of circulation for good\",\"Stale or improperly reset objects can leak state between unrelated callers\",\"Wrong sizing can hurt more than plain construction would have\"]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "For cheap objects, this tradeoff is not worth taking. A plain constructor call is simpler, has no shared state, and cannot leak across the pool boundary."
+        },
+        {
+          "type": "paragraph",
+          "content": "The pattern earns its keep specifically when construction cost is high and the underlying resource is genuinely limited."
+        },
+        {
+          "type": "heading1",
+          "content": "10. Common pitfalls",
+          "text": "10. Common pitfalls"
+        },
+        {
+          "type": "heading3",
+          "content": "Forgetting to reset state",
+          "text": "Forgetting to reset state"
+        },
+        {
+          "type": "paragraph",
+          "content": "If release does not clear whatever the previous caller left behind, the next caller silently inherits it. This shows up as bugs that only happen under load, when reuse is actually occurring."
+        },
+        {
+          "type": "heading3",
+          "content": "Sizing from average load instead of peak load",
+          "text": "Sizing from average load instead of peak load"
+        },
+        {
+          "type": "paragraph",
+          "content": "A pool sized for the average case will starve every time traffic spikes above average, which for most systems is a normal daily occurrence, not an edge case."
+        },
+        {
+          "type": "heading3",
+          "content": "No timeout on acquire",
+          "text": "No timeout on acquire"
+        },
+        {
+          "type": "paragraph",
+          "content": "If every object is checked out and a caller blocks on acquire forever, one slow consumer can cascade into the entire system stalling. A bounded wait with a clear failure is safer than an unbounded one."
+        },
+        {
+          "type": "heading3",
+          "content": "Treating the pool as a cache",
+          "text": "Treating the pool as a cache"
+        },
+        {
+          "type": "paragraph",
+          "content": "A pool hands out objects for exclusive use and takes them back. A cache hands out shared, read only data. Mixing the two models leads to confusing ownership bugs."
+        },
+        {
+          "type": "heading3",
+          "content": "No health check before handing an object out",
+          "text": "No health check before handing an object out"
+        },
+        {
+          "type": "paragraph",
+          "content": "A connection that has silently died while sitting idle in the available set will fail the moment a caller tries to use it. A lightweight validity check on acquire, or a background sweep that discards dead objects, avoids handing out something broken."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499569643-813332962.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499569643-813332962.png",
+          "alt": "Health check flow on acquire: an idle object is validated, a dead one is discarded and replaced, a healthy one is handed to the caller"
+        },
+        {
+          "type": "note",
+          "title": "Prefer idle validation over per acquire validation when possible",
+          "content": "Checking every object on every acquire adds latency to the hot path. Many pools instead validate objects on a periodic background timer while they sit idle, which keeps acquire itself fast."
+        },
+        {
+          "type": "heading1",
+          "content": "11. When Object Pool earns its complexity",
+          "text": "11. When Object Pool earns its complexity"
+        },
+        {
+          "type": "paragraph",
+          "content": "Reach for Object Pool when three things are all true at once: the object is genuinely expensive to create, the underlying resource has a real limit worth protecting, and the object can be safely reset between uses."
+        },
+        {
+          "type": "paragraph",
+          "content": "If any one of those is false, plain construction is simpler and safer. A pool around a cheap object is pure overhead. A pool around an object that cannot be cleanly reset is a bug generator."
+        },
+        {
+          "type": "paragraph",
+          "content": "When all three hold, though, the pattern pays for itself quickly. A well sized pool turns an unpredictable, spiky cost into a flat, bounded one, and that predictability is often worth more than the raw savings."
+        },
+        {
+          "type": "paragraph",
+          "content": "Start with a small, honestly measured pool size, watch it under real traffic, and adjust. The two operations, acquire and release, are simple by design. Keep the discipline around them just as simple."
+        },
+        {
+          "type": "paragraph",
+          "content": "Get those two operations right, size the pool from real measurements instead of guesses, and Object Pool quietly becomes one of the least glamorous but most load bearing patterns in the whole system."
+        }
+      ]
+    }
+  ]
+}

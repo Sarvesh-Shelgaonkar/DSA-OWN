@@ -1,0 +1,567 @@
+{
+  "slug": "agent-orchestration",
+  "title": "Agent Orchestration",
+  "content": [
+    {
+      "id": "agent-orchestration",
+      "title": "Agent Orchestration",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Agent systems rarely stay simple. Once you have more than two or three specialized agents, something needs to decide what happens next, instead of leaving that decision to whichever agent happens to finish talking last."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson is about that something, a dedicated orchestrator component. We will look at why centralizing that decision beats letting agents negotiate among themselves, and how to build an orchestrator on top of MCP so every agent looks like just another connected server."
+        },
+        {
+          "type": "paragraph",
+          "text": "We will also look at what happens when a step gets stuck or starts looping, because in a real orchestrated system that is not a hypothetical, it is a routine Tuesday."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What an Orchestrator Actually Is",
+          "id": "agent-orch-what-is"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579490428-872101055.png",
+          "alt": "An orchestrator sits between a user request and three specialized agent MCP servers",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "An orchestrator is a small piece of software that sits above your agents and decides which one runs next."
+        },
+        {
+          "type": "paragraph",
+          "text": "It does not do the work itself. A search agent still searches and a coding agent still writes code, the orchestrator just decides the order and passes results along."
+        },
+        {
+          "type": "paragraph",
+          "text": "Think of it less like another team member and more like a project manager holding the plan and the whiteboard."
+        },
+        {
+          "type": "note",
+          "title": "Orchestrator versus agent",
+          "content": "An agent reasons about a task and produces output. An orchestrator reasons about a workflow and produces a sequence of agent calls. Both may use an LLM, but they are solving different problems."
+        },
+        {
+          "type": "paragraph",
+          "text": "That distinction matters once things go wrong, because you almost always want to debug the workflow separately from debugging any single agent."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Centralized Orchestration versus Local Agent Decisions",
+          "id": "agent-orch-centralized-vs-local"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579492434-242019214.png",
+          "alt": "Centralized orchestration is compared against local agent decisions",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "In a decentralized setup, each agent looks at its own output and decides which agent to hand off to next."
+        },
+        {
+          "type": "paragraph",
+          "text": "That sounds flexible, but it means the logic for what should happen next is scattered across every agent prompt instead of living in one place."
+        },
+        {
+          "type": "paragraph",
+          "text": "Centralized orchestration moves that decision into a single component, so there is exactly one place to read, test, and fix when the workflow needs to change."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Decentralized handoff\",\"Centralized orchestrator\"],\"rows\":[[\"Where the routing logic lives\",\"Spread across every agent prompt\",\"One orchestrator component\"],[\"Adding a new agent\",\"Every existing agent needs updating\",\"Register one new agent with the orchestrator\"],[\"Debugging a bad run\",\"Reconstruct the story from several agents\",\"Read one ledger of steps and decisions\"],[\"Catching a stuck step\",\"No single place is watching\",\"Orchestrator owns timeouts and status\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "None of this means agents cannot be smart on their own. It just means the choice of who runs next is not left up to a negotiation between them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Why Peer to Peer Handoffs Get Messy",
+          "id": "agent-orch-peer-to-peer-messy"
+        },
+        {
+          "type": "paragraph",
+          "text": "Peer to peer handoff works fine with two agents, because there is only one possible next step to argue about."
+        },
+        {
+          "type": "paragraph",
+          "text": "Add a third agent and each agent now needs an opinion about every other agent job, which duplicates logic and invites disagreement."
+        },
+        {
+          "type": "paragraph",
+          "text": "Worse, when something goes wrong, you have no single log to read. You have three partial views of the same failure, scattered across three prompts."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Every agent must know about every other agent it might hand off to",
+            "Adding a new agent means updating every existing agent prompt",
+            "No single place tracks overall progress across the whole run",
+            "A silent loop can form between two agents with nobody noticing until a user complains"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. The Orchestrator as an MCP Client",
+          "id": "agent-orch-as-mcp-client"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP defines a clean split between clients and servers. A client sends requests, and a server exposes tools, resources, and prompts."
+        },
+        {
+          "type": "paragraph",
+          "text": "An orchestrator fits naturally on the client side. It holds one MCP client connection per agent it needs to call."
+        },
+        {
+          "type": "paragraph",
+          "text": "From the orchestrator point of view, calling an agent looks exactly like calling any other MCP tool, same request shape, same response shape."
+        },
+        {
+          "type": "note",
+          "title": "Nothing agent specific in the wire protocol",
+          "content": "MCP itself has no idea that one of its servers happens to be backed by an LLM agent rather than a plain function. That is exactly what makes this pattern reusable."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a big part of why the pattern scales cleanly. The orchestrator core barely changes as agents are added, removed, or rewritten."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Every Agent Becomes Just Another MCP Server",
+          "id": "agent-orch-agents-as-servers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579494733-396971289.png",
+          "alt": "From the orchestrator, every agent looks like just another MCP server",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The trick that makes this all click is to wrap each specialized agent in its own small MCP server."
+        },
+        {
+          "type": "paragraph",
+          "text": "A search agent exposes a tool called something like run_search, a coding agent exposes run_code_task, and so on."
+        },
+        {
+          "type": "paragraph",
+          "text": "The orchestrator never needs to know how an agent reasons internally. It only needs to know the tool name and what arguments to send."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"name\": \"run_search\",\n  \"description\": \"Runs the search agent on a research question and returns findings\",\n  \"inputSchema\": {\n    \"type\": \"object\",\n    \"properties\": {\n      \"query\": { \"type\": \"string\" },\n      \"max_sources\": { \"type\": \"integer\", \"default\": 5 }\n    },\n    \"required\": [\"query\"]\n  }\n}"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Why this matters",
+          "content": "Once an agent lives behind an MCP server, swapping its implementation, changing its model, or replacing it entirely never touches the orchestrator code."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. The Orchestration Loop, Step by Step",
+          "id": "agent-orch-loop"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every orchestration run follows the same basic loop, pick the next step, dispatch it to the right agent server, record the result, decide what comes after."
+        },
+        {
+          "type": "paragraph",
+          "text": "The loop keeps going until a plan is marked complete, or until something forces it to stop early."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Read the current plan and the task state so far",
+            "Choose the next step based on what has already completed",
+            "Call the matching agent MCP server with a fixed timeout",
+            "Record the result and update the task state",
+            "Decide whether to continue, retry, or stop the run"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Shared State, the Task Ledger",
+          "id": "agent-orch-task-ledger"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579497391-343327649.png",
+          "alt": "A shared task ledger tracks the state of every step across agents",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "An orchestrator needs somewhere to write down what it has asked for and what has come back. Call it a task ledger."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is usually just a record per step, with a status like pending, running, done, or stuck, plus a timestamp for when it last changed."
+        },
+        {
+          "type": "paragraph",
+          "text": "Without a ledger, the orchestrator has no memory of its own history, which makes stuck detection nearly impossible."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Field\",\"Purpose\"],\"rows\":[[\"step_id\",\"Identifies one unit of work in the plan\"],[\"agent\",\"Which MCP server handles this step\"],[\"status\",\"pending, running, done, or stuck\"],[\"started_at\",\"Timestamp when the step was dispatched\"],[\"attempts\",\"How many times this step has been tried\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "A ledger does not need to be fancy. Even a single table in an ordinary database is enough to unlock real monitoring."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Step Timeouts",
+          "id": "agent-orch-step-timeouts"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579499065-448958069.png",
+          "alt": "A step under its timeout completes while one over the timeout is aborted",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every dispatched step needs a clock running the moment it starts."
+        },
+        {
+          "type": "paragraph",
+          "text": "If an agent has not responded by the deadline, the orchestrator should treat that as a signal, not silently wait forever."
+        },
+        {
+          "type": "paragraph",
+          "text": "A reasonable default gives each step a generous but finite timeout, long enough for real work, short enough that a hang gets caught within a minute or two."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a single dispatch, wrapped in a hard timeout\ntry:\n    result = await asyncio.wait_for(\n        agent_client.call_tool(tool_name, arguments),\n        timeout=STEP_TIMEOUT_SECONDS\n    )\nexcept asyncio.TimeoutError:\n    mark_step_stuck(step_id, reason=\"timeout\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the timeout lives in the orchestrator, not in the agent. An agent should never be trusted to enforce its own deadline."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Detecting Stuck and Looping Steps",
+          "id": "agent-orch-stuck-detection"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579500786-905156226.png",
+          "alt": "A step repeating without progress is detected as stuck or looping",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A stuck step is one that never returns. A looping step is one that keeps returning but never actually finishes the plan."
+        },
+        {
+          "type": "paragraph",
+          "text": "Timeouts catch the first kind. The second kind needs the orchestrator to compare each new result against recent history."
+        },
+        {
+          "type": "paragraph",
+          "text": "If the same agent is asked to do essentially the same step three times in a row with no forward progress, that is a loop, not persistence."
+        },
+        {
+          "type": "list",
+          "items": [
+            "No response arrives before the step timeout expires",
+            "The same step is retried past a small attempt limit",
+            "The plan revisits a step it already marked done",
+            "Two agents keep handing work back and forth with no new progress"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Building a Minimal Orchestrator in Code",
+          "id": "agent-orch-code-walkthrough"
+        },
+        {
+          "type": "paragraph",
+          "text": "The example below shows a small orchestrator dispatching to different agent MCP servers, each call wrapped in a timeout, with a simple stuck counter per step."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport time\n\nSTEP_TIMEOUT_SECONDS = 30\nMAX_ATTEMPTS = 3\n\nclass Orchestrator:\n    def __init__(self, agent_clients):\n        # agent_clients maps an agent name to an already connected MCP client\n        self.agent_clients = agent_clients\n        self.ledger = {}\n\n    async def run_plan(self, plan):\n        for step in plan.steps:\n            await self.run_step(step)\n\n    async def run_step(self, step):\n        self.ledger.setdefault(step.id, {\"attempts\": 0, \"status\": \"pending\"})\n        entry = self.ledger[step.id]\n\n        while entry[\"attempts\"] < MAX_ATTEMPTS:\n            entry[\"attempts\"] += 1\n            entry[\"status\"] = \"running\"\n            entry[\"started_at\"] = time.time()\n\n            client = self.agent_clients[step.agent]\n            try:\n                result = await asyncio.wait_for(\n                    client.call_tool(step.tool_name, step.arguments),\n                    timeout=STEP_TIMEOUT_SECONDS\n                )\n                entry[\"status\"] = \"done\"\n                entry[\"result\"] = result\n                return result\n            except asyncio.TimeoutError:\n                entry[\"status\"] = \"stuck\"\n                self.log_stuck(step, reason=\"timeout\")\n            except Exception as exc:\n                entry[\"status\"] = \"stuck\"\n                self.log_stuck(step, reason=str(exc))\n\n        entry[\"status\"] = \"escalated\"\n        return self.escalate(step)\n\n    def log_stuck(self, step, reason):\n        print(f\"step {step.id} on agent {step.agent} stuck, reason: {reason}\")\n\n    def escalate(self, step):\n        print(f\"step {step.id} exceeded max attempts, escalating\")\n        return {\"status\": \"needs_human_review\", \"step_id\": step.id}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The ledger dictionary is deliberately simple here, in production it would be a real table, but the shape stays the same, one entry per step with a status and an attempt count."
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice that a single failing agent never crashes the loop. It just runs out of attempts and gets escalated."
+        },
+        {
+          "type": "note",
+          "title": "Keep the timeout in one place",
+          "content": "Hardcoding STEP_TIMEOUT_SECONDS as one constant, rather than letting each agent set its own, keeps the whole system predictable and easy to tune."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Monitoring an Orchestrated System",
+          "id": "agent-orch-monitoring"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once an orchestrator exists, it becomes the single best place to watch a multi agent system from."
+        },
+        {
+          "type": "paragraph",
+          "text": "Every step passes through it, so logging step start, step end, and step status in one place gives you a live picture of the whole run."
+        },
+        {
+          "type": "paragraph",
+          "text": "A simple dashboard showing step status per plan catches most stuck runs long before a person would notice manually."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Signal to watch\",\"What it usually means\"],\"rows\":[[\"Step running past its timeout\",\"The agent is hung, overloaded, or waiting on something external\"],[\"Attempts counter climbing\",\"The step keeps failing and needs attention\"],[\"Same step id reappearing after being marked done\",\"A possible loop between two steps or agents\"],[\"No new ledger entries for a while\",\"The whole run may be stalled, not just one step\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Alert on the ledger, not on the agents",
+          "content": "Watching the orchestrator ledger for stale entries catches problems across every agent at once, instead of building a separate health check for each one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Retry and Escalation Policies",
+          "id": "agent-orch-retry-escalation"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579502684-544379.png",
+          "alt": "A failed step is retried a few times before escalating to a human",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Not every stuck step should be retried forever, and not every failure should stop the whole run."
+        },
+        {
+          "type": "paragraph",
+          "text": "A sane policy retries a step a small fixed number of times, then escalates, either to a fallback agent or to a human reviewer."
+        },
+        {
+          "type": "paragraph",
+          "text": "Escalation is just another kind of dispatch. The orchestrator calls a different tool instead of giving up silently."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Retry the same step a small, fixed number of times",
+            "Try a fallback agent if one exists for that step",
+            "Route to a human review queue if automated retries are exhausted",
+            "Always record why a step was escalated, not just that it was"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Isolating Failures Between Agents",
+          "id": "agent-orch-failure-isolation"
+        },
+        {
+          "type": "paragraph",
+          "text": "One agent failing should never crash the whole orchestrator process."
+        },
+        {
+          "type": "paragraph",
+          "text": "Each agent call should be wrapped so an exception or timeout in one step turns into a status update, not an unhandled crash."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "async def call_agent_safely(client, tool_name, arguments):\n    try:\n        return await asyncio.wait_for(\n            client.call_tool(tool_name, arguments),\n            timeout=STEP_TIMEOUT_SECONDS\n        )\n    except Exception as exc:\n        # never let one agent's failure take down the orchestrator loop\n        return {\"error\": str(exc)}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This isolation is what lets you keep three agents healthy even when a fourth is misbehaving badly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Scaling the Orchestrator",
+          "id": "agent-orch-scaling"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single orchestrator instance can usually run many plans at once, since most of its time is spent waiting on agent responses, not computing."
+        },
+        {
+          "type": "paragraph",
+          "text": "As the number of concurrent plans grows, the ledger and the timeout tracking need to live somewhere durable, not just in memory."
+        },
+        {
+          "type": "paragraph",
+          "text": "The orchestrator logic itself rarely needs to change as you add more agents, only the registry of which MCP server handles which tool."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Growth factor\",\"What actually needs to change\"],\"rows\":[[\"More concurrent plans\",\"Move the ledger to a real database\"],[\"More agents\",\"Add an entry to the agent registry, nothing else\"],[\"Higher call volume per agent\",\"Add connection pooling per MCP client\"],[\"Stricter reliability needs\",\"Add alerting on top of the existing ledger\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: Catching a Stuck Summarizer",
+          "id": "agent-orch-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a three step plan, search, then summarize, then write a final answer. The search agent finishes quickly and hands its findings to the summarizer."
+        },
+        {
+          "type": "paragraph",
+          "text": "The summarizer agent hangs, waiting on a slow internal model call that never returns."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "step_id=2 agent=summarizer status=running started_at=12:00:00\nstep_id=2 agent=summarizer status=stuck reason=timeout attempts=1\nstep_id=2 agent=summarizer status=running started_at=12:00:31\nstep_id=2 agent=summarizer status=stuck reason=timeout attempts=2\nstep_id=2 agent=summarizer status=escalated attempts=2"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Because the orchestrator enforced a timeout on every attempt, the stuck summarizer never blocked the whole run indefinitely."
+        },
+        {
+          "type": "paragraph",
+          "text": "After two failed attempts, the orchestrator escalated to a fallback summarizer agent, and the plan finished successfully a few seconds later."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "agent-orch-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Letting agents decide handoffs among themselves once there are more than two of them",
+            "Giving a step an unlimited or missing timeout",
+            "Treating a retry limit as optional instead of always enforcing one",
+            "Not keeping a ledger, so a stuck run looks the same as a slow but healthy one",
+            "Building a separate health check per agent instead of watching the shared ledger"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "agent-orch-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Try building a tiny orchestrator with two mock agent MCP servers, one that always responds quickly and one that you deliberately make hang."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Add a step timeout and confirm the hanging agent gets marked stuck instead of blocking the run",
+            "Add an attempts counter and confirm the step escalates after a small fixed number of retries",
+            "Log every ledger change and check whether you could spot a stuck run just from those logs",
+            "Add a third agent and confirm the orchestrator core code did not need to change"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "agent-orch-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A dedicated orchestrator, treating every specialized agent as just another MCP server, turns a tangle of peer handoffs into one readable, testable workflow."
+        },
+        {
+          "type": "paragraph",
+          "text": "Timeouts and a shared task ledger are what let that orchestrator catch a stuck or looping step early, instead of finding out from an unhappy user."
+        }
+      ]
+    }
+  ]
+}

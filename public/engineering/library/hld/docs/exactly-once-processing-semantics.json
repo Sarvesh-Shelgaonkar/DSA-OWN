@@ -1,0 +1,434 @@
+{
+  "slug": "exactly-once-processing-semantics",
+  "title": "Exactly-Once Processing Semantics",
+  "content": [
+    {
+      "id": "exactly-once-processing-semantics",
+      "title": "Exactly-Once Processing Semantics",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Say you order food on an app and your card gets charged twice for the same order. That is not some random UI glitch. Somewhere in the backend, a message describing that payment got processed twice."
+        },
+        {
+          "type": "paragraph",
+          "content": "Or the opposite happens. You place the order, money leaves your account, but the restaurant's system never sees it. The message describing the order got lost somewhere between the app and the kitchen screen."
+        },
+        {
+          "type": "paragraph",
+          "content": "Both of those are delivery guarantee bugs. Every messaging system, every queue, every stream processor has to make a choice about what happens when a message might not make it across the network cleanly. This topic is about the option almost everyone wants and almost nobody gets for free: exactly-once processing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a producer sends a message to a consumer over a network, three things can go wrong. The message can get lost. The message can get delivered more than once. Or, on a good day, it gets delivered exactly once."
+        },
+        {
+          "type": "paragraph",
+          "content": "Which of these happens depends on what the system is built to guarantee. That guarantee has a name: the delivery semantic. It shows up everywhere a message crosses a boundary, a queue delivering to a worker, a stream processor reading from a topic, a webhook retrying a failed call."
+        },
+        {
+          "type": "note",
+          "title": "Why this matters in interviews",
+          "content": "Ask a candidate to design any streaming or queue based system and eventually you hit this question: what happens if a message is delivered twice, or not at all? How you answer separates a surface level design from one that has actually thought through failure and retries."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332246-777206365.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332246-777206365.png",
+          "alt": "Three delivery guarantees side by side: at most once may lose a message, at least once may duplicate it, exactly once does neither"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The three delivery guarantees",
+          "text": "2. The three delivery guarantees"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every messaging system picks one of three contracts for what happens to a message between the producer sending it and the consumer finishing work on it."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Guarantee\",\"What can go wrong\"],\"rows\":[[\"At most once\",\"Message can be dropped and never processed\"],[\"At least once\",\"Message is retried until acknowledged, can be processed more than once\"],[\"Exactly once\",\"Message is processed precisely once, no loss, no duplicates\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 At most once",
+          "text": "2.1 At most once"
+        },
+        {
+          "type": "paragraph",
+          "content": "Fire the message and move on. If it gets lost on the way, nobody retries it. The consumer might just never see it."
+        },
+        {
+          "type": "paragraph",
+          "content": "This sounds bad, and for a lot of systems it is. But it is genuinely fine when losing a message occasionally is acceptable and retrying would cost more than it is worth."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332246-236679314.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332246-236679314.png",
+          "alt": "A message dropped in transit, the consumer never receives it and nothing retries"
+        },
+        {
+          "type": "list",
+          "content": "[\"Metrics and telemetry pings, one missing data point out of a million does not matter\",\"Best effort UDP based logging\",\"Non critical notifications where a missed push is annoying but not harmful\"]",
+          "items": [
+            "Metrics and telemetry pings, one missing data point out of a million does not matter",
+            "Best effort UDP based logging",
+            "Non critical notifications where a missed push is annoying but not harmful"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Rule of thumb",
+          "content": "Reach for at most once only when the cost of occasionally losing a message is genuinely lower than the cost of building retry logic and handling duplicates."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 At least once",
+          "text": "2.2 At least once"
+        },
+        {
+          "type": "paragraph",
+          "content": "Keep retrying the message until the consumer acknowledges it. If the ack never arrives, the producer or broker assumes something went wrong and sends it again."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is safe against loss. A message basically cannot vanish silently, someone will keep offering it to a consumer until it is confirmed done. The tradeoff is that the same message can now be processed more than once."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332247-83708398.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332247-83708398.png",
+          "alt": "A consumer crashes before acknowledging, the message is retried and processed twice, producing a duplicate effect"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most real world systems default to at least once. Kafka consumers, SQS, RabbitMQ with manual acks, all of them lean this way because losing data silently is usually worse than occasionally doing something twice."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.3 Exactly once",
+          "text": "2.3 Exactly once"
+        },
+        {
+          "type": "paragraph",
+          "content": "Each message's effect gets applied precisely one time. No loss, no duplicates. This is the guarantee everyone asks for in interviews and the one that is genuinely hard to deliver honestly."
+        },
+        {
+          "type": "paragraph",
+          "content": "The next section explains why. Short version: true exactly-once delivery over an unreliable network is essentially impossible. What you actually build is something that behaves like exactly-once from the outside, which is not quite the same claim."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Why exactly-once delivery is basically impossible",
+          "text": "3. Why exactly-once delivery is basically impossible"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is the failure that breaks the dream of a clean exactly-once delivery guarantee. A consumer picks up a message, does the work, for example it charges a card or updates a row in a database. Then, before it sends the acknowledgment back, the process crashes."
+        },
+        {
+          "type": "paragraph",
+          "content": "The broker has no way to know the work was already done. All it knows is that it never got an ack. So it does the only safe thing: it redelivers the message. Now the same event runs through the processing logic a second time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 The crash before ack problem",
+          "text": "3.1 The crash before ack problem"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332247-275839977.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332247-275839977.png",
+          "alt": "A consumer processes a message, crashes before sending the acknowledgment, the queue redelivers it and it gets processed again"
+        },
+        {
+          "type": "paragraph",
+          "content": "You cannot fix this by moving the ack earlier, because then a crash before finishing the work would cause the message to be silently dropped, which puts you back at at most once. And you cannot fix it by making the crash impossible, because processes crash, networks partition, and acks get lost in transit too."
+        },
+        {
+          "type": "note",
+          "title": "The honest conclusion",
+          "content": "Exactly-once delivery, meaning the network guarantees a message physically arrives and is processed one single time, cannot be built on top of an unreliable network. What is actually achievable is at least once delivery combined with processing logic that makes a duplicate harmless. From the outside that looks and behaves like exactly-once."
+        },
+        {
+          "type": "blockQuote",
+          "content": "At least once delivery plus idempotent processing equals effective exactly-once. This is the sentence to remember for the interview."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Idempotency: the practical fix",
+          "text": "4. Idempotency: the practical fix"
+        },
+        {
+          "type": "paragraph",
+          "content": "If you cannot stop duplicates from arriving, the next best thing is to make sure a duplicate does nothing harmful. That property is called idempotency."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 What idempotent means here",
+          "text": "4.1 What idempotent means here"
+        },
+        {
+          "type": "paragraph",
+          "content": "A piece of processing logic is idempotent when applying it twice to the same event produces the same result as applying it once. The event can be replayed, retried, redelivered, and the outcome stays correct."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341720-142166313.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341720-142166313.png",
+          "alt": "A duplicate event runs through an idempotent handler and produces the same effect as if it had run only once"
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice what changed here. You are not preventing the duplicate delivery. You are removing its ability to cause damage. That is a much easier problem to solve reliably."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Two techniques that make processing idempotent",
+          "text": "4.2 Two techniques that make processing idempotent"
+        },
+        {
+          "type": "paragraph",
+          "content": "There are two common ways to get there, and real systems usually combine both."
+        },
+        {
+          "type": "list",
+          "content": "[\"Unique event ID plus a dedup check, tag every event with an ID that never repeats, and before processing, check whether that ID has already been handled\",\"Naturally idempotent operations, design the operation itself so replaying it changes nothing\"]",
+          "items": [
+            "Unique event ID plus a dedup check, tag every event with an ID that never repeats, and before processing, check whether that ID has already been handled",
+            "Naturally idempotent operations, design the operation itself so replaying it changes nothing"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341722-464710960.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341722-464710960.png",
+          "alt": "An incoming event carries an ID, the handler checks a dedup table, skips it if already seen, applies and stores it if new"
+        },
+        {
+          "type": "paragraph",
+          "content": "The second technique is often underrated. Compare these two updates to a bank balance."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341723-608437990.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341723-608437990.png",
+          "alt": "Add X twice leaves the balance wrong, set to X twice leaves the balance correct"
+        },
+        {
+          "type": "paragraph",
+          "content": "\"Add 100 to the balance\" is not idempotent. Run it twice by accident and the customer gets an extra 100 they never should have received."
+        },
+        {
+          "type": "paragraph",
+          "content": "\"Set the balance to 500\" is naturally idempotent. Run it once or run it ten times, the balance ends up at 500 either way. Whenever you can express an operation as a final state rather than a delta, replays stop being dangerous."
+        },
+        {
+          "type": "note",
+          "title": "Not always possible",
+          "content": "You cannot always rewrite an operation as a plain set. A lot of real business logic genuinely is a delta, debit this account, increment this counter, append this event. That is exactly why the event ID dedup approach exists, it works for any operation, delta or not, as long as you can reliably track what has already been applied."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. How real systems achieve effective exactly-once",
+          "text": "5. How real systems achieve effective exactly-once"
+        },
+        {
+          "type": "paragraph",
+          "content": "Two of the most common streaming platforms in production, Kafka and Flink, both promise exactly-once semantics. Neither of them breaks the impossibility result from section 3. Both of them get there by combining reliable at least once delivery with a mechanism that makes reprocessing safe."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Kafka transactional producer and consumer",
+          "text": "5.1 Kafka transactional producer and consumer"
+        },
+        {
+          "type": "paragraph",
+          "content": "Kafka's transactional API lets a consumer read a batch of messages, do some processing, produce output messages, and commit its consumer offset, all as one atomic unit."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341723-447330668.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341723-447330668.png",
+          "alt": "A Kafka transaction bundles the offset commit and the topic write together so both succeed or neither does"
+        },
+        {
+          "type": "paragraph",
+          "content": "The trick is that the offset commit and the output write live inside the same transaction. If the process crashes halfway through, the transaction never commits, so on restart Kafka replays from the last committed offset. Nothing was left half applied, and nothing downstream sees a partial write."
+        },
+        {
+          "type": "paragraph",
+          "content": "This gives you exactly-once for the Kafka to Kafka case specifically, reading from one topic and writing to another. It does not automatically cover a side effect outside Kafka, like calling a payment API, which is why idempotent processing still matters even when Kafka transactions are involved."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Flink checkpointing and idempotent sinks",
+          "text": "5.2 Flink checkpointing and idempotent sinks"
+        },
+        {
+          "type": "paragraph",
+          "content": "Flink takes a different angle. It periodically takes a consistent snapshot, a checkpoint, of the entire job's state, including how far it has read from its input sources."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341724-538054631.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341724-538054631.png",
+          "alt": "Flink checkpoints the stream state, feeds an idempotent sink, and stays safe even if the same records replay"
+        },
+        {
+          "type": "paragraph",
+          "content": "If a task fails, Flink restarts it from the last successful checkpoint. That means some records between the checkpoint and the failure get replayed. Flink calls its overall guarantee exactly-once, but that guarantee only holds end to end if the sink, the place where results actually land, is also idempotent or transactional. A database write keyed by a unique ID, or a sink that participates in Flink's two phase commit protocol, both work here."
+        },
+        {
+          "type": "note",
+          "title": "Pattern you will see everywhere",
+          "content": "Checkpoint or transaction to make sure you never silently lose progress, combined with an idempotent or transactional sink to make sure replays do not corrupt the output. Swap the vendor names and this is the same pattern in almost every exactly-once story you will read."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Worked example: a payment consumer with a dedup table",
+          "text": "6. Worked example: a payment consumer with a dedup table"
+        },
+        {
+          "type": "paragraph",
+          "content": "Picture a payment service that consumes \"charge completed\" events off a queue and applies them to a ledger. The queue is at least once, so any event can arrive more than once. Here is how to make that safe."
+        },
+        {
+          "type": "paragraph",
+          "content": "Before applying a charge, the consumer checks a dedup table keyed on the event's unique ID. If the ID is already there, the event is a replay and gets ignored. If not, the consumer applies the charge and records the ID in the same database transaction as the charge itself."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341724-506650863.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341724-506650863.png",
+          "alt": "A payment event is looked up in a dedup table, ignored if already seen, applied and recorded if new"
+        },
+        {
+          "type": "code",
+          "content": "CREATE TABLE processed_events (\n  event_id     VARCHAR(64) PRIMARY KEY,\n  processed_at TIMESTAMP NOT NULL DEFAULT now()\n);\n\nCREATE TABLE ledger (\n  account_id VARCHAR(64) PRIMARY KEY,\n  balance    BIGINT NOT NULL\n);",
+          "code": {
+            "language": "sql",
+            "content": "CREATE TABLE processed_events (\n  event_id     VARCHAR(64) PRIMARY KEY,\n  processed_at TIMESTAMP NOT NULL DEFAULT now()\n);\n\nCREATE TABLE ledger (\n  account_id VARCHAR(64) PRIMARY KEY,\n  balance    BIGINT NOT NULL\n);"
+          },
+          "codes": {
+            "sql": "CREATE TABLE processed_events (\n  event_id     VARCHAR(64) PRIMARY KEY,\n  processed_at TIMESTAMP NOT NULL DEFAULT now()\n);\n\nCREATE TABLE ledger (\n  account_id VARCHAR(64) PRIMARY KEY,\n  balance    BIGINT NOT NULL\n);"
+          }
+        },
+        {
+          "type": "code",
+          "content": "async function handlePaymentEvent(event) {\n  const { eventId, accountId, amountCents } = event;\n\n  return db.transaction(async (tx) => {\n    // Try to claim this event ID. If it already exists, this insert\n    // fails on the primary key and we know it is a duplicate delivery.\n    const claimed = await tx.query(\n      'INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING event_id',\n      [eventId]\n    );\n\n    if (claimed.rowCount === 0) {\n      // Already processed once before. Safe to ignore this redelivery.\n      console.log('duplicate event ignored', eventId);\n      return;\n    }\n\n    // First time we have seen this event id, apply the charge for real.\n    await tx.query(\n      'UPDATE ledger SET balance = balance - $1 WHERE account_id = $2',\n      [amountCents, accountId]\n    );\n  });\n}",
+          "code": {
+            "language": "javascript",
+            "content": "async function handlePaymentEvent(event) {\n  const { eventId, accountId, amountCents } = event;\n\n  return db.transaction(async (tx) => {\n    // Try to claim this event ID. If it already exists, this insert\n    // fails on the primary key and we know it is a duplicate delivery.\n    const claimed = await tx.query(\n      'INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING event_id',\n      [eventId]\n    );\n\n    if (claimed.rowCount === 0) {\n      // Already processed once before. Safe to ignore this redelivery.\n      console.log('duplicate event ignored', eventId);\n      return;\n    }\n\n    // First time we have seen this event id, apply the charge for real.\n    await tx.query(\n      'UPDATE ledger SET balance = balance - $1 WHERE account_id = $2',\n      [amountCents, accountId]\n    );\n  });\n}"
+          },
+          "codes": {
+            "javascript": "async function handlePaymentEvent(event) {\n  const { eventId, accountId, amountCents } = event;\n\n  return db.transaction(async (tx) => {\n    // Try to claim this event ID. If it already exists, this insert\n    // fails on the primary key and we know it is a duplicate delivery.\n    const claimed = await tx.query(\n      'INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING event_id',\n      [eventId]\n    );\n\n    if (claimed.rowCount === 0) {\n      // Already processed once before. Safe to ignore this redelivery.\n      console.log('duplicate event ignored', eventId);\n      return;\n    }\n\n    // First time we have seen this event id, apply the charge for real.\n    await tx.query(\n      'UPDATE ledger SET balance = balance - $1 WHERE account_id = $2',\n      [amountCents, accountId]\n    );\n  });\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The insert into processed_events and the update to the ledger happen inside one database transaction. Either both succeed or neither does. That is what makes this safe against a crash mid processing, there is no window where the event is marked processed but the charge never actually landed."
+        },
+        {
+          "type": "note",
+          "title": "Why not just check before processing",
+          "content": "Checking \"have I seen this ID\" and then inserting it as two separate steps opens a race, two copies of the same event could both check, both see nothing, and both apply the charge. The unique constraint on event_id plus a single atomic insert is what actually closes that gap, not the order of operations in application code."
+        },
+        {
+          "type": "paragraph",
+          "content": "From the outside, this consumer behaves as if it received each payment event exactly once, even though the underlying queue only promised at least once. That is effective exactly-once, built out of an at least once queue plus an idempotent write."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. The interview angle",
+          "text": "7. The interview angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "A lot of candidates can say the words \"we will use a message queue\" and stop there. Fewer can answer the follow up: what happens when your consumer crashes right after processing a message but before acknowledging it?"
+        },
+        {
+          "type": "list",
+          "content": "[\"Naming all three guarantees and what each one costs you\",\"Explaining why true exactly-once delivery is not achievable over an unreliable network\",\"Describing at least once plus idempotency as the real world answer\",\"Picking a concrete idempotency technique, a unique event ID or a naturally idempotent operation\",\"Knowing that Kafka and Flink brand their offering as exactly-once but actually deliver it through transactions or checkpoints combined with idempotent sinks\"]",
+          "items": [
+            "Naming all three guarantees and what each one costs you",
+            "Explaining why true exactly-once delivery is not achievable over an unreliable network",
+            "Describing at least once plus idempotency as the real world answer",
+            "Picking a concrete idempotency technique, a unique event ID or a naturally idempotent operation",
+            "Knowing that Kafka and Flink brand their offering as exactly-once but actually deliver it through transactions or checkpoints combined with idempotent sinks"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341725-682546097.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396341725-682546097.png",
+          "alt": "At least once delivery plus idempotent processing combine to look like exactly once from the outside"
+        },
+        {
+          "type": "blockQuote",
+          "content": "If a design doc says exactly-once and never mentions retries, duplicates, or idempotency, that is usually a sign the failure modes were not actually thought through."
+        },
+        {
+          "type": "note",
+          "title": "Takeaway",
+          "content": "You will almost never build true exactly-once delivery. You will build at least once delivery and make your processing logic idempotent enough that duplicates do not matter. Say exactly that in an interview and you are already ahead of most candidates."
+        }
+      ]
+    }
+  ]
+}

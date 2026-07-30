@@ -1,0 +1,583 @@
+{
+  "slug": "event-sourcing",
+  "title": "Event Sourcing",
+  "content": [
+    {
+      "id": "event-sourcing",
+      "title": "Event Sourcing",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Open your banking app and check your balance. It shows one number, say 42,300 rupees. One field, sitting in a row somewhere, updated in place every time money moves."
+        },
+        {
+          "type": "paragraph",
+          "content": "But that number isn't really what your bank stores. Behind it is a running list of every deposit, withdrawal, and transfer you've ever made, some going back years. The balance you see on screen is computed from that list, not stored directly."
+        },
+        {
+          "type": "paragraph",
+          "content": "That's the entire idea behind event sourcing: stop storing current state directly. Store the sequence of events that produced it instead, and derive the state whenever you need it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278356-943734212.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278356-943734212.png",
+          "alt": "A traditional row holding just a current balance versus an append-only log of deposit and withdrawal events"
+        },
+        {
+          "type": "blockQuote",
+          "content": "Event sourcing: do not overwrite state. Append what happened, and derive state by replaying history."
+        },
+        {
+          "type": "note",
+          "title": "Not a specific database",
+          "content": "Event sourcing is a modeling and storage pattern, not a product you install. You can build it on Postgres, Kafka, DynamoDB, or a purpose-built event store like EventStoreDB."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a normal CRUD system, an entity like a bank account is one row. An UPDATE overwrites it, and the old value is gone the instant the new one lands. Want history? You bolt it on separately with an audit log table, a set of timestamps, whatever you can fit in later."
+        },
+        {
+          "type": "paragraph",
+          "content": "Event sourcing flips this around. The events are the source of truth. The row with today's balance, if one even exists, is just a cache you could throw away and rebuild from scratch."
+        },
+        {
+          "type": "list",
+          "content": "[\"Event: something that already happened. AccountOpened, MoneyDeposited, MoneyWithdrawn.\",\"Event log: an append-only, ordered list of those events for a given entity.\",\"Current state: whatever you get when you fold all the events together, in order.\"]",
+          "items": [
+            "Event: something that already happened. AccountOpened, MoneyDeposited, MoneyWithdrawn.",
+            "Event log: an append-only, ordered list of those events for a given entity.",
+            "Current state: whatever you get when you fold all the events together, in order."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Immutable by design",
+          "content": "Events are never edited or deleted once written. If a deposit got recorded wrong, you don't fix the old event, you append a correcting one. The log only ever grows."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Deriving state by replaying events",
+          "text": "2. Deriving state by replaying events"
+        },
+        {
+          "type": "paragraph",
+          "content": "Replay just means: start from a blank state, and apply each event in order, exactly the same way every single time."
+        },
+        {
+          "type": "paragraph",
+          "content": "For a bank account, that means starting the balance at zero, then walking through every event: add on a deposit, subtract on a withdrawal. Whatever number falls out at the end is the current balance."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278356-460913035.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278356-460913035.png",
+          "alt": "An event log being replayed in order to derive the current state of an entity"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Replay from the very beginning",
+          "text": "2.1 Replay from the very beginning"
+        },
+        {
+          "type": "paragraph",
+          "content": "The naive approach reads every event an account has ever produced and folds them one by one. That's totally fine for a new account with ten events. It gets painful for a five-year-old account with forty thousand of them, replayed on every single read."
+        },
+        {
+          "type": "note",
+          "title": "This cost is exactly why the rest of this doc exists",
+          "content": "Materialized read models and snapshots, both covered further down, exist specifically to avoid replaying the entire history every time someone just wants to know a balance."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Traditional storage versus the event log",
+          "text": "3. Traditional storage versus the event log"
+        },
+        {
+          "type": "paragraph",
+          "content": "Let's put the two models side by side using the same bank account, because the contrast is where event sourcing actually clicks."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 The account row",
+          "text": "3.1 The account row"
+        },
+        {
+          "type": "paragraph",
+          "content": "A typical accounts table has an id, a balance column, and maybe an updated_at timestamp. Every deposit or withdrawal runs an UPDATE that overwrites balance in place. Fast to read, simple to query, and the moment it happened is gone the instant the write completes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 The append-only log",
+          "text": "3.2 The append-only log"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of one row per account, you keep a table of events: account_id, event type, amount, and a timestamp. Nothing is ever updated. Every deposit and withdrawal is a new row, inserted and never touched again."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278357-676633258.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278357-676633258.png",
+          "alt": "A sequence of deposit and withdrawal events with actual amounts, each an independent immutable entry"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Traditional row\",\"Event log\"],\"rows\":[[\"Stores only the current balance\",\"Stores every deposit and withdrawal ever made\"],[\"A write overwrites the row\",\"A write appends a new event\"],[\"History is lost unless bolted on separately\",\"History is built in, it is the primary data\"],[\"Nothing to replay, the row is the answer\",\"Current state comes from replaying events in order\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Why you would want this",
+          "text": "4. Why you would want this"
+        },
+        {
+          "type": "paragraph",
+          "content": "None of this is worth the extra machinery unless it buys you something real. It buys you three things, and they're the reasons this pattern keeps showing up in audit-heavy systems."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 A complete audit trail, for free",
+          "text": "4.1 A complete audit trail, for free"
+        },
+        {
+          "type": "paragraph",
+          "content": "Since nothing is ever overwritten, you automatically have proof of every state change, including who did it and when, as long as you put that information on the event itself. For a compliance team, that's the whole pitch in one sentence."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278357-603027852.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278357-603027852.png",
+          "alt": "User actions flowing into an immutable event log, which produces an audit report without any extra bookkeeping"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Reconstructing state at any point in time",
+          "text": "4.2 Reconstructing state at any point in time"
+        },
+        {
+          "type": "paragraph",
+          "content": "Because you have the full history, you can answer \"what was the balance on March 3rd\" by replaying only the events that happened up to that timestamp and ignoring everything after it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278358-415003105.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278358-415003105.png",
+          "alt": "Replaying events only up to a chosen cut point to reconstruct state as it existed at a past moment"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 New read projections, added later",
+          "text": "4.3 New read projections, added later"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say six months into the project, product asks for a monthly spending summary view that never existed before. With plain CRUD, the historical detail needed to build that might already be gone, overwritten long ago. With event sourcing, you replay the entire log through a brand new projection and the summary exists retroactively, for every month you have events for."
+        },
+        {
+          "type": "note",
+          "title": "This is the feature people underestimate",
+          "content": "Adding a new read model later, and having it work correctly for all of history instead of just from today onward, is the single biggest reason teams reach for event sourcing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Reads in practice: pairing with CQRS",
+          "text": "5. Reads in practice: pairing with CQRS"
+        },
+        {
+          "type": "paragraph",
+          "content": "Replaying the full event history on every single read would fall over fast for a busy account with thousands of events. Nobody actually does that in a real production system."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Why you do not replay on every read",
+          "text": "5.1 Why you do not replay on every read"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every read turning into a full replay means every read gets slower as history grows. A dashboard showing a hundred accounts would mean a hundred replays, on every page load. That does not scale."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Materialized read models",
+          "text": "5.2 Materialized read models"
+        },
+        {
+          "type": "paragraph",
+          "content": "The usual fix is CQRS: separate the write side from the read side. Writes append events to the log. A separate process, often called a projector, listens for new events and updates a read-optimized table or view as they arrive. Reads just query that table directly, no replay involved."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278359-732270514.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278359-732270514.png",
+          "alt": "Commands appending to an event store, a projector updating a read model, and queries reading from that model directly"
+        },
+        {
+          "type": "note",
+          "title": "This is where eventual consistency sneaks in",
+          "content": "The projector runs asynchronously, so the read model lags the event log by however long that processing takes. It's usually milliseconds, but it's never exactly zero. More on this in the costs section below."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Snapshots as an optimization",
+          "text": "6. Snapshots as an optimization"
+        },
+        {
+          "type": "paragraph",
+          "content": "Replaying forty thousand events every time you need a balance is wasteful even with a read model handling most queries, since the read model itself still has to be built from somewhere. Snapshots fix this."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 What a snapshot buys you",
+          "text": "6.1 What a snapshot buys you"
+        },
+        {
+          "type": "paragraph",
+          "content": "Periodically, either every N events or on a timer, you save the computed state alongside the event number it was computed at. Next time you need the current state, you load the snapshot and only replay whatever events came after it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278359-512940564.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278359-512940564.png",
+          "alt": "A snapshot taken after four hundred events, letting a rebuild replay only the twenty events after it instead of all four hundred and twenty"
+        },
+        {
+          "type": "code",
+          "content": "function rebuildBalance(snapshot, eventsSinceSnapshot) {\n  let balance = snapshot ? snapshot.balance : 0;\n\n  for (const event of eventsSinceSnapshot) {\n    if (event.type === 'MoneyDeposited') balance += event.amount;\n    if (event.type === 'MoneyWithdrawn') balance -= event.amount;\n  }\n\n  return balance; // same answer as a full replay, far fewer events touched\n}",
+          "code": {
+            "language": "javascript",
+            "content": "function rebuildBalance(snapshot, eventsSinceSnapshot) {\n  let balance = snapshot ? snapshot.balance : 0;\n\n  for (const event of eventsSinceSnapshot) {\n    if (event.type === 'MoneyDeposited') balance += event.amount;\n    if (event.type === 'MoneyWithdrawn') balance -= event.amount;\n  }\n\n  return balance; // same answer as a full replay, far fewer events touched\n}"
+          },
+          "codes": {
+            "javascript": "function rebuildBalance(snapshot, eventsSinceSnapshot) {\n  let balance = snapshot ? snapshot.balance : 0;\n\n  for (const event of eventsSinceSnapshot) {\n    if (event.type === 'MoneyDeposited') balance += event.amount;\n    if (event.type === 'MoneyWithdrawn') balance -= event.amount;\n  }\n\n  return balance; // same answer as a full replay, far fewer events touched\n}"
+          }
+        },
+        {
+          "type": "note",
+          "title": "A snapshot is a cache, not the truth",
+          "content": "Snapshots are derived data. You can delete every snapshot you have and rebuild them all from the event log, and nothing is lost. The moment a snapshot becomes the thing you trust instead of the events, you have quietly stopped doing event sourcing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. The real costs",
+          "text": "7. The real costs"
+        },
+        {
+          "type": "paragraph",
+          "content": "None of this is free, and it's worth being honest about what you're signing up for."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 A harder mental model",
+          "text": "7.1 A harder mental model"
+        },
+        {
+          "type": "paragraph",
+          "content": "Everyone on the team needs to think in events instead of rows. Debugging \"what is the current balance\" means tracing a chain of events instead of reading one column, and that's a real shift for engineers used to plain CRUD."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Schema evolution is genuinely hard",
+          "text": "7.2 Schema evolution is genuinely hard"
+        },
+        {
+          "type": "paragraph",
+          "content": "Event shapes change as the system grows. A MoneyDeposited event from three years ago might not have a currency field that today's code expects. You cannot just migrate old rows in place, because the whole point of the log is that it stays immutable."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278360-416070142.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396278360-416070142.png",
+          "alt": "An old event shape being transformed by an upcaster into the newer shape the current application expects"
+        },
+        {
+          "type": "list",
+          "content": "[\"Upcasters: small functions that transform an old event shape into the current shape at read time, so old and new events can be replayed through the same code.\",\"Versioned handlers: keep the old event type recognized alongside the new one, and branch on version inside the fold logic.\"]",
+          "items": [
+            "Upcasters: small functions that transform an old event shape into the current shape at read time, so old and new events can be replayed through the same code.",
+            "Versioned handlers: keep the old event type recognized alongside the new one, and branch on version inside the fold logic."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.3 Eventual consistency",
+          "text": "7.3 Eventual consistency"
+        },
+        {
+          "type": "paragraph",
+          "content": "Read models lag slightly behind the event log because the projector updates them asynchronously. A user can deposit money and, for a brief moment, still see their old balance on a dashboard that reads from the lagging read model."
+        },
+        {
+          "type": "note",
+          "title": "Not a free lunch",
+          "content": "Event sourcing trades a simple mental model and instant consistency for auditability and flexibility. That trade is worth it for some systems and genuinely wrong for others."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Complete audit trail comes built in, not bolted on\",\"Team has to think in events instead of familiar rows\"],[\"Can reconstruct state as of any past moment\",\"Schema evolution on old events is a real engineering problem\"],[\"New read projections can be built retroactively\",\"Read models lag the event log, eventual not immediate consistency\"],[\"Events are immutable, easy to reason about what happened\",\"More moving pieces, event store, projectors, snapshots, to operate\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Where this shows up in the real world",
+          "text": "8. Where this shows up in the real world"
+        },
+        {
+          "type": "paragraph",
+          "content": "This isn't a niche academic idea. Some of the oldest and most trusted systems around already work this way."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Banking and ledgers",
+          "text": "8.1 Banking and ledgers"
+        },
+        {
+          "type": "paragraph",
+          "content": "Double entry bookkeeping is event sourcing that predates computers by centuries. Nobody erases a ledger entry, they post a reversing entry instead. The ledger is the event log, and the account balance is just a running total over it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Version control systems",
+          "text": "8.2 Version control systems"
+        },
+        {
+          "type": "paragraph",
+          "content": "Git is event sourcing for your code. Every commit is an immutable event. Your working directory is just the replayed result of applying every commit from the first one onward. git log is your audit trail, and checking out an old commit is time travel."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291693-753990057.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291693-753990057.png",
+          "alt": "A sequence of immutable commits being replayed to produce the current working directory"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.3 Audit-heavy domains",
+          "text": "8.3 Audit-heavy domains"
+        },
+        {
+          "type": "paragraph",
+          "content": "Healthcare records, financial trading systems, and insurance claims all lean on this pattern for the same reason: a regulator can show up years later and ask exactly what happened and when, and you need to be able to answer with certainty, not a best guess."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Worked example: rebuilding a bank account",
+          "text": "9. Worked example: rebuilding a bank account"
+        },
+        {
+          "type": "paragraph",
+          "content": "Let's make all of this concrete with real numbers on one account."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 The sequence of events",
+          "text": "9.1 The sequence of events"
+        },
+        {
+          "type": "paragraph",
+          "content": "An account is opened, then six events happen over time: a deposit of 1000, a deposit of 500, a withdrawal of 200, a deposit of 300, and a withdrawal of 150. Folding those in order: 0, then 1000, 1500, 1300, 1600, and finally 1450."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291696-38682269.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291696-38682269.png",
+          "alt": "A bank account rebuilt step by step from opening balance through five deposit and withdrawal events, ending at 1450"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 Replaying the events in code",
+          "text": "9.2 Replaying the events in code"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is the fold logic, written plainly. Each event carries just enough to compute its effect on the balance."
+        },
+        {
+          "type": "code",
+          "content": "const events = [\n  { type: 'AccountOpened' },\n  { type: 'MoneyDeposited', amount: 1000 },\n  { type: 'MoneyDeposited', amount: 500 },\n  { type: 'MoneyWithdrawn', amount: 200 },\n  { type: 'MoneyDeposited', amount: 300 },\n  { type: 'MoneyWithdrawn', amount: 150 }\n];\n\nfunction replay(events) {\n  return events.reduce((balance, event) => {\n    if (event.type === 'MoneyDeposited') return balance + event.amount;\n    if (event.type === 'MoneyWithdrawn') return balance - event.amount;\n    return balance; // AccountOpened and anything else leaves balance unchanged\n  }, 0);\n}\n\nconsole.log(replay(events)); // 1450",
+          "code": {
+            "language": "javascript",
+            "content": "const events = [\n  { type: 'AccountOpened' },\n  { type: 'MoneyDeposited', amount: 1000 },\n  { type: 'MoneyDeposited', amount: 500 },\n  { type: 'MoneyWithdrawn', amount: 200 },\n  { type: 'MoneyDeposited', amount: 300 },\n  { type: 'MoneyWithdrawn', amount: 150 }\n];\n\nfunction replay(events) {\n  return events.reduce((balance, event) => {\n    if (event.type === 'MoneyDeposited') return balance + event.amount;\n    if (event.type === 'MoneyWithdrawn') return balance - event.amount;\n    return balance; // AccountOpened and anything else leaves balance unchanged\n  }, 0);\n}\n\nconsole.log(replay(events)); // 1450"
+          },
+          "codes": {
+            "javascript": "const events = [\n  { type: 'AccountOpened' },\n  { type: 'MoneyDeposited', amount: 1000 },\n  { type: 'MoneyDeposited', amount: 500 },\n  { type: 'MoneyWithdrawn', amount: 200 },\n  { type: 'MoneyDeposited', amount: 300 },\n  { type: 'MoneyWithdrawn', amount: 150 }\n];\n\nfunction replay(events) {\n  return events.reduce((balance, event) => {\n    if (event.type === 'MoneyDeposited') return balance + event.amount;\n    if (event.type === 'MoneyWithdrawn') return balance - event.amount;\n    return balance; // AccountOpened and anything else leaves balance unchanged\n  }, 0);\n}\n\nconsole.log(replay(events)); // 1450"
+          }
+        },
+        {
+          "type": "example-box",
+          "title": "Result",
+          "text": "Replaying all six events from a zero starting balance produces 1450, matching the running total worked out by hand above."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.3 Adding a snapshot",
+          "text": "9.3 Adding a snapshot"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say a snapshot gets taken right after the withdrawal of 200, the fourth event, recording a balance of 1300 at event number 4. Rebuilding the balance now only needs the two events after that point."
+        },
+        {
+          "type": "code",
+          "content": "const snapshot = { atEvent: 4, balance: 1300 };\nconst eventsSinceSnapshot = [\n  { type: 'MoneyDeposited', amount: 300 },\n  { type: 'MoneyWithdrawn', amount: 150 }\n];\n\nfunction rebuildFromSnapshot(snapshot, eventsSinceSnapshot) {\n  return eventsSinceSnapshot.reduce((balance, event) => {\n    if (event.type === 'MoneyDeposited') return balance + event.amount;\n    if (event.type === 'MoneyWithdrawn') return balance - event.amount;\n    return balance;\n  }, snapshot.balance);\n}\n\nconsole.log(rebuildFromSnapshot(snapshot, eventsSinceSnapshot)); // 1450",
+          "code": {
+            "language": "javascript",
+            "content": "const snapshot = { atEvent: 4, balance: 1300 };\nconst eventsSinceSnapshot = [\n  { type: 'MoneyDeposited', amount: 300 },\n  { type: 'MoneyWithdrawn', amount: 150 }\n];\n\nfunction rebuildFromSnapshot(snapshot, eventsSinceSnapshot) {\n  return eventsSinceSnapshot.reduce((balance, event) => {\n    if (event.type === 'MoneyDeposited') return balance + event.amount;\n    if (event.type === 'MoneyWithdrawn') return balance - event.amount;\n    return balance;\n  }, snapshot.balance);\n}\n\nconsole.log(rebuildFromSnapshot(snapshot, eventsSinceSnapshot)); // 1450"
+          },
+          "codes": {
+            "javascript": "const snapshot = { atEvent: 4, balance: 1300 };\nconst eventsSinceSnapshot = [\n  { type: 'MoneyDeposited', amount: 300 },\n  { type: 'MoneyWithdrawn', amount: 150 }\n];\n\nfunction rebuildFromSnapshot(snapshot, eventsSinceSnapshot) {\n  return eventsSinceSnapshot.reduce((balance, event) => {\n    if (event.type === 'MoneyDeposited') return balance + event.amount;\n    if (event.type === 'MoneyWithdrawn') return balance - event.amount;\n    return balance;\n  }, snapshot.balance);\n}\n\nconsole.log(rebuildFromSnapshot(snapshot, eventsSinceSnapshot)); // 1450"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Same answer, less work",
+          "content": "1300 plus 300 minus 150 is 1450, the exact same result as folding all six events from zero. The snapshot just let us skip the first four."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. The interview angle",
+          "text": "10. The interview angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a system design interview, event sourcing is a strong answer when the prompt has a real audit or history requirement. Reached for as a default, it reads as complexity for its own sake."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.1 When it is the right call",
+          "text": "10.1 When it is the right call"
+        },
+        {
+          "type": "paragraph",
+          "content": "Bring it up when you hear signals like \"we need a full audit trail,\" \"users must be able to dispute a past transaction,\" \"compliance requires reconstructing state as of any date,\" or \"we want new analytics without re-collecting historical data.\""
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.2 When it is overkill",
+          "text": "10.2 When it is overkill"
+        },
+        {
+          "type": "paragraph",
+          "content": "For a typical CRUD-shaped feature, a user's profile settings or a to-do list, event sourcing adds real complexity for no real benefit. Interviewers want to see you recognize that too, not just reach for the fanciest pattern you know."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291697-702744660.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396291697-702744660.png",
+          "alt": "A decision point: a genuine audit trail or time travel requirement favors event sourcing, otherwise plain CRUD is simpler"
+        },
+        {
+          "type": "note",
+          "title": "Mention CQRS in the same breath",
+          "content": "If you bring up event sourcing, say out loud that you'd pair it with a materialized read model for queries. Interviewers notice when a candidate mentions the write side but forgets that reads need a separate plan."
+        },
+        {
+          "type": "list",
+          "content": "[\"Store events, not just current state, when history itself is a requirement.\",\"Pair with CQRS so reads stay fast instead of replaying on every request.\",\"Use snapshots once replay time actually becomes a problem, not before.\",\"Expect schema evolution and eventual consistency to be real, ongoing work, not one-time setup costs.\"]",
+          "items": [
+            "Store events, not just current state, when history itself is a requirement.",
+            "Pair with CQRS so reads stay fast instead of replaying on every request.",
+            "Use snapshots once replay time actually becomes a problem, not before.",
+            "Expect schema evolution and eventual consistency to be real, ongoing work, not one-time setup costs."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,554 @@
+{
+  "slug": "logging-best-practices",
+  "title": "Logging Best Practices",
+  "content": [
+    {
+      "id": "logging-best-practices",
+      "title": "Logging Best Practices",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "You just shipped a payment feature. Two days later, a customer says their order failed and they got charged anyway. You go dig through logs to figure out what happened."
+        },
+        {
+          "type": "paragraph",
+          "content": "What you find is a wall of printf lines like \"Processing request...\" and \"Done\" with no request id, no user id, and no timestamp you can trust because the server clock drifted. You cannot tell which line belongs to which request. You cannot even tell if this is the right server."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348092-572023003.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348092-572023003.png",
+          "alt": "unstructured printf text log next to a structured JSON log that is instantly queryable",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348092-572023003.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is what bad logging costs you: hours of guessing instead of minutes of querying. Good logging is not a nice to have, it is the difference between finding a bug in two minutes and finding it never."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Logs are the story of what your system did. If the story is written in disappearing ink, it does not matter that the system did the right thing when it was running."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Logging best practices are a small set of habits that turn logs from a pile of text into an actual debugging tool. None of this is exotic. It is mostly discipline: log the right things, in the right shape, at the right level, and never log the wrong things."
+        },
+        {
+          "type": "list",
+          "content": "[\"Structured logging over free text so logs are parseable and filterable\",\"Picking the right severity level so signal does not drown in noise\",\"Including enough context to act on a log without attaching a debugger\",\"Never logging secrets, tokens, or personal data\",\"Managing volume so storage and search stay usable at scale\"]",
+          "items": [
+            "Structured logging over free text so logs are parseable and filterable",
+            "Picking the right severity level so signal does not drown in noise",
+            "Including enough context to act on a log without attaching a debugger",
+            "Never logging secrets, tokens, or personal data",
+            "Managing volume so storage and search stay usable at scale"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "We will go through each of these one at a time, with a worked example and real code for a structured logger, so you leave with something you can actually copy into a service."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Structured logging versus plain text",
+          "text": "2. Structured logging versus plain text"
+        },
+        {
+          "type": "paragraph",
+          "content": "Plain text logging is what almost everyone starts with. You write a string, maybe with some values glued in, and call console.log or your language's equivalent."
+        },
+        {
+          "type": "code",
+          "content": "console.log(\"User \" + userId + \" placed order \" + orderId + \" for $\" + amount);",
+          "code": {
+            "language": "javascript",
+            "content": "console.log(\"User \" + userId + \" placed order \" + orderId + \" for $\" + amount);"
+          },
+          "codes": {
+            "javascript": "console.log(\"User \" + userId + \" placed order \" + orderId + \" for $\" + amount);"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This reads fine in a terminal on your laptop. It falls apart the moment you have twenty services each writing thousands of these lines a minute into a shared log pipeline. To find anything, someone has to write a regex and hope the format never changed."
+        },
+        {
+          "type": "paragraph",
+          "content": "Structured logging means every log line is a machine readable record, usually JSON, with consistent field names. Instead of a sentence, you emit an object."
+        },
+        {
+          "type": "code",
+          "content": "{\n  \"timestamp\": \"2026-07-09T10:14:22.104Z\",\n  \"level\": \"info\",\n  \"service\": \"orders-api\",\n  \"message\": \"order placed\",\n  \"user_id\": \"42\",\n  \"order_id\": \"99\",\n  \"amount\": 49.5,\n  \"request_id\": \"req-7f3a2c\"\n}",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"timestamp\": \"2026-07-09T10:14:22.104Z\",\n  \"level\": \"info\",\n  \"service\": \"orders-api\",\n  \"message\": \"order placed\",\n  \"user_id\": \"42\",\n  \"order_id\": \"99\",\n  \"amount\": 49.5,\n  \"request_id\": \"req-7f3a2c\"\n}"
+          },
+          "codes": {
+            "json": "{\n  \"timestamp\": \"2026-07-09T10:14:22.104Z\",\n  \"level\": \"info\",\n  \"service\": \"orders-api\",\n  \"message\": \"order placed\",\n  \"user_id\": \"42\",\n  \"order_id\": \"99\",\n  \"amount\": 49.5,\n  \"request_id\": \"req-7f3a2c\"\n}"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348093-288201059.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348093-288201059.png",
+          "alt": "side by side comparison of a plain text log line versus a structured JSON log line",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348093-288201059.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The upside is not about looking fancy. It is that every field is now filterable. Your log platform can answer questions like show me every event where order_id equals 99, or count how many requests from service orders-api had level error in the last hour, without anyone writing a fragile regex."
+        },
+        {
+          "type": "note",
+          "title": "Why this matters at scale",
+          "content": "At low volume, grep works fine on plain text. Once you have multiple services and millions of lines a day, structured fields are the only way search stays fast and reliable."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Plain text logging\",\"Structured logging\"],\"rows\":[[\"Easy to read on your own machine\",\"Easy to query across thousands of machines\"],[\"Needs regex to extract fields\",\"Fields are already separated and typed\"],[\"Format silently drifts over time\",\"Schema stays consistent across the codebase\"],[\"Fine for a single script\",\"Built for production services\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Log levels and when to use each",
+          "text": "3. Log levels and when to use each"
+        },
+        {
+          "type": "paragraph",
+          "content": "A log level tells the reader, and your log pipeline, how urgent a line is. Get levels wrong and you either miss real problems or drown in noise trying to find them."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348093-714671424.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348093-714671424.png",
+          "alt": "log level hierarchy rising from DEBUG through INFO and WARN up to ERROR",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348093-714671424.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 DEBUG",
+          "text": "3.1 DEBUG"
+        },
+        {
+          "type": "paragraph",
+          "content": "DEBUG is for detail you only care about while actively developing or actively chasing a bug. Function entered with these arguments, cache lookup missed, that kind of thing."
+        },
+        {
+          "type": "note",
+          "title": "Turn it off in production",
+          "content": "DEBUG logging left on in production at real traffic volume is one of the fastest ways to blow your logging budget. Keep it off by default and turn it on temporarily, scoped to one service, when you actually need it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 INFO",
+          "text": "3.2 INFO"
+        },
+        {
+          "type": "paragraph",
+          "content": "INFO covers normal operational events worth knowing happened, but not worth waking anyone up for. A user signed up. An order was placed. A scheduled job finished. These are the lines that let you reconstruct what the system did on an ordinary day."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.3 WARN",
+          "text": "3.3 WARN"
+        },
+        {
+          "type": "paragraph",
+          "content": "WARN is for something that looks off but the system recovered from on its own. A retry succeeded on the second attempt. A cache was unreachable so you fell back to the database. Nobody needs to be paged, but somebody should notice the pattern if it keeps happening."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.4 ERROR",
+          "text": "3.4 ERROR"
+        },
+        {
+          "type": "paragraph",
+          "content": "ERROR means something actually failed and needs a human's attention, now or soon. A payment could not be processed. A required downstream service returned nothing after every retry. If your on call engineer searches for ERROR at 3am, everything they see should matter."
+        },
+        {
+          "type": "note",
+          "title": "The cost of logging everything at INFO or DEBUG",
+          "content": "If every trivial detail gets logged at INFO, your real INFO events get buried next to noise, and ERROR stops standing out because everything looks equally loud. Reserve each level for what it actually means, and your logs stay something people trust."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. What to actually include in a log line",
+          "text": "4. What to actually include in a log line"
+        },
+        {
+          "type": "paragraph",
+          "content": "A useful log line lets someone act on it without needing to attach a debugger or ask the original author what they meant. A handful of fields do almost all the work."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348094-15609263.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348094-15609263.png",
+          "alt": "a good log line made of timestamp, service name, request id, and context fields",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348094-15609263.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"Timestamp, in UTC, with enough precision to order events correctly across services\",\"Severity level, so the reader knows how urgent this is at a glance\",\"Service name, so you know which of your twenty microservices wrote this line\",\"A correlation or request id, so you can pull every log line for one request across every service it touched\",\"Enough context, like user_id, order_id, or the specific error, to actually explain what happened\"]",
+          "items": [
+            "Timestamp, in UTC, with enough precision to order events correctly across services",
+            "Severity level, so the reader knows how urgent this is at a glance",
+            "Service name, so you know which of your twenty microservices wrote this line",
+            "A correlation or request id, so you can pull every log line for one request across every service it touched",
+            "Enough context, like user_id, order_id, or the specific error, to actually explain what happened"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "example-box",
+          "title": "A log line that actually helps",
+          "text": "level=error service=payments-api request_id=req-7f3a2c user_id=42 order_id=99 message=\"card declined\" reason=\"insufficient_funds\" gateway=\"stripe\". Anyone reading this knows exactly what happened, to whom, and why, without opening a single other tab."
+        },
+        {
+          "type": "paragraph",
+          "content": "Compare that to a bare message=\"error occurred\" line with nothing else. It technically got logged. It is functionally useless."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. What you should never log",
+          "text": "5. What you should never log"
+        },
+        {
+          "type": "paragraph",
+          "content": "Some data should never appear in a log line, full stop, no matter how convenient it would be for debugging. Logs get shipped to third party tools, sit in storage for months, and get read by more people than you expect."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348094-728371747.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348094-728371747.png",
+          "alt": "a bad log line from a login handler that accidentally logs the plaintext password, flagged in red",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348094-728371747.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"Passwords, even hashed ones you think are safe to print\",\"Auth tokens, API keys, and session cookies\",\"Full credit card numbers or CVV codes\",\"Government IDs, social security numbers, and similar PII\",\"Full request or response bodies that might contain any of the above without you checking first\"]",
+          "items": [
+            "Passwords, even hashed ones you think are safe to print",
+            "Auth tokens, API keys, and session cookies",
+            "Full credit card numbers or CVV codes",
+            "Government IDs, social security numbers, and similar PII",
+            "Full request or response bodies that might contain any of the above without you checking first"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "This is not just an engineering call",
+          "content": "Logging secrets or personal data is exactly the kind of thing a compliance or security team will flag in an audit, and rightly so. If you are not sure whether a field is sensitive, treat it as sensitive and redact it before it ever reaches a log line."
+        },
+        {
+          "type": "code",
+          "content": "function safeLogFields(payload) {\n  const { password, token, cardNumber, ...safe } = payload;\n  return safe;\n}",
+          "code": {
+            "language": "javascript",
+            "content": "function safeLogFields(payload) {\n  const { password, token, cardNumber, ...safe } = payload;\n  return safe;\n}"
+          },
+          "codes": {
+            "javascript": "function safeLogFields(payload) {\n  const { password, token, cardNumber, ...safe } = payload;\n  return safe;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The other half of what not to log is about volume, not sensitivity. Logging every single field of every request at INFO, including large payloads, is how you end up with a storage bill nobody can explain and a search index too slow to be useful. We will come back to that in section 8."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Structured fields versus embedding everything in a sentence",
+          "text": "6. Structured fields versus embedding everything in a sentence"
+        },
+        {
+          "type": "paragraph",
+          "content": "Even once you have switched to JSON logs, it is easy to undo the benefit by stuffing every value back into the message string."
+        },
+        {
+          "type": "code",
+          "content": "{ \"level\": \"info\", \"message\": \"user 42 placed order 99 for amount 49.5\" }",
+          "code": {
+            "language": "json",
+            "content": "{ \"level\": \"info\", \"message\": \"user 42 placed order 99 for amount 49.5\" }"
+          },
+          "codes": {
+            "json": "{ \"level\": \"info\", \"message\": \"user 42 placed order 99 for amount 49.5\" }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "That is technically JSON, but it is still a sentence pretending to be structured. You cannot filter on user_id because there is no user_id field, just a number buried inside a string."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348095-507413175.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348095-507413175.png",
+          "alt": "values embedded inside a sentence versus the same values attached as separate structured fields",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348095-507413175.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Attach values as their own fields instead, and keep the message short and human readable."
+        },
+        {
+          "type": "code",
+          "content": "{\n  \"level\": \"info\",\n  \"message\": \"order placed\",\n  \"user_id\": \"42\",\n  \"order_id\": \"99\",\n  \"amount\": 49.5\n}",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"level\": \"info\",\n  \"message\": \"order placed\",\n  \"user_id\": \"42\",\n  \"order_id\": \"99\",\n  \"amount\": 49.5\n}"
+          },
+          "codes": {
+            "json": "{\n  \"level\": \"info\",\n  \"message\": \"order placed\",\n  \"user_id\": \"42\",\n  \"order_id\": \"99\",\n  \"amount\": 49.5\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Now you can filter, group, and aggregate on user_id or order_id directly. The message stays there for a human skimming the line, and the fields are there for a machine, or a future you, querying at 2am."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Correlation ids across a distributed request",
+          "text": "7. Correlation ids across a distributed request"
+        },
+        {
+          "type": "paragraph",
+          "content": "A single user click can fan out into calls across five services: gateway, auth, orders, inventory, payments. Each of those services writes its own logs, on its own machine, at its own time. Without something tying them together, reconstructing one request's journey is close to impossible."
+        },
+        {
+          "type": "paragraph",
+          "content": "A correlation id, also called a request id or trace id, solves this. It gets generated once, at the edge, and threaded through every downstream call, usually as a header, and every service includes it in every log line it writes for that request."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348095-137651813.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348095-137651813.png",
+          "alt": "one correlation id threading through a gateway, an orders service, and a payments service",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348095-137651813.png"
+        },
+        {
+          "type": "code",
+          "content": "function handleRequest(req, res) {\n  const requestId = req.headers['x-request-id'] || generateId();\n  logger.info('request received', { request_id: requestId, path: req.path });\n  callDownstream(requestId);\n}\n\nfunction callDownstream(requestId) {\n  fetch('https://payments.internal/charge', {\n    headers: { 'x-request-id': requestId },\n  });\n}",
+          "code": {
+            "language": "javascript",
+            "content": "function handleRequest(req, res) {\n  const requestId = req.headers['x-request-id'] || generateId();\n  logger.info('request received', { request_id: requestId, path: req.path });\n  callDownstream(requestId);\n}\n\nfunction callDownstream(requestId) {\n  fetch('https://payments.internal/charge', {\n    headers: { 'x-request-id': requestId },\n  });\n}"
+          },
+          "codes": {
+            "javascript": "function handleRequest(req, res) {\n  const requestId = req.headers['x-request-id'] || generateId();\n  logger.info('request received', { request_id: requestId, path: req.path });\n  callDownstream(requestId);\n}\n\nfunction callDownstream(requestId) {\n  fetch('https://payments.internal/charge', {\n    headers: { 'x-request-id': requestId },\n  });\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Now, when something fails, you take the one request id from the error and pull every log line across every service that carries it. What used to be a cross team investigation becomes one search query."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is also where logs connect to the rest of observability. Metrics tell you something is wrong in aggregate, traces show you the timing across services, and logs give you the detail of what actually happened. The correlation id is the thread that lets you jump from a trace straight into the matching log lines."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348096-584836866.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348096-584836866.png",
+          "alt": "metrics, traces, and logs connected by one shared correlation id",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396348096-584836866.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Sampling and log volume at scale",
+          "text": "8. Sampling and log volume at scale"
+        },
+        {
+          "type": "paragraph",
+          "content": "Not every log line needs to live forever, and not every line even needs to be written every time. At real traffic volume, logging everything is expensive in storage, and it makes search slower for everyone hunting for the line that actually matters."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349132-276422016.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349132-276422016.png",
+          "alt": "log volume growing unmanageably when every debug line is kept forever",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349132-276422016.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Sampling noisy logs",
+          "text": "8.1 Sampling noisy logs"
+        },
+        {
+          "type": "paragraph",
+          "content": "For very high frequency, low value log lines, like a DEBUG line inside a hot loop that fires thousands of times a second, you can sample: keep one in every hundred, or one in every thousand, instead of all of them. You still see the pattern without paying to store every repetition."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Tiered retention",
+          "text": "8.2 Tiered retention"
+        },
+        {
+          "type": "paragraph",
+          "content": "Recent logs, say the last week, stay in fast hot storage where you can search them instantly. Older logs move to cheaper warm or cold storage, still available if you need to dig up something from three months ago, just slower and cheaper to keep around."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349134-782990587.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349134-782990587.png",
+          "alt": "recent logs kept hot, older logs moved to warm storage, then to a cold archive",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349134-782990587.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Log tier\",\"Typical retention\",\"Access speed\"],\"rows\":[[\"Hot\",\"Last 7 to 14 days\",\"Instant, used for active debugging\"],[\"Warm\",\"Up to 90 days\",\"Seconds, used for recent investigations\"],[\"Cold archive\",\"Months to years\",\"Minutes, used for audits and compliance\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Match retention to why you keep the log",
+          "content": "ERROR logs tied to an incident might be worth keeping longer than routine DEBUG chatter. Decide retention by how likely you are to need the data later, not by treating every log line the same."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Worked example: a structured logger for an order failure",
+          "text": "9. Worked example: a structured logger for an order failure"
+        },
+        {
+          "type": "paragraph",
+          "content": "Let's put this together. Say a payment gets declined during checkout. Here is what a real structured logger, with a correlation id and the right level, looks like in code."
+        },
+        {
+          "type": "code",
+          "content": "const crypto = require('crypto');\n\nfunction createLogger(serviceName) {\n  return {\n    log(level, message, fields = {}) {\n      const entry = {\n        timestamp: new Date().toISOString(),\n        level,\n        service: serviceName,\n        message,\n        ...fields,\n      };\n      console.log(JSON.stringify(entry));\n    },\n    info(message, fields) { this.log('info', message, fields); },\n    warn(message, fields) { this.log('warn', message, fields); },\n    error(message, fields) { this.log('error', message, fields); },\n  };\n}\n\nconst logger = createLogger('payments-api');\n\nfunction chargeCard(order, requestId) {\n  logger.info('charge attempt started', {\n    request_id: requestId,\n    order_id: order.id,\n    user_id: order.userId,\n  });\n\n  const result = gateway.charge(order.amount, order.cardToken);\n\n  if (!result.success) {\n    logger.error('charge declined', {\n      request_id: requestId,\n      order_id: order.id,\n      user_id: order.userId,\n      reason: result.declineReason,\n      gateway: 'stripe',\n    });\n    return false;\n  }\n\n  logger.info('charge succeeded', {\n    request_id: requestId,\n    order_id: order.id,\n    amount: order.amount,\n  });\n  return true;\n}",
+          "code": {
+            "language": "javascript",
+            "content": "const crypto = require('crypto');\n\nfunction createLogger(serviceName) {\n  return {\n    log(level, message, fields = {}) {\n      const entry = {\n        timestamp: new Date().toISOString(),\n        level,\n        service: serviceName,\n        message,\n        ...fields,\n      };\n      console.log(JSON.stringify(entry));\n    },\n    info(message, fields) { this.log('info', message, fields); },\n    warn(message, fields) { this.log('warn', message, fields); },\n    error(message, fields) { this.log('error', message, fields); },\n  };\n}\n\nconst logger = createLogger('payments-api');\n\nfunction chargeCard(order, requestId) {\n  logger.info('charge attempt started', {\n    request_id: requestId,\n    order_id: order.id,\n    user_id: order.userId,\n  });\n\n  const result = gateway.charge(order.amount, order.cardToken);\n\n  if (!result.success) {\n    logger.error('charge declined', {\n      request_id: requestId,\n      order_id: order.id,\n      user_id: order.userId,\n      reason: result.declineReason,\n      gateway: 'stripe',\n    });\n    return false;\n  }\n\n  logger.info('charge succeeded', {\n    request_id: requestId,\n    order_id: order.id,\n    amount: order.amount,\n  });\n  return true;\n}"
+          },
+          "codes": {
+            "javascript": "const crypto = require('crypto');\n\nfunction createLogger(serviceName) {\n  return {\n    log(level, message, fields = {}) {\n      const entry = {\n        timestamp: new Date().toISOString(),\n        level,\n        service: serviceName,\n        message,\n        ...fields,\n      };\n      console.log(JSON.stringify(entry));\n    },\n    info(message, fields) { this.log('info', message, fields); },\n    warn(message, fields) { this.log('warn', message, fields); },\n    error(message, fields) { this.log('error', message, fields); },\n  };\n}\n\nconst logger = createLogger('payments-api');\n\nfunction chargeCard(order, requestId) {\n  logger.info('charge attempt started', {\n    request_id: requestId,\n    order_id: order.id,\n    user_id: order.userId,\n  });\n\n  const result = gateway.charge(order.amount, order.cardToken);\n\n  if (!result.success) {\n    logger.error('charge declined', {\n      request_id: requestId,\n      order_id: order.id,\n      user_id: order.userId,\n      reason: result.declineReason,\n      gateway: 'stripe',\n    });\n    return false;\n  }\n\n  logger.info('charge succeeded', {\n    request_id: requestId,\n    order_id: order.id,\n    amount: order.amount,\n  });\n  return true;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice what is missing on purpose: no card number, no card token value, no raw gateway response dumped wholesale. Just the fields someone actually needs to understand and act on the failure."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349134-101503919.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349134-101503919.png",
+          "alt": "an order failure logged with order id, decline reason, and error level",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349134-101503919.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "When the customer from the introduction complains, you now search for request_id equal to their request, and you immediately see charge attempt started, followed by charge declined with reason insufficient_funds. Two minutes, not two days."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. The interview angle",
+          "text": "10. The interview angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a system design interview, logging is easy to skip because it feels like an afterthought compared to sharding or caching. Do not skip it. The moment your design has more than one service talking to another, an interviewer expects you to mention how you would actually debug a request that crosses that boundary."
+        },
+        {
+          "type": "list",
+          "content": "[\"Mention structured logging by name, not just \\\"we log things\\\"\",\"Mention a correlation or request id generated at the edge and threaded through every downstream call\",\"Mention that you would not log secrets or PII, and why\",\"Mention log levels briefly, so it is clear you know INFO and DEBUG are not free at scale\",\"If asked about observability broadly, tie logs to metrics and traces as the third pillar\"]",
+          "items": [
+            "Mention structured logging by name, not just \"we log things\"",
+            "Mention a correlation or request id generated at the edge and threaded through every downstream call",
+            "Mention that you would not log secrets or PII, and why",
+            "Mention log levels briefly, so it is clear you know INFO and DEBUG are not free at scale",
+            "If asked about observability broadly, tie logs to metrics and traces as the third pillar"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Table stakes, not a bonus",
+          "content": "For any design that touches multiple services, structured logging with correlation ids is expected baseline knowledge, the same way mentioning a load balancer is expected the moment you draw more than one server. Bring it up before you are asked."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Summary checklist",
+          "text": "11. Summary checklist"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349135-340362135.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349135-340362135.png",
+          "alt": "a checklist of good logging habits from structured format to correlation ids",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349135-340362135.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"Log as structured JSON with consistent field names, not free text sentences\",\"Use DEBUG, INFO, WARN, and ERROR for what they actually mean, and keep DEBUG off in production\",\"Always include timestamp, level, service name, and a correlation id\",\"Attach context as fields, not interpolated into the message string\",\"Never log passwords, tokens, card numbers, or PII\",\"Sample noisy high frequency logs and use tiered retention instead of keeping everything forever\",\"Thread one correlation id across every service a request touches\"]",
+          "items": [
+            "Log as structured JSON with consistent field names, not free text sentences",
+            "Use DEBUG, INFO, WARN, and ERROR for what they actually mean, and keep DEBUG off in production",
+            "Always include timestamp, level, service name, and a correlation id",
+            "Attach context as fields, not interpolated into the message string",
+            "Never log passwords, tokens, card numbers, or PII",
+            "Sample noisy high frequency logs and use tiered retention instead of keeping everything forever",
+            "Thread one correlation id across every service a request touches"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "None of this is complicated once you have seen it laid out. It is just the difference between logs you can trust when something breaks, and logs that are technically there but practically useless."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,526 @@
+{
+  "slug": "server-chaining",
+  "title": "Server Chaining",
+  "content": [
+    {
+      "id": "server-chaining",
+      "title": "Server Chaining",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Most of the time we picture MCP as one client talking to one server. But a server can also act as a client itself, reaching out to another MCP server to get part of its job done."
+        },
+        {
+          "type": "paragraph",
+          "text": "When several servers are linked this way, a single request can pass through more than one hop before it reaches whatever finally answers it. That chain of servers is what this lesson is about."
+        },
+        {
+          "type": "paragraph",
+          "text": "We will look at why chaining is useful, what it costs you in latency and failure risk, and why a shallow, well understood chain almost always beats a deep, clever one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Server Chaining Actually Means",
+          "id": "chaining-what-it-means"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578679423-361697912.png",
+          "alt": "One server calls onward to another server which calls onward again",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "In a normal MCP setup, a host application runs an MCP client, and that client talks to one MCP server. The server answers requests, end of story."
+        },
+        {
+          "type": "paragraph",
+          "text": "Server chaining changes that shape slightly. Now the server itself opens its own MCP client connection and talks to a second server, to get some piece of information or do some piece of work it does not implement on its own."
+        },
+        {
+          "type": "paragraph",
+          "text": "From the outside, the host still only sees one server. It has no idea that the server it is talking to is quietly forwarding parts of the request somewhere else."
+        },
+        {
+          "type": "note",
+          "title": "A server wearing two hats",
+          "content": "In a chain, the middle server is a server to whatever is upstream of it, and a client to whatever is downstream. Those two roles are completely separate connections, each with its own initialize handshake."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. A Simple Two Hop Example",
+          "id": "chaining-two-hop-example"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578685858-316924877.png",
+          "alt": "A request hops through server one to server two",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Say a host asks a \"research\" server to look something up. The research server does not store any documents itself."
+        },
+        {
+          "type": "paragraph",
+          "text": "Instead, it forwards the lookup to a separate \"search index\" server, waits for the answer, and passes that answer back to the host."
+        },
+        {
+          "type": "paragraph",
+          "text": "From the host side, this looks like one tool call. Under the hood, it is really two separate MCP requests, chained together."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# research_server.py\n# This server exposes one tool to its own clients, but it does not\n# do the lookup itself. It behaves as an MCP client to a second\n# \"search index\" server and simply relays the result back.\n\nfrom mcp import ClientSession\nfrom mcp.client.stdio import stdio_client, StdioServerParameters\n\nSEARCH_SERVER = StdioServerParameters(\n    command=\"python\",\n    args=[\"search_index_server.py\"],\n)\n\n@server.call_tool()\nasync def handle_call_tool(name: str, arguments: dict):\n    if name != \"research_lookup\":\n        raise ValueError(f\"unknown tool: {name}\")\n\n    async with stdio_client(SEARCH_SERVER) as (read, write):\n        async with ClientSession(read, write) as session:\n            await session.initialize()\n            result = await session.call_tool(\n                \"search\", {\"query\": arguments[\"topic\"]}\n            )\n            return result.content"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Why Bother Chaining At All",
+          "id": "chaining-why-bother"
+        },
+        {
+          "type": "paragraph",
+          "text": "The main reason to chain servers is composition. A server can reuse capabilities another server already built, instead of reimplementing them from scratch."
+        },
+        {
+          "type": "paragraph",
+          "text": "This mirrors ordinary software design. You do not rewrite a database driver inside every service that needs one, you call the driver someone already wrote."
+        },
+        {
+          "type": "paragraph",
+          "text": "Chaining lets MCP servers follow that same habit, at the level of whole tools and resources instead of just functions."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A summarization server can call out to a document storage server instead of managing files itself.",
+            "A reporting server can call a billing server for numbers instead of duplicating billing logic.",
+            "A team can own one server per capability and let other teams compose those servers together."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Composition Over Reimplementation",
+          "id": "chaining-composition-over-reimplementation"
+        },
+        {
+          "type": "paragraph",
+          "text": "Without chaining, every server that needs a capability has to build it locally. That leads to many slightly different copies of the same logic, each with its own bugs."
+        },
+        {
+          "type": "paragraph",
+          "text": "With chaining, one server can own a capability well, and every other server simply calls it, the same way microservices call each other over an internal API."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"What it looks like\",\"Main downside\"],\"rows\":[[\"Reimplement locally\",\"Every server has its own copy of the same logic\",\"Duplicated bugs and duplicated maintenance\"],[\"Chain to a specialist server\",\"One server owns the capability, others call it\",\"Adds a network hop and a new dependency\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Neither approach is free. Chaining trades duplicated code for an extra hop, and that trade is usually worth it, as long as the chain stays small."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Every Extra Hop Adds Latency",
+          "id": "chaining-latency-cost"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578695246-737602197.png",
+          "alt": "One hop is compared against three hops adding up latency",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Each hop in a chain is a full round trip, a request goes out, the next server does its work, and a response comes back."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of that is instant. Even a fast local server adds a few milliseconds, and a server reached over a network adds a lot more."
+        },
+        {
+          "type": "paragraph",
+          "text": "These delays stack. A three hop chain does not just risk the slowest hop's latency, it pays for every hop's latency, one after another."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Chain depth\",\"Rough added latency per hop\",\"Total added latency, three hops\"],\"rows\":[[\"Same machine, stdio\",\"1 to 5 milliseconds\",\"3 to 15 milliseconds\"],[\"Same data center, HTTP\",\"5 to 20 milliseconds\",\"15 to 60 milliseconds\"],[\"Cross region, HTTP\",\"50 to 150 milliseconds\",\"150 to 450 milliseconds\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Every Extra Hop Adds Failure Surface",
+          "id": "chaining-failure-surface"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578711047-792795082.png",
+          "alt": "Each additional hop adds one more place the chain can fail",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Latency is the easy cost to see. The harder one is that every extra hop is one more place the whole request can fail."
+        },
+        {
+          "type": "paragraph",
+          "text": "If server B is briefly unavailable, server A's request fails too, even though server A itself is perfectly healthy."
+        },
+        {
+          "type": "paragraph",
+          "text": "The deeper the chain, the more independent things have to go right for a single request to succeed."
+        },
+        {
+          "type": "note",
+          "title": "Failure probability compounds",
+          "content": "If each server in a chain is available ninety nine percent of the time, a chain of three such servers is only available around ninety seven percent of the time, since all three have to succeed together."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Timeouts Need to Be Chosen Carefully",
+          "id": "chaining-timeouts"
+        },
+        {
+          "type": "paragraph",
+          "text": "A middle server that calls a downstream server needs its own timeout on that call, separate from whatever timeout its own caller is using."
+        },
+        {
+          "type": "paragraph",
+          "text": "If that timeout is too generous, a slow downstream server can quietly stall every server above it in the chain."
+        },
+        {
+          "type": "paragraph",
+          "text": "If it is too tight, perfectly healthy but slightly slow calls get killed for no good reason."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# search_index_server.py, the server being called by research_server.py\n# Give the downstream call a firm timeout so a slow or stuck search\n# index cannot stall the research server, and by extension, whoever\n# called the research server in the first place.\n\nimport asyncio\n\nasync def call_downstream(session, query):\n    try:\n        return await asyncio.wait_for(\n            session.call_tool(\"search\", {\"query\": query}),\n            timeout=3.0,\n        )\n    except asyncio.TimeoutError:\n        raise RuntimeError(\"downstream search server timed out\")"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Errors Should Say Which Hop Failed",
+          "id": "chaining-error-attribution"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578861471-83218844.png",
+          "alt": "An error message should name exactly which hop in the chain failed",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a chained call fails, the person debugging it needs to know which hop actually broke, not just that \"something went wrong.\""
+        },
+        {
+          "type": "paragraph",
+          "text": "A server forwarding a call downstream should wrap failures with enough context to point at itself, rather than passing on a bare, generic error."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "try:\n    result = await session.call_tool(\"search\", {\"query\": topic})\nexcept Exception as exc:\n    raise RuntimeError(\n        f\"research_server: downstream search_index_server call failed: {exc}\"\n    ) from exc"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A short prefix like that turns a confusing failure into something you can act on immediately, without adding a tracing system."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Keep Chains Shallow",
+          "id": "chaining-keep-shallow"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578863833-6986011.png",
+          "alt": "A shallow chain is compared against a deep chain",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The practical rule most teams settle on is simple, keep chains as shallow as you can, one or two hops, and treat anything past three as a warning sign."
+        },
+        {
+          "type": "paragraph",
+          "text": "A shallow chain is easy to hold in your head. You can trace a request from start to finish without a diagram."
+        },
+        {
+          "type": "paragraph",
+          "text": "A deep chain stops being something any one person fully understands, and that is exactly when small problems become hard to find."
+        },
+        {
+          "type": "list",
+          "items": [
+            "One hop, a server calling one specialist server, is usually easy to reason about.",
+            "Two hops is still manageable if each server has one clear job.",
+            "Three or more hops usually means it is time to flatten the design instead of adding another link."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Watch For Chains That Grew By Accident",
+          "id": "chaining-accidental-growth"
+        },
+        {
+          "type": "paragraph",
+          "text": "Deep chains rarely get designed on purpose. They usually grow one small addition at a time, each one reasonable on its own."
+        },
+        {
+          "type": "paragraph",
+          "text": "A server that used to answer directly starts forwarding to a helper server. Later, that helper starts forwarding to another helper of its own."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of these steps looks risky in isolation, but the resulting chain can quietly turn into something nobody planned or fully understands."
+        },
+        {
+          "type": "note",
+          "title": "Ask before adding a hop",
+          "content": "Before adding one more link to an existing chain, it is worth asking whether the new capability could instead sit beside the chain, called directly by the original host, rather than tacked onto the end of it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Avoid Chains That Loop Back",
+          "id": "chaining-avoid-cycles"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578866776-557817155.png",
+          "alt": "A chain that loops back on itself creates an infinite cycle",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A chain should always move forward toward some final destination. It should never loop back through a server that is already part of the same call."
+        },
+        {
+          "type": "paragraph",
+          "text": "If server A calls server B, and server B, directly or indirectly, ends up calling server A again for the same request, that request can hang forever, or bounce until a timeout finally kills it."
+        },
+        {
+          "type": "paragraph",
+          "text": "Simple naming and clear ownership of who calls whom usually prevents this, but it is worth checking for explicitly when a chain grows past one hop."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Chaining Versus a Direct Multi Server Host",
+          "id": "chaining-vs-multi-server-host"
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to compare chaining with the more common pattern of a host simply connecting to several servers directly, side by side, with no server calling another."
+        },
+        {
+          "type": "paragraph",
+          "text": "In that direct pattern, the host itself is the only thing coordinating multiple servers, and every server stays a plain server, never a client."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pattern\",\"Who coordinates the servers\",\"Extra hop cost\"],\"rows\":[[\"Direct multi server host\",\"The host talks to each server on its own\",\"None, every call is one hop\"],[\"Server chaining\",\"A server forwards work to another server\",\"One or more extra hops per forwarded call\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Chaining is worth reaching for only when composing behavior inside one server genuinely simplifies things for the host, not as a default way to connect servers."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Logging a Chain So It Can Be Traced",
+          "id": "chaining-logging-for-tracing"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because a chained request crosses process boundaries, ordinary in process debugging tools cannot see the whole picture on their own."
+        },
+        {
+          "type": "paragraph",
+          "text": "A simple, effective habit is to pass along a request id and log it at every hop, so the same id shows up in every server's logs for that one request."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "import uuid\n\nasync def handle_call_tool(name, arguments):\n    request_id = arguments.get(\"_request_id\") or str(uuid.uuid4())\n    logger.info(\"hop=research_server request_id=%s\", request_id)\n\n    result = await session.call_tool(\n        \"search\",\n        {\"query\": arguments[\"topic\"], \"_request_id\": request_id},\n    )\n    return result.content"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "That one shared id is often all you need to reconstruct exactly what a chained request did, without standing up a full distributed tracing system."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Testing a Chain Realistically",
+          "id": "chaining-testing"
+        },
+        {
+          "type": "paragraph",
+          "text": "Testing a chained server only against a perfectly healthy downstream server tells you very little about how it behaves in the real world."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth deliberately testing what happens when the downstream server is slow, or returns an error, or is simply unreachable."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Simulate a slow downstream response and confirm your timeout actually fires.",
+            "Simulate a downstream error and confirm it surfaces with a clear, attributable message.",
+            "Simulate the downstream server being completely unreachable and confirm the caller fails cleanly, without hanging."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: A Three Server Chain, End To End",
+          "id": "chaining-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a host asking a \"report\" server for a summary of a customer's recent activity."
+        },
+        {
+          "type": "paragraph",
+          "text": "The report server has no data of its own. It calls a \"billing\" server for charges, and the billing server in turn calls a \"ledger\" server for raw transaction records."
+        },
+        {
+          "type": "paragraph",
+          "text": "That is a three hop chain, host to report, report to billing, billing to ledger, and it is already close to the depth worth treating as a warning sign."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# report_server.py\n@server.call_tool()\nasync def handle_call_tool(name, arguments):\n    if name != \"summarize_activity\":\n        raise ValueError(f\"unknown tool: {name}\")\n\n    async with stdio_client(BILLING_SERVER) as (read, write):\n        async with ClientSession(read, write) as session:\n            await session.initialize()\n            try:\n                charges = await asyncio.wait_for(\n                    session.call_tool(\n                        \"get_charges\", {\"customer_id\": arguments[\"customer_id\"]}\n                    ),\n                    timeout=3.0,\n                )\n            except asyncio.TimeoutError:\n                raise RuntimeError(\"report_server: billing_server timed out\")\n            except Exception as exc:\n                raise RuntimeError(f\"report_server: billing_server call failed: {exc}\") from exc\n\n    return summarize(charges.content)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice that the billing server, one hop further down, would need this exact same pattern again for its own call to the ledger server, a timeout, and an error message naming itself."
+        },
+        {
+          "type": "paragraph",
+          "text": "Once you write that pattern out twice, the wisdom of keeping chains shallow becomes very concrete, each hop repeats the same defensive work, and each hop is one more thing that can be the slow or broken link."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "chaining-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Letting a chain grow past two or three hops without ever stepping back to ask if it should be flattened.",
+            "Forwarding a call downstream with no timeout of its own, so a slow hop stalls everything above it.",
+            "Returning a bare, unattributed error, leaving no way to tell which hop in the chain actually failed.",
+            "Building a chain that can loop back on itself, letting a request bounce until a timeout kills it.",
+            "Never testing a chained server against a slow, erroring, or unreachable downstream server.",
+            "Treating chaining as the default way to connect servers, instead of reaching for it only when composition genuinely helps."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "chaining-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Build two small MCP servers, one that answers directly, \"server_b\", and one, \"server_a\", that acts as a client to server_b for a single tool call."
+        },
+        {
+          "type": "paragraph",
+          "text": "Add a timeout on the call from server_a to server_b, then deliberately make server_b sleep past that timeout, and confirm server_a fails cleanly with a clear, attributable error message."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Stretch goal one: add a shared request id that gets logged at both hops, and confirm you can trace one request through both servers' logs.",
+            "Stretch goal two: add a third server, chained one level deeper, and notice how much more code the timeout and error handling pattern needs once it repeats a second time."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "chaining-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A server chain lets one server compose capabilities from another instead of reimplementing them, which is genuinely useful, but every hop it adds also adds latency and one more place a request can fail."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keep chains shallow, give every hop its own timeout, and make every failure say clearly which hop caused it, and a chain stays something you can reason about instead of something that quietly grows past anyone's understanding."
+        }
+      ]
+    }
+  ]
+}

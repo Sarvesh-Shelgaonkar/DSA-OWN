@@ -1,0 +1,569 @@
+{
+  "slug": "monitoring-hooks",
+  "title": "Monitoring Hooks",
+  "content": [
+    {
+      "id": "monitoring-hooks",
+      "title": "Monitoring Hooks",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Every production class eventually needs to be watched. Someone wants to know how often a payment succeeds, how long a database call takes, or how many times a retry loop fires before giving up."
+        },
+        {
+          "type": "paragraph",
+          "content": "The tempting shortcut is to reach into the class and call the metrics library directly, right there next to the business logic. It works on day one and becomes a liability by day thirty."
+        },
+        {
+          "type": "paragraph",
+          "content": "Monitoring hooks solve this by giving a class a small set of named extension points, places where it announces that something happened, without ever naming who is listening."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson walks through why hardcoded monitoring calls are a design smell, how to design a hook based extension point, and how to wire up a payment processor that a metrics collector and a logger can both observe without either of them being baked into the processor."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A monitoring hook is a named extension point a class exposes so external code can react to its internal events without the class knowing what that code is or does."
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Problem of Hardcoded Monitoring Calls",
+          "text": "1. The Problem of Hardcoded Monitoring Calls"
+        },
+        {
+          "type": "paragraph",
+          "content": "Imagine a class that processes payments and, somewhere in the middle of its logic, calls out to a specific metrics library to record a counter."
+        },
+        {
+          "type": "paragraph",
+          "content": "That single line quietly does several bad things at once."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512297838-579599559.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512297838-579599559.png",
+          "alt": "Hardcoded monitoring call flowing directly from business logic to a specific metrics vendor, showing the tight coupling and test dependency this creates"
+        },
+        {
+          "type": "heading3",
+          "content": "What goes wrong",
+          "text": "What goes wrong"
+        },
+        {
+          "type": "list",
+          "content": "[\"The business class now depends on a concrete monitoring library, not just its own domain logic.\",\"Swapping metrics providers means editing every class that reports anything.\",\"Unit tests for the business logic must now stub out or tolerate a monitoring call that has nothing to do with the behavior under test.\",\"Adding a second observer, say a logger alongside the metrics client, means adding a second hardcoded call at the same spot.\",\"The class violates the dependency inversion principle: a high level policy class now depends on a low level, volatile detail.\"]",
+          "items": [
+            "The business class now depends on a concrete monitoring library, not just its own domain logic.",
+            "Swapping metrics providers means editing every class that reports anything.",
+            "Unit tests for the business logic must now stub out or tolerate a monitoring call that has nothing to do with the behavior under test.",
+            "Adding a second observer, say a logger alongside the metrics client, means adding a second hardcoded call at the same spot.",
+            "The class violates the dependency inversion principle: a high level policy class now depends on a low level, volatile detail."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "None of this is visible from the outside at first. The class still compiles, still processes payments, still looks clean in a code review that only skims the happy path."
+        },
+        {
+          "type": "heading3",
+          "content": "The bad example",
+          "text": "The bad example"
+        },
+        {
+          "type": "code",
+          "content": "// BAD: business logic reaches directly into a specific metrics library\nimport com.specificmetrics.StatsdClient;\n\npublic class PaymentProcessor {\n    private final StatsdClient statsd = new StatsdClient();\n\n    public ChargeResult charge(Order order) {\n        try {\n            ChargeResult result = gateway.charge(order.getAmount(), order.getCard());\n            statsd.increment(\"payment.success\"); // hardcoded, concrete dependency\n            return result;\n        } catch (RuntimeException err) {\n            statsd.increment(\"payment.failure\"); // same problem, different line\n            throw err;\n        }\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "// BAD: business logic reaches directly into a specific metrics library\nimport com.specificmetrics.StatsdClient;\n\npublic class PaymentProcessor {\n    private final StatsdClient statsd = new StatsdClient();\n\n    public ChargeResult charge(Order order) {\n        try {\n            ChargeResult result = gateway.charge(order.getAmount(), order.getCard());\n            statsd.increment(\"payment.success\"); // hardcoded, concrete dependency\n            return result;\n        } catch (RuntimeException err) {\n            statsd.increment(\"payment.failure\"); // same problem, different line\n            throw err;\n        }\n    }\n}"
+          },
+          "codes": {
+            "java": "// BAD: business logic reaches directly into a specific metrics library\nimport com.specificmetrics.StatsdClient;\n\npublic class PaymentProcessor {\n    private final StatsdClient statsd = new StatsdClient();\n\n    public ChargeResult charge(Order order) {\n        try {\n            ChargeResult result = gateway.charge(order.getAmount(), order.getCard());\n            statsd.increment(\"payment.success\"); // hardcoded, concrete dependency\n            return result;\n        } catch (RuntimeException err) {\n            statsd.increment(\"payment.failure\"); // same problem, different line\n            throw err;\n        }\n    }\n}",
+            "python": "# BAD: business logic reaches directly into a specific metrics library\nimport specific_metrics_client as statsd\n\nclass PaymentProcessor:\n    def charge(self, order):\n        try:\n            result = self.gateway.charge(order.amount, order.card)\n            statsd.increment(\"payment.success\")  # hardcoded, concrete dependency\n            return result\n        except Exception:\n            statsd.increment(\"payment.failure\")  # same problem, different line\n            raise",
+            "cpp": "// BAD: business logic reaches directly into a specific metrics library\n#include \"specificmetrics/StatsdClient.h\"\n\nclass PaymentProcessor {\n    StatsdClient statsd;                     // hardcoded, concrete dependency\n    PaymentGateway& gateway;\n\npublic:\n    explicit PaymentProcessor(PaymentGateway& gateway) : gateway(gateway) {}\n\n    ChargeResult charge(const Order& order) {\n        try {\n            ChargeResult result = gateway.charge(order.amount(), order.card());\n            statsd.increment(\"payment.success\");\n            return result;\n        } catch (const std::exception& err) {\n            statsd.increment(\"payment.failure\");   // same problem, different line\n            throw;\n        }\n    }\n};",
+            "javascript": "// BAD: business logic reaches directly into a specific metrics library\nconst statsd = require('specific-metrics-client');\n\nclass PaymentProcessor {\n  charge(order) {\n    try {\n      const result = this.gateway.charge(order.amount, order.card);\n      statsd.increment('payment.success'); // hardcoded, concrete dependency\n      return result;\n    } catch (err) {\n      statsd.increment('payment.failure'); // same problem, different line\n      throw err;\n    }\n  }\n}"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Design smell",
+          "content": "If a class needs to import a specific monitoring vendor SDK to do its job, that is a sign the monitoring concern has leaked into a place it does not belong."
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix is not to remove the observability, teams genuinely need these signals, the fix is to decouple who is being told from what actually happened."
+        },
+        {
+          "type": "heading1",
+          "content": "2. Hooks as an Extension Point",
+          "text": "2. Hooks as an Extension Point"
+        },
+        {
+          "type": "paragraph",
+          "content": "A hook is just a named slot on a class where outside code can register interest."
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of the class calling a metrics library, it calls its own hook, and whatever is attached to that hook decides what to do next."
+        },
+        {
+          "type": "heading3",
+          "content": "The shape of a hook",
+          "text": "The shape of a hook"
+        },
+        {
+          "type": "paragraph",
+          "content": "A hook usually has three parts: a name that describes the moment it fires, a payload that carries whatever context is relevant, and a registration method that lets other code attach a callback."
+        },
+        {
+          "type": "list",
+          "content": "[\"onSuccess, fired when the operation completed as expected\",\"onFailure, fired when the operation raised an error\",\"onRetry, fired each time the operation is attempted again after a transient failure\"]",
+          "items": [
+            "onSuccess, fired when the operation completed as expected",
+            "onFailure, fired when the operation raised an error",
+            "onRetry, fired each time the operation is attempted again after a transient failure"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "None of these names mention metrics, logging, or alerting. They describe what happened inside the class, not who cares about it."
+        },
+        {
+          "type": "paragraph",
+          "content": "That naming discipline is the whole trick, once a hook name leaks a specific consumer, the decoupling starts to erode."
+        },
+        {
+          "type": "heading3",
+          "content": "Two common styles",
+          "text": "Two common styles"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Style\",\"How it works\",\"When it fits\"],\"rows\":[[\"Callback hooks\",\"Class accepts named callback functions, usually via a constructor or setter\",\"A small, fixed set of well known events\"],[\"Observer interface\",\"Class keeps a list of objects implementing an interface with methods like onSuccess\",\"Multiple listeners, or listeners that need to be added and removed at runtime\"],[\"Event emitter\",\"Class emits named events onto a shared bus, listeners subscribe by name\",\"Many event types, or listeners that live far from the emitting class\"]]}"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Designing an Event Style Interface",
+          "text": "3. Designing an Event Style Interface"
+        },
+        {
+          "type": "paragraph",
+          "content": "Before writing any code, it helps to write down the events a class can realistically produce, and what payload each one should carry."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 1, list the events",
+          "text": "Step 1, list the events"
+        },
+        {
+          "type": "paragraph",
+          "content": "For a payment processor, the natural events are a successful charge, a failed charge, and a retry attempt after a transient gateway error."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 2, decide the payload",
+          "text": "Step 2, decide the payload"
+        },
+        {
+          "type": "list",
+          "content": "[\"onSuccess should carry the order id, the amount charged, and how long the call took\",\"onFailure should carry the order id, the error, and whether it is considered retryable\",\"onRetry should carry the order id, the attempt number, and the delay before the next try\"]",
+          "items": [
+            "onSuccess should carry the order id, the amount charged, and how long the call took",
+            "onFailure should carry the order id, the error, and whether it is considered retryable",
+            "onRetry should carry the order id, the attempt number, and the delay before the next try"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "heading3",
+          "content": "Step 3, define an observer interface",
+          "text": "Step 3, define an observer interface"
+        },
+        {
+          "type": "paragraph",
+          "content": "An observer interface is just a contract that any listener must satisfy so the class does not need to know their concrete type."
+        },
+        {
+          "type": "code",
+          "content": "public interface PaymentObserver {\n    default void onSuccess(PaymentEvent event) {}\n    default void onFailure(PaymentEvent event) {}\n    default void onRetry(PaymentEvent event) {}\n}",
+          "code": {
+            "language": "java",
+            "content": "public interface PaymentObserver {\n    default void onSuccess(PaymentEvent event) {}\n    default void onFailure(PaymentEvent event) {}\n    default void onRetry(PaymentEvent event) {}\n}"
+          },
+          "codes": {
+            "java": "public interface PaymentObserver {\n    default void onSuccess(PaymentEvent event) {}\n    default void onFailure(PaymentEvent event) {}\n    default void onRetry(PaymentEvent event) {}\n}",
+            "python": "from abc import ABC\n\nclass PaymentObserver(ABC):\n    def on_success(self, event):\n        pass\n\n    def on_failure(self, event):\n        pass\n\n    def on_retry(self, event):\n        pass",
+            "cpp": "class PaymentObserver {\npublic:\n    virtual ~PaymentObserver() = default;\n    virtual void onSuccess(const PaymentEvent&) {}\n    virtual void onFailure(const PaymentEvent&) {}\n    virtual void onRetry(const PaymentEvent&) {}\n};",
+            "javascript": "// A plain interface expressed as a shape, enforced by convention in JS\n// Any observer object may implement any subset of these methods.\nclass PaymentObserver {\n  onSuccess(event) {}\n  onFailure(event) {}\n  onRetry(event) {}\n}"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Keep payloads plain",
+          "content": "Pass simple data objects into hooks, not the internal state of the class itself. Observers should never be able to mutate what they were only meant to watch."
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice every method above is optional to implement, an observer that only cares about failures can simply skip onSuccess and onRetry entirely."
+        },
+        {
+          "type": "heading1",
+          "content": "4. Implementing Hooks in a Class",
+          "text": "4. Implementing Hooks in a Class"
+        },
+        {
+          "type": "paragraph",
+          "content": "Now the payment processor can be rewritten so it never mentions a specific monitoring library."
+        },
+        {
+          "type": "paragraph",
+          "content": "It keeps a list of observers, and at each meaningful moment it loops over that list and calls the matching method."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512301942-715986988.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512301942-715986988.png",
+          "alt": "Payment processor calling its own notify hook, which forwards the event to a decoupled list of independent observers"
+        },
+        {
+          "type": "heading3",
+          "content": "The refactored class",
+          "text": "The refactored class"
+        },
+        {
+          "type": "code",
+          "content": "// GOOD: the processor only knows about an observer interface, not a vendor\nimport java.util.ArrayList;\nimport java.util.List;\n\npublic class PaymentProcessor {\n    private final PaymentGateway gateway;\n    private final List<PaymentObserver> observers = new ArrayList<>();\n\n    public PaymentProcessor(PaymentGateway gateway) {\n        this.gateway = gateway;\n    }\n\n    public void addObserver(PaymentObserver observer) {\n        observers.add(observer);\n    }\n\n    public ChargeResult charge(Order order) {\n        long startedAt = System.currentTimeMillis();\n        try {\n            ChargeResult result = gateway.charge(order.getAmount(), order.getCard());\n            long duration = System.currentTimeMillis() - startedAt;\n            PaymentEvent event = new PaymentEvent(order.getId(), order.getAmount(), duration);\n            for (PaymentObserver observer : observers) {\n                observer.onSuccess(event);\n            }\n            return result;\n        } catch (RuntimeException err) {\n            PaymentEvent event = new PaymentEvent(order.getId(), err);\n            for (PaymentObserver observer : observers) {\n                observer.onFailure(event);\n            }\n            throw err;\n        }\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "// GOOD: the processor only knows about an observer interface, not a vendor\nimport java.util.ArrayList;\nimport java.util.List;\n\npublic class PaymentProcessor {\n    private final PaymentGateway gateway;\n    private final List<PaymentObserver> observers = new ArrayList<>();\n\n    public PaymentProcessor(PaymentGateway gateway) {\n        this.gateway = gateway;\n    }\n\n    public void addObserver(PaymentObserver observer) {\n        observers.add(observer);\n    }\n\n    public ChargeResult charge(Order order) {\n        long startedAt = System.currentTimeMillis();\n        try {\n            ChargeResult result = gateway.charge(order.getAmount(), order.getCard());\n            long duration = System.currentTimeMillis() - startedAt;\n            PaymentEvent event = new PaymentEvent(order.getId(), order.getAmount(), duration);\n            for (PaymentObserver observer : observers) {\n                observer.onSuccess(event);\n            }\n            return result;\n        } catch (RuntimeException err) {\n            PaymentEvent event = new PaymentEvent(order.getId(), err);\n            for (PaymentObserver observer : observers) {\n                observer.onFailure(event);\n            }\n            throw err;\n        }\n    }\n}"
+          },
+          "codes": {
+            "java": "// GOOD: the processor only knows about an observer interface, not a vendor\nimport java.util.ArrayList;\nimport java.util.List;\n\npublic class PaymentProcessor {\n    private final PaymentGateway gateway;\n    private final List<PaymentObserver> observers = new ArrayList<>();\n\n    public PaymentProcessor(PaymentGateway gateway) {\n        this.gateway = gateway;\n    }\n\n    public void addObserver(PaymentObserver observer) {\n        observers.add(observer);\n    }\n\n    public ChargeResult charge(Order order) {\n        long startedAt = System.currentTimeMillis();\n        try {\n            ChargeResult result = gateway.charge(order.getAmount(), order.getCard());\n            long duration = System.currentTimeMillis() - startedAt;\n            PaymentEvent event = new PaymentEvent(order.getId(), order.getAmount(), duration);\n            for (PaymentObserver observer : observers) {\n                observer.onSuccess(event);\n            }\n            return result;\n        } catch (RuntimeException err) {\n            PaymentEvent event = new PaymentEvent(order.getId(), err);\n            for (PaymentObserver observer : observers) {\n                observer.onFailure(event);\n            }\n            throw err;\n        }\n    }\n}",
+            "python": "# GOOD: the processor only knows about an observer interface, not a vendor\nimport time\n\nclass PaymentProcessor:\n    def __init__(self, gateway):\n        self.gateway = gateway\n        self.observers = []\n\n    def add_observer(self, observer):\n        self.observers.append(observer)\n\n    def notify(self, hook_name, event):\n        for observer in self.observers:\n            method = getattr(observer, hook_name, None)\n            if callable(method):\n                method(event)\n\n    def charge(self, order):\n        started_at = time.time()\n        try:\n            result = self.gateway.charge(order.amount, order.card)\n            self.notify(\"on_success\", {\n                \"order_id\": order.id,\n                \"amount\": order.amount,\n                \"duration_ms\": (time.time() - started_at) * 1000\n            })\n            return result\n        except Exception as err:\n            self.notify(\"on_failure\", {\"order_id\": order.id, \"error\": err})\n            raise",
+            "cpp": "// GOOD: the processor only knows about an observer interface, not a vendor\n#include <chrono>\n#include <memory>\n#include <vector>\n\nclass PaymentProcessor {\n    PaymentGateway& gateway;\n    std::vector<std::shared_ptr<PaymentObserver>> observers;\n\npublic:\n    explicit PaymentProcessor(PaymentGateway& gateway) : gateway(gateway) {}\n\n    void addObserver(std::shared_ptr<PaymentObserver> observer) {\n        observers.push_back(std::move(observer));\n    }\n\n    ChargeResult charge(const Order& order) {\n        auto startedAt = std::chrono::steady_clock::now();\n        try {\n            ChargeResult result = gateway.charge(order.amount(), order.card());\n            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(\n                std::chrono::steady_clock::now() - startedAt).count();\n            PaymentEvent event(order.id(), order.amount(), duration);\n            for (const auto& observer : observers) {\n                observer->onSuccess(event);\n            }\n            return result;\n        } catch (const std::exception& err) {\n            PaymentEvent event(order.id(), err.what());\n            for (const auto& observer : observers) {\n                observer->onFailure(event);\n            }\n            throw;\n        }\n    }\n};",
+            "javascript": "// GOOD: the processor only knows about an observer interface, not a vendor\nclass PaymentProcessor {\n  constructor(gateway) {\n    this.gateway = gateway;\n    this.observers = [];\n  }\n\n  addObserver(observer) {\n    this.observers.push(observer);\n  }\n\n  notify(hookName, event) {\n    for (const observer of this.observers) {\n      if (typeof observer[hookName] === 'function') {\n        observer[hookName](event);\n      }\n    }\n  }\n\n  charge(order) {\n    const startedAt = Date.now();\n    try {\n      const result = this.gateway.charge(order.amount, order.card);\n      this.notify('onSuccess', {\n        orderId: order.id,\n        amount: order.amount,\n        durationMs: Date.now() - startedAt\n      });\n      return result;\n    } catch (err) {\n      this.notify('onFailure', { orderId: order.id, error: err, retryable: err.retryable });\n      throw err;\n    }\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice that the word metrics never appears inside PaymentProcessor. It only knows that certain things happened."
+        },
+        {
+          "type": "heading1",
+          "content": "5. Attaching Multiple Observers to the Same Hooks",
+          "text": "5. Attaching Multiple Observers to the Same Hooks"
+        },
+        {
+          "type": "paragraph",
+          "content": "The whole point of a hook is that more than one thing can listen to it at once."
+        },
+        {
+          "type": "paragraph",
+          "content": "A metrics collector and a logger can both attach to the same processor, and neither has to know the other exists."
+        },
+        {
+          "type": "heading3",
+          "content": "Registering two observers",
+          "text": "Registering two observers"
+        },
+        {
+          "type": "code",
+          "content": "PaymentProcessor processor = new PaymentProcessor(gateway);\n\nPaymentObserver metricsCollector = new PaymentObserver() {\n    public void onSuccess(PaymentEvent event) {\n        statsClient.increment(\"payment.success\");\n        statsClient.timing(\"payment.duration\", event.getDurationMs());\n    }\n    public void onFailure(PaymentEvent event) {\n        statsClient.increment(\"payment.failure\");\n    }\n};\n\nPaymentObserver auditLogger = new PaymentObserver() {\n    public void onSuccess(PaymentEvent event) {\n        logger.info(\"payment charged, orderId=\" + event.getOrderId());\n    }\n    public void onFailure(PaymentEvent event) {\n        logger.error(\"payment failed, orderId=\" + event.getOrderId());\n    }\n};\n\nprocessor.addObserver(metricsCollector);\nprocessor.addObserver(auditLogger);",
+          "code": {
+            "language": "java",
+            "content": "PaymentProcessor processor = new PaymentProcessor(gateway);\n\nPaymentObserver metricsCollector = new PaymentObserver() {\n    public void onSuccess(PaymentEvent event) {\n        statsClient.increment(\"payment.success\");\n        statsClient.timing(\"payment.duration\", event.getDurationMs());\n    }\n    public void onFailure(PaymentEvent event) {\n        statsClient.increment(\"payment.failure\");\n    }\n};\n\nPaymentObserver auditLogger = new PaymentObserver() {\n    public void onSuccess(PaymentEvent event) {\n        logger.info(\"payment charged, orderId=\" + event.getOrderId());\n    }\n    public void onFailure(PaymentEvent event) {\n        logger.error(\"payment failed, orderId=\" + event.getOrderId());\n    }\n};\n\nprocessor.addObserver(metricsCollector);\nprocessor.addObserver(auditLogger);"
+          },
+          "codes": {
+            "java": "PaymentProcessor processor = new PaymentProcessor(gateway);\n\nPaymentObserver metricsCollector = new PaymentObserver() {\n    public void onSuccess(PaymentEvent event) {\n        statsClient.increment(\"payment.success\");\n        statsClient.timing(\"payment.duration\", event.getDurationMs());\n    }\n    public void onFailure(PaymentEvent event) {\n        statsClient.increment(\"payment.failure\");\n    }\n};\n\nPaymentObserver auditLogger = new PaymentObserver() {\n    public void onSuccess(PaymentEvent event) {\n        logger.info(\"payment charged, orderId=\" + event.getOrderId());\n    }\n    public void onFailure(PaymentEvent event) {\n        logger.error(\"payment failed, orderId=\" + event.getOrderId());\n    }\n};\n\nprocessor.addObserver(metricsCollector);\nprocessor.addObserver(auditLogger);",
+            "python": "processor = PaymentProcessor(gateway)\n\nclass MetricsCollector:\n    def on_success(self, event):\n        stats_client.increment(\"payment.success\")\n        stats_client.timing(\"payment.duration\", event[\"duration_ms\"])\n\n    def on_failure(self, event):\n        stats_client.increment(\"payment.failure\")\n\nclass AuditLogger:\n    def on_success(self, event):\n        logger.info(\"payment charged\", order_id=event[\"order_id\"])\n\n    def on_failure(self, event):\n        logger.error(\"payment failed\", order_id=event[\"order_id\"])\n\nprocessor.add_observer(MetricsCollector())\nprocessor.add_observer(AuditLogger())",
+            "cpp": "class MetricsCollector : public PaymentObserver {\n    StatsClient& statsClient;\npublic:\n    explicit MetricsCollector(StatsClient& statsClient) : statsClient(statsClient) {}\n    void onSuccess(const PaymentEvent& event) override {\n        statsClient.increment(\"payment.success\");\n        statsClient.timing(\"payment.duration\", event.durationMs());\n    }\n    void onFailure(const PaymentEvent&) override {\n        statsClient.increment(\"payment.failure\");\n    }\n};\n\nclass AuditLogger : public PaymentObserver {\n    Logger& logger;\npublic:\n    explicit AuditLogger(Logger& logger) : logger(logger) {}\n    void onSuccess(const PaymentEvent& event) override {\n        logger.info(\"payment charged, orderId=\" + event.orderId());\n    }\n    void onFailure(const PaymentEvent& event) override {\n        logger.error(\"payment failed, orderId=\" + event.orderId());\n    }\n};\n\nPaymentProcessor processor(gateway);\nprocessor.addObserver(std::make_shared<MetricsCollector>(statsClient));\nprocessor.addObserver(std::make_shared<AuditLogger>(logger));",
+            "javascript": "const processor = new PaymentProcessor(gateway);\n\nconst metricsCollector = {\n  onSuccess(event) { statsClient.increment('payment.success'); statsClient.timing('payment.duration', event.durationMs); },\n  onFailure(event) { statsClient.increment('payment.failure'); }\n};\n\nconst auditLogger = {\n  onSuccess(event) { logger.info('payment charged', { orderId: event.orderId }); },\n  onFailure(event) { logger.error('payment failed', { orderId: event.orderId, error: event.error.message }); }\n};\n\nprocessor.addObserver(metricsCollector);\nprocessor.addObserver(auditLogger);"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "If a third observer, say a fraud alert system, needs to watch the same events later, it attaches the same way. PaymentProcessor never changes."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the exact benefit that hardcoded monitoring calls could never offer, growth in observers costs nothing to the class being observed."
+        },
+        {
+          "type": "heading1",
+          "content": "6. How Events Flow From Class to Observers",
+          "text": "6. How Events Flow From Class to Observers"
+        },
+        {
+          "type": "paragraph",
+          "content": "The diagram below shows the shape of this design: a core class emits its hooks, and any number of independent observers, like a metrics collector and a logger, attach to the same stream of events."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783495735331-104276920.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783495735331-104276920.png",
+          "alt": "Payment processor emitting onSuccess, onFailure, and onRetry hooks to a hook registry, which forwards events to a metrics collector, a logger, and a fraud alert observer"
+        },
+        {
+          "type": "paragraph",
+          "content": "The processor sits on the left, unaware of how many observers exist or what they do with the events it emits."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every arrow on the right is optional, removing an observer never requires touching the processor."
+        },
+        {
+          "type": "heading1",
+          "content": "7. A Worked Payment Processing Example With Retries",
+          "text": "7. A Worked Payment Processing Example With Retries"
+        },
+        {
+          "type": "paragraph",
+          "content": "Real payment processors often retry a charge when the gateway reports a transient error, and that retry itself is worth observing."
+        },
+        {
+          "type": "paragraph",
+          "content": "Watching retries specifically often surfaces a flaky downstream dependency long before it turns into a real outage."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512303759-7645862.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512303759-7645862.png",
+          "alt": "Charge attempt flow showing a retryable gateway error firing onRetry and looping back, versus a terminal result firing onSuccess or onFailure"
+        },
+        {
+          "type": "heading3",
+          "content": "Adding the onRetry hook",
+          "text": "Adding the onRetry hook"
+        },
+        {
+          "type": "paragraph",
+          "content": "The processor below retries up to three times on a retryable error, firing onRetry before each additional attempt, then onSuccess or onFailure at the end."
+        },
+        {
+          "type": "code",
+          "content": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class PaymentProcessor {\n    private final PaymentGateway gateway;\n    private final int maxAttempts;\n    private final List<PaymentObserver> observers = new ArrayList<>();\n\n    public PaymentProcessor(PaymentGateway gateway, int maxAttempts) {\n        this.gateway = gateway;\n        this.maxAttempts = maxAttempts;\n    }\n\n    public void addObserver(PaymentObserver observer) { observers.add(observer); }\n\n    public ChargeResult charge(Order order) {\n        int attempt = 1;\n        long startedAt = System.currentTimeMillis();\n        while (true) {\n            try {\n                ChargeResult result = gateway.charge(order.getAmount(), order.getCard());\n                long duration = System.currentTimeMillis() - startedAt;\n                PaymentEvent event = new PaymentEvent(order.getId(), order.getAmount(), duration, attempt);\n                for (PaymentObserver observer : observers) observer.onSuccess(event);\n                return result;\n            } catch (RetryableException err) {\n                if (attempt < maxAttempts) {\n                    PaymentEvent event = new PaymentEvent(order.getId(), attempt, attempt * 200L);\n                    for (PaymentObserver observer : observers) observer.onRetry(event);\n                    attempt++;\n                    continue;\n                }\n                PaymentEvent event = new PaymentEvent(order.getId(), err, attempt);\n                for (PaymentObserver observer : observers) observer.onFailure(event);\n                throw err;\n            }\n        }\n    }\n}\n\nclass MetricsCollector implements PaymentObserver {\n    private final StatsClient statsClient;\n    public MetricsCollector(StatsClient statsClient) { this.statsClient = statsClient; }\n    public void onSuccess(PaymentEvent event) {\n        statsClient.increment(\"payment.success\");\n        statsClient.timing(\"payment.duration\", event.getDurationMs());\n    }\n    public void onFailure(PaymentEvent event) { statsClient.increment(\"payment.failure\"); }\n    public void onRetry(PaymentEvent event) { statsClient.increment(\"payment.retry\"); }\n}",
+          "code": {
+            "language": "java",
+            "content": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class PaymentProcessor {\n    private final PaymentGateway gateway;\n    private final int maxAttempts;\n    private final List<PaymentObserver> observers = new ArrayList<>();\n\n    public PaymentProcessor(PaymentGateway gateway, int maxAttempts) {\n        this.gateway = gateway;\n        this.maxAttempts = maxAttempts;\n    }\n\n    public void addObserver(PaymentObserver observer) { observers.add(observer); }\n\n    public ChargeResult charge(Order order) {\n        int attempt = 1;\n        long startedAt = System.currentTimeMillis();\n        while (true) {\n            try {\n                ChargeResult result = gateway.charge(order.getAmount(), order.getCard());\n                long duration = System.currentTimeMillis() - startedAt;\n                PaymentEvent event = new PaymentEvent(order.getId(), order.getAmount(), duration, attempt);\n                for (PaymentObserver observer : observers) observer.onSuccess(event);\n                return result;\n            } catch (RetryableException err) {\n                if (attempt < maxAttempts) {\n                    PaymentEvent event = new PaymentEvent(order.getId(), attempt, attempt * 200L);\n                    for (PaymentObserver observer : observers) observer.onRetry(event);\n                    attempt++;\n                    continue;\n                }\n                PaymentEvent event = new PaymentEvent(order.getId(), err, attempt);\n                for (PaymentObserver observer : observers) observer.onFailure(event);\n                throw err;\n            }\n        }\n    }\n}\n\nclass MetricsCollector implements PaymentObserver {\n    private final StatsClient statsClient;\n    public MetricsCollector(StatsClient statsClient) { this.statsClient = statsClient; }\n    public void onSuccess(PaymentEvent event) {\n        statsClient.increment(\"payment.success\");\n        statsClient.timing(\"payment.duration\", event.getDurationMs());\n    }\n    public void onFailure(PaymentEvent event) { statsClient.increment(\"payment.failure\"); }\n    public void onRetry(PaymentEvent event) { statsClient.increment(\"payment.retry\"); }\n}"
+          },
+          "codes": {
+            "java": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class PaymentProcessor {\n    private final PaymentGateway gateway;\n    private final int maxAttempts;\n    private final List<PaymentObserver> observers = new ArrayList<>();\n\n    public PaymentProcessor(PaymentGateway gateway, int maxAttempts) {\n        this.gateway = gateway;\n        this.maxAttempts = maxAttempts;\n    }\n\n    public void addObserver(PaymentObserver observer) { observers.add(observer); }\n\n    public ChargeResult charge(Order order) {\n        int attempt = 1;\n        long startedAt = System.currentTimeMillis();\n        while (true) {\n            try {\n                ChargeResult result = gateway.charge(order.getAmount(), order.getCard());\n                long duration = System.currentTimeMillis() - startedAt;\n                PaymentEvent event = new PaymentEvent(order.getId(), order.getAmount(), duration, attempt);\n                for (PaymentObserver observer : observers) observer.onSuccess(event);\n                return result;\n            } catch (RetryableException err) {\n                if (attempt < maxAttempts) {\n                    PaymentEvent event = new PaymentEvent(order.getId(), attempt, attempt * 200L);\n                    for (PaymentObserver observer : observers) observer.onRetry(event);\n                    attempt++;\n                    continue;\n                }\n                PaymentEvent event = new PaymentEvent(order.getId(), err, attempt);\n                for (PaymentObserver observer : observers) observer.onFailure(event);\n                throw err;\n            }\n        }\n    }\n}\n\nclass MetricsCollector implements PaymentObserver {\n    private final StatsClient statsClient;\n    public MetricsCollector(StatsClient statsClient) { this.statsClient = statsClient; }\n    public void onSuccess(PaymentEvent event) {\n        statsClient.increment(\"payment.success\");\n        statsClient.timing(\"payment.duration\", event.getDurationMs());\n    }\n    public void onFailure(PaymentEvent event) { statsClient.increment(\"payment.failure\"); }\n    public void onRetry(PaymentEvent event) { statsClient.increment(\"payment.retry\"); }\n}",
+            "python": "import time\n\nclass PaymentProcessor:\n    def __init__(self, gateway, max_attempts=3):\n        self.gateway = gateway\n        self.max_attempts = max_attempts\n        self.observers = []\n\n    def add_observer(self, observer):\n        self.observers.append(observer)\n\n    def notify(self, hook_name, event):\n        for observer in self.observers:\n            method = getattr(observer, hook_name, None)\n            if callable(method):\n                method(event)\n\n    def charge(self, order):\n        attempt = 1\n        started_at = time.time()\n        while True:\n            try:\n                result = self.gateway.charge(order.amount, order.card)\n                self.notify(\"on_success\", {\n                    \"order_id\": order.id, \"amount\": order.amount,\n                    \"duration_ms\": (time.time() - started_at) * 1000, \"attempt\": attempt\n                })\n                return result\n            except RetryableError as err:\n                if attempt < self.max_attempts:\n                    self.notify(\"on_retry\", {\"order_id\": order.id, \"attempt\": attempt, \"delay_ms\": attempt * 200})\n                    attempt += 1\n                    continue\n                self.notify(\"on_failure\", {\"order_id\": order.id, \"error\": err, \"attempt\": attempt})\n                raise\n\nclass MetricsCollector:\n    def __init__(self, stats_client):\n        self.stats_client = stats_client\n\n    def on_success(self, event):\n        self.stats_client.increment(\"payment.success\")\n        self.stats_client.timing(\"payment.duration\", event[\"duration_ms\"])\n\n    def on_failure(self, event):\n        self.stats_client.increment(\"payment.failure\")\n\n    def on_retry(self, event):\n        self.stats_client.increment(\"payment.retry\")\n\nprocessor = PaymentProcessor(gateway)\nprocessor.add_observer(MetricsCollector(stats_client))",
+            "cpp": "#include <chrono>\n#include <memory>\n#include <vector>\n\nclass PaymentProcessor {\n    PaymentGateway& gateway;\n    int maxAttempts;\n    std::vector<std::shared_ptr<PaymentObserver>> observers;\n\npublic:\n    PaymentProcessor(PaymentGateway& gateway, int maxAttempts)\n        : gateway(gateway), maxAttempts(maxAttempts) {}\n\n    void addObserver(std::shared_ptr<PaymentObserver> observer) {\n        observers.push_back(std::move(observer));\n    }\n\n    ChargeResult charge(const Order& order) {\n        int attempt = 1;\n        auto startedAt = std::chrono::steady_clock::now();\n        while (true) {\n            try {\n                ChargeResult result = gateway.charge(order.amount(), order.card());\n                auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(\n                    std::chrono::steady_clock::now() - startedAt).count();\n                PaymentEvent event(order.id(), order.amount(), duration, attempt);\n                for (const auto& observer : observers) observer->onSuccess(event);\n                return result;\n            } catch (const RetryableException& err) {\n                if (attempt < maxAttempts) {\n                    PaymentEvent event(order.id(), attempt, attempt * 200L);\n                    for (const auto& observer : observers) observer->onRetry(event);\n                    attempt++;\n                    continue;\n                }\n                PaymentEvent event(order.id(), err.what(), attempt);\n                for (const auto& observer : observers) observer->onFailure(event);\n                throw;\n            }\n        }\n    }\n};\n\nclass MetricsCollector : public PaymentObserver {\n    StatsClient& statsClient;\npublic:\n    explicit MetricsCollector(StatsClient& statsClient) : statsClient(statsClient) {}\n    void onSuccess(const PaymentEvent& event) override {\n        statsClient.increment(\"payment.success\");\n        statsClient.timing(\"payment.duration\", event.durationMs());\n    }\n    void onFailure(const PaymentEvent&) override { statsClient.increment(\"payment.failure\"); }\n    void onRetry(const PaymentEvent&) override { statsClient.increment(\"payment.retry\"); }\n};",
+            "javascript": "class PaymentProcessor {\n  constructor(gateway, maxAttempts = 3) {\n    this.gateway = gateway;\n    this.maxAttempts = maxAttempts;\n    this.observers = [];\n  }\n\n  addObserver(observer) { this.observers.push(observer); }\n\n  notify(hookName, event) {\n    for (const observer of this.observers) {\n      if (typeof observer[hookName] === 'function') observer[hookName](event);\n    }\n  }\n\n  charge(order) {\n    let attempt = 1;\n    const startedAt = Date.now();\n    while (true) {\n      try {\n        const result = this.gateway.charge(order.amount, order.card);\n        this.notify('onSuccess', { orderId: order.id, amount: order.amount, durationMs: Date.now() - startedAt, attempt });\n        return result;\n      } catch (err) {\n        if (err.retryable && attempt < this.maxAttempts) {\n          this.notify('onRetry', { orderId: order.id, attempt, delayMs: attempt * 200 });\n          attempt++;\n          continue;\n        }\n        this.notify('onFailure', { orderId: order.id, error: err, attempt });\n        throw err;\n      }\n    }\n  }\n}\n\n// A metrics collector attached purely through the hook interface\nclass MetricsCollector {\n  constructor(statsClient) { this.statsClient = statsClient; }\n  onSuccess(event) {\n    this.statsClient.increment('payment.success');\n    this.statsClient.timing('payment.duration', event.durationMs);\n  }\n  onFailure(event) { this.statsClient.increment('payment.failure'); }\n  onRetry(event) { this.statsClient.increment('payment.retry'); }\n}\n\nconst processor = new PaymentProcessor(gateway);\nprocessor.addObserver(new MetricsCollector(statsClient));"
+          }
+        },
+        {
+          "type": "example-box",
+          "title": "Attaching a second observer later",
+          "text": "A month after launch, the team wants dashboards showing retry rates per gateway. They write a GatewayHealthTracker class implementing onRetry and onFailure, then call processor.addObserver(new GatewayHealthTracker()) at startup. PaymentProcessor is never touched."
+        },
+        {
+          "type": "paragraph",
+          "content": "That single line addition, with zero changes anywhere else, is the entire payoff of this design."
+        },
+        {
+          "type": "paragraph",
+          "content": "Compare that to the hardcoded version from the very first section, where the same change meant editing the processor directly."
+        },
+        {
+          "type": "heading1",
+          "content": "8. Testing Code That Has Hooks",
+          "text": "8. Testing Code That Has Hooks"
+        },
+        {
+          "type": "paragraph",
+          "content": "Hooks make the business logic easier to test, because a test can attach a small recording observer instead of a real metrics client."
+        },
+        {
+          "type": "paragraph",
+          "content": "No mocking framework is needed, a recording observer is just a plain object collecting what it saw."
+        },
+        {
+          "type": "paragraph",
+          "content": "Assertions then read naturally, checking exactly which events fired and in what order."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512305716-275601618.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512305716-275601618.png",
+          "alt": "Test case attaching a recording observer to the processor, capturing emitted events for direct assertions instead of mocking a metrics library"
+        },
+        {
+          "type": "heading3",
+          "content": "A recording observer for tests",
+          "text": "A recording observer for tests"
+        },
+        {
+          "type": "code",
+          "content": "class RecordingObserver implements PaymentObserver {\n    List<PaymentEvent> successEvents = new ArrayList<>();\n    List<PaymentEvent> failureEvents = new ArrayList<>();\n\n    public void onSuccess(PaymentEvent event) { successEvents.add(event); }\n    public void onFailure(PaymentEvent event) { failureEvents.add(event); }\n}\n\n@Test\nvoid chargeFiresOnSuccessWithCorrectOrderId() {\n    RecordingObserver recorder = new RecordingObserver();\n    PaymentProcessor processor = new PaymentProcessor(fakeGateway, 3);\n    processor.addObserver(recorder);\n\n    processor.charge(new Order(\"order-1\", 500, fakeCard));\n\n    assertEquals(\"order-1\", recorder.successEvents.get(0).getOrderId());\n}",
+          "code": {
+            "language": "java",
+            "content": "class RecordingObserver implements PaymentObserver {\n    List<PaymentEvent> successEvents = new ArrayList<>();\n    List<PaymentEvent> failureEvents = new ArrayList<>();\n\n    public void onSuccess(PaymentEvent event) { successEvents.add(event); }\n    public void onFailure(PaymentEvent event) { failureEvents.add(event); }\n}\n\n@Test\nvoid chargeFiresOnSuccessWithCorrectOrderId() {\n    RecordingObserver recorder = new RecordingObserver();\n    PaymentProcessor processor = new PaymentProcessor(fakeGateway, 3);\n    processor.addObserver(recorder);\n\n    processor.charge(new Order(\"order-1\", 500, fakeCard));\n\n    assertEquals(\"order-1\", recorder.successEvents.get(0).getOrderId());\n}"
+          },
+          "codes": {
+            "java": "class RecordingObserver implements PaymentObserver {\n    List<PaymentEvent> successEvents = new ArrayList<>();\n    List<PaymentEvent> failureEvents = new ArrayList<>();\n\n    public void onSuccess(PaymentEvent event) { successEvents.add(event); }\n    public void onFailure(PaymentEvent event) { failureEvents.add(event); }\n}\n\n@Test\nvoid chargeFiresOnSuccessWithCorrectOrderId() {\n    RecordingObserver recorder = new RecordingObserver();\n    PaymentProcessor processor = new PaymentProcessor(fakeGateway, 3);\n    processor.addObserver(recorder);\n\n    processor.charge(new Order(\"order-1\", 500, fakeCard));\n\n    assertEquals(\"order-1\", recorder.successEvents.get(0).getOrderId());\n}",
+            "python": "class RecordingObserver:\n    def __init__(self):\n        self.events = []\n\n    def on_success(self, event):\n        self.events.append((\"success\", event))\n\n    def on_failure(self, event):\n        self.events.append((\"failure\", event))\n\n    def on_retry(self, event):\n        self.events.append((\"retry\", event))\n\ndef test_charge_fires_on_success_with_correct_order_id():\n    recorder = RecordingObserver()\n    processor = PaymentProcessor(fake_gateway)\n    processor.add_observer(recorder)\n\n    processor.charge(Order(id=\"order-1\", amount=500, card=fake_card))\n\n    kind, event = recorder.events[0]\n    assert kind == \"success\"\n    assert event[\"order_id\"] == \"order-1\"",
+            "cpp": "class RecordingObserver : public PaymentObserver {\npublic:\n    std::vector<PaymentEvent> successEvents;\n    std::vector<PaymentEvent> failureEvents;\n\n    void onSuccess(const PaymentEvent& event) override { successEvents.push_back(event); }\n    void onFailure(const PaymentEvent& event) override { failureEvents.push_back(event); }\n};\n\nTEST(PaymentProcessorTest, ChargeFiresOnSuccessWithCorrectOrderId) {\n    auto recorder = std::make_shared<RecordingObserver>();\n    PaymentProcessor processor(fakeGateway, 3);\n    processor.addObserver(recorder);\n\n    processor.charge(Order(\"order-1\", 500, fakeCard));\n\n    EXPECT_EQ(\"order-1\", recorder->successEvents.at(0).orderId());\n}",
+            "javascript": "class RecordingObserver {\n  constructor() { this.events = []; }\n  onSuccess(event) { this.events.push(['success', event]); }\n  onFailure(event) { this.events.push(['failure', event]); }\n  onRetry(event) { this.events.push(['retry', event]); }\n}\n\ntest('charge fires onSuccess with the correct order id', () => {\n  const recorder = new RecordingObserver();\n  const processor = new PaymentProcessor(fakeGateway);\n  processor.addObserver(recorder);\n\n  processor.charge({ id: 'order-1', amount: 500, card: fakeCard });\n\n  expect(recorder.events[0][0]).toBe('success');\n  expect(recorder.events[0][1].orderId).toBe('order-1');\n});"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "No mocking library needs to know about a specific metrics vendor. The test only asserts on the domain event, which is exactly what the business logic is responsible for producing."
+        },
+        {
+          "type": "note",
+          "title": "Assert on events, not side effects",
+          "content": "Testing that the right hook fired with the right payload is usually a better signal than trying to verify a metrics counter incremented somewhere."
+        },
+        {
+          "type": "heading1",
+          "content": "9. Trade-offs of Hooks Versus Direct Injection",
+          "text": "9. Trade-offs of Hooks Versus Direct Injection"
+        },
+        {
+          "type": "paragraph",
+          "content": "Hooks are not the only way to decouple monitoring. A class could instead take a single MetricsPort interface through its constructor, the same dependency inversion technique used for logging or storage."
+        },
+        {
+          "type": "paragraph",
+          "content": "Both approaches remove the concrete vendor dependency. The difference is in how many listeners are expected and how loosely they are coupled."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512307835-503118966.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512307835-503118966.png",
+          "alt": "Comparison of a single injected metrics port for one listener against a hooks based observer list for many independent listeners"
+        },
+        {
+          "type": "paragraph",
+          "content": "Neither one is wrong, picking between them is mostly about how many independent parties actually need to react."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is easy to migrate from one to the other later if the number of listeners changes."
+        },
+        {
+          "type": "paragraph",
+          "content": "Do not over think this choice upfront, it rarely blocks real progress either way."
+        },
+        {
+          "type": "pros-cons",
+          "content": "{\"pros\":[\"Multiple independent listeners can attach without the class knowing how many exist\",\"New observers can be added later without changing the class at all\",\"Tests can attach a plain recording observer instead of a mock library\",\"The class stays focused on domain events, not on any single downstream concern\"],\"cons\":[\"A dynamic list of observers can make execution order and error handling less obvious\",\"If an observer throws, the class must decide whether to swallow it or let it propagate\",\"Too many hook names on one class can turn into its own kind of clutter\",\"Slightly more ceremony than a single injected dependency when only one listener will ever exist\"]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "A useful rule of thumb: reach for a single injected port when there is exactly one thing that will ever care, and reach for hooks or an observer list when several independent parties need to watch the same moments."
+        },
+        {
+          "type": "paragraph",
+          "content": "Neither option is inherently better, they solve slightly different shapes of the same underlying problem."
+        },
+        {
+          "type": "paragraph",
+          "content": "Most teams start with a single injected dependency and only move to a full observer list once a second listener genuinely shows up."
+        },
+        {
+          "type": "heading1",
+          "content": "10. Common Pitfalls When Adding Hooks",
+          "text": "10. Common Pitfalls When Adding Hooks"
+        },
+        {
+          "type": "heading3",
+          "content": "Letting an observer crash the caller",
+          "text": "Letting an observer crash the caller"
+        },
+        {
+          "type": "paragraph",
+          "content": "If a metrics collector throws inside onSuccess and that exception is not caught, it can take down a payment that already succeeded."
+        },
+        {
+          "type": "code",
+          "content": "void notify(String hookName, PaymentEvent event) {\n    for (PaymentObserver observer : observers) {\n        try {\n            switch (hookName) {\n                case \"onSuccess\" -> observer.onSuccess(event);\n                case \"onFailure\" -> observer.onFailure(event);\n                case \"onRetry\"   -> observer.onRetry(event);\n                default -> { }\n            }\n        } catch (RuntimeException observerError) {\n            // an observer failing must never break the operation it is watching\n            internalLogger.warn(\"observer failed, hook=\" + hookName, observerError);\n        }\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "void notify(String hookName, PaymentEvent event) {\n    for (PaymentObserver observer : observers) {\n        try {\n            switch (hookName) {\n                case \"onSuccess\" -> observer.onSuccess(event);\n                case \"onFailure\" -> observer.onFailure(event);\n                case \"onRetry\"   -> observer.onRetry(event);\n                default -> { }\n            }\n        } catch (RuntimeException observerError) {\n            // an observer failing must never break the operation it is watching\n            internalLogger.warn(\"observer failed, hook=\" + hookName, observerError);\n        }\n    }\n}"
+          },
+          "codes": {
+            "java": "void notify(String hookName, PaymentEvent event) {\n    for (PaymentObserver observer : observers) {\n        try {\n            switch (hookName) {\n                case \"onSuccess\" -> observer.onSuccess(event);\n                case \"onFailure\" -> observer.onFailure(event);\n                case \"onRetry\"   -> observer.onRetry(event);\n                default -> { }\n            }\n        } catch (RuntimeException observerError) {\n            // an observer failing must never break the operation it is watching\n            internalLogger.warn(\"observer failed, hook=\" + hookName, observerError);\n        }\n    }\n}",
+            "python": "def notify(self, hook_name, event):\n    for observer in self.observers:\n        try:\n            hook = getattr(observer, hook_name, None)\n            if callable(hook):\n                hook(event)\n        except Exception as observer_error:\n            # an observer failing must never break the operation it is watching\n            self.internal_logger.warning(\n                \"observer failed\", extra={\"hook\": hook_name, \"error\": observer_error}\n            )",
+            "cpp": "void notify(const std::string& hookName, const PaymentEvent& event) {\n    for (const auto& observer : observers) {\n        try {\n            if (hookName == \"onSuccess\")      observer->onSuccess(event);\n            else if (hookName == \"onFailure\") observer->onFailure(event);\n            else if (hookName == \"onRetry\")   observer->onRetry(event);\n        } catch (const std::exception& observerError) {\n            // an observer failing must never break the operation it is watching\n            internalLogger.warn(\"observer failed, hook=\" + hookName + \", error=\" + observerError.what());\n        }\n    }\n}",
+            "javascript": "notify(hookName, event) {\n  for (const observer of this.observers) {\n    try {\n      if (typeof observer[hookName] === 'function') observer[hookName](event);\n    } catch (observerError) {\n      // an observer failing must never break the operation it is watching\n      this.internalLogger.warn('observer failed', { hookName, observerError });\n    }\n  }\n}"
+          }
+        },
+        {
+          "type": "heading3",
+          "content": "Passing internal state instead of a payload",
+          "text": "Passing internal state instead of a payload"
+        },
+        {
+          "type": "paragraph",
+          "content": "Handing an observer the live order object, rather than a small event payload, lets it accidentally mutate state it was only supposed to read."
+        },
+        {
+          "type": "heading3",
+          "content": "Too many hook names",
+          "text": "Too many hook names"
+        },
+        {
+          "type": "paragraph",
+          "content": "A class with fifteen different hook names is usually a sign it is doing too many distinct things. Group related events or split the class instead."
+        },
+        {
+          "type": "paragraph",
+          "content": "A good sanity check is asking whether a new teammate could guess most of the hook names just from reading the class purpose."
+        },
+        {
+          "type": "list",
+          "content": "[\"Wrap each observer call so one bad listener cannot break the core operation\",\"Pass immutable, minimal event payloads rather than live internal objects\",\"Keep the hook vocabulary small and tied to genuinely distinct moments\",\"Document what each hook fires and when, since the class no longer tells the whole story on its own\"]",
+          "items": [
+            "Wrap each observer call so one bad listener cannot break the core operation",
+            "Pass immutable, minimal event payloads rather than live internal objects",
+            "Keep the hook vocabulary small and tied to genuinely distinct moments",
+            "Document what each hook fires and when, since the class no longer tells the whole story on its own"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "heading1",
+          "content": "11. Hooks, Observer, and Dependency Inversion, Tied Together",
+          "text": "11. Hooks, Observer, and Dependency Inversion, Tied Together"
+        },
+        {
+          "type": "paragraph",
+          "content": "Monitoring hooks are really just a focused application of the Observer pattern, aimed specifically at cross cutting concerns like metrics, logging, and alerting."
+        },
+        {
+          "type": "paragraph",
+          "content": "The core class plays the subject, the metrics collector and logger play observers, and the hook names, onSuccess, onFailure, onRetry, are the vocabulary they agree on in advance."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the same dependency inversion principle from earlier lessons, applied at the level of individual events rather than a single injected interface: the payment processor depends on an abstraction it defines, and every concrete observer depends on that same abstraction."
+        },
+        {
+          "type": "paragraph",
+          "content": "Once a class exposes its important moments as hooks instead of hardcoded calls, adding a new kind of observability, a dashboard, an alert, an audit trail, becomes a matter of writing a new observer, not editing the class that everyone depends on."
+        },
+        {
+          "type": "paragraph",
+          "content": "That single shift, from the class deciding who gets notified to the class simply announcing what happened, is worth remembering well beyond monitoring specifically."
+        },
+        {
+          "type": "paragraph",
+          "content": "It shows up any time core logic needs to stay stable while the outside world keeps needing new ways to react to it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "blockQuote",
+          "content": "Let the class announce what happened. Let everyone else decide what that means."
+        }
+      ]
+    }
+  ]
+}

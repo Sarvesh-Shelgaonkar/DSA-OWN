@@ -1,0 +1,572 @@
+{
+  "slug": "logging-design",
+  "title": "Logging Design",
+  "content": [
+    {
+      "id": "logging-design",
+      "title": "Logging Design",
+      "blocks": [
+        {
+          "type": "heading1",
+          "content": "1. Why Logging Deserves Its Own Design",
+          "text": "1. Why Logging Deserves Its Own Design"
+        },
+        {
+          "type": "paragraph",
+          "content": "Almost every backend service prints something to a log at some point. It sounds trivial until you try to build it well."
+        },
+        {
+          "type": "paragraph",
+          "content": "A logging framework is one of those small pieces of infrastructure that quietly touches every other part of a system. Get the design wrong and every team using it pays the cost forever."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is also a very common low level design interview question. Interviewers like it because it looks simple on the surface but rewards candidates who think about extensibility, decoupling, and consistent formatting."
+        },
+        {
+          "type": "paragraph",
+          "content": "We will build a small logging framework step by step, reusing the Strategy pattern for output handling and thinking ahead to Observer, since a logger is really a broadcaster of events to interested listeners."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A logging framework needs to let calling code say what happened and how important it is, without ever needing to know where that message ends up."
+        },
+        {
+          "type": "note",
+          "title": "Scope of this lesson",
+          "content": "We are designing a logging framework as a class exercise, not wrapping an existing library like Log4j or Winston. The ideas transfer directly to those tools once you understand the shape underneath them."
+        },
+        {
+          "type": "heading1",
+          "content": "2. Log Levels and Why They Matter",
+          "text": "2. Log Levels and Why They Matter"
+        },
+        {
+          "type": "paragraph",
+          "content": "The first design decision in any logger is the notion of a level. Levels let the same codebase stay quiet in production and verbose during debugging, without touching a single log statement."
+        },
+        {
+          "type": "heading3",
+          "content": "The standard four levels",
+          "text": "The standard four levels"
+        },
+        {
+          "type": "list",
+          "content": "[\"debug: fine grained information useful only when actively diagnosing an issue\",\"info: normal operational events, such as a service starting or a request completing\",\"warn: something unexpected happened but the system can continue\",\"error: an operation failed and needs attention\"]",
+          "items": [
+            "debug: fine grained information useful only when actively diagnosing an issue",
+            "info: normal operational events, such as a service starting or a request completing",
+            "warn: something unexpected happened but the system can continue",
+            "error: an operation failed and needs attention"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Some frameworks add more levels such as trace below debug or fatal above error. Four is usually enough for a class exercise and covers almost every real use case."
+        },
+        {
+          "type": "heading3",
+          "content": "A level is really just a threshold",
+          "text": "A level is really just a threshold"
+        },
+        {
+          "type": "paragraph",
+          "content": "Each level has a numeric rank. When you configure a logger with a minimum level, any message below that rank is dropped before it even reaches a handler."
+        },
+        {
+          "type": "paragraph",
+          "content": "This threshold check needs to happen as early as possible so that expensive formatting or serialization is skipped for messages nobody will see."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512341556-718581476.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512341556-718581476.png",
+          "alt": "Flow showing an incoming log level checked against the configured minimum level, with messages below threshold dropped and messages at or above threshold built into a LogRecord and sent to handlers"
+        },
+        {
+          "type": "code",
+          "content": "const LogLevel = {\n  DEBUG: 10,\n  INFO: 20,\n  WARN: 30,\n  ERROR: 40,\n};\n\nfunction levelName(rank) {\n  return Object.keys(LogLevel).find((key) => LogLevel[key] === rank);\n}\n\nmodule.exports = { LogLevel, levelName };",
+          "code": {
+            "language": "javascript",
+            "content": "const LogLevel = {\n  DEBUG: 10,\n  INFO: 20,\n  WARN: 30,\n  ERROR: 40,\n};\n\nfunction levelName(rank) {\n  return Object.keys(LogLevel).find((key) => LogLevel[key] === rank);\n}\n\nmodule.exports = { LogLevel, levelName };"
+          },
+          "codes": {
+            "java": "public enum LogLevel {\n    DEBUG(10), INFO(20), WARN(30), ERROR(40);\n\n    private final int rank;\n\n    LogLevel(int rank) {\n        this.rank = rank;\n    }\n\n    public int getRank() {\n        return rank;\n    }\n}",
+            "python": "class LogLevel:\n    DEBUG = 10\n    INFO = 20\n    WARN = 30\n    ERROR = 40\n\n    NAMES = {10: \"DEBUG\", 20: \"INFO\", 30: \"WARN\", 40: \"ERROR\"}\n\n    @staticmethod\n    def name_for(rank):\n        return LogLevel.NAMES.get(rank, \"UNKNOWN\")",
+            "cpp": "enum class LogLevel { DEBUG = 10, INFO = 20, WARN = 30, ERROR = 40 };\n\nint getRank(LogLevel level) {\n    return static_cast<int>(level);\n}\n\nstring logLevelName(LogLevel level) {\n    switch (level) {\n        case LogLevel::DEBUG: return \"DEBUG\";\n        case LogLevel::INFO:  return \"INFO\";\n        case LogLevel::WARN:  return \"WARN\";\n        case LogLevel::ERROR: return \"ERROR\";\n    }\n    return \"UNKNOWN\";\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice that this enum has no knowledge of formatting or output. It answers exactly one question: how severe is this event. Keeping it this narrow makes it reusable everywhere."
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Appender or Handler Abstraction",
+          "text": "3. The Appender or Handler Abstraction"
+        },
+        {
+          "type": "paragraph",
+          "content": "The piece that decides where a log line actually goes is usually called an appender or a handler, depending on which framework you have used before."
+        },
+        {
+          "type": "paragraph",
+          "content": "The core idea is the same. A handler is a small object with one job: take a fully formatted log record and send it somewhere."
+        },
+        {
+          "type": "heading3",
+          "content": "Why not just call console.log directly",
+          "text": "Why not just call console.log directly"
+        },
+        {
+          "type": "paragraph",
+          "content": "If every part of the codebase calls console.log directly, switching to a file or a remote log service later means editing every call site."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is exactly the kind of change that a good abstraction should absorb in one place instead of hundreds."
+        },
+        {
+          "type": "heading3",
+          "content": "Defining the handler interface",
+          "text": "Defining the handler interface"
+        },
+        {
+          "type": "paragraph",
+          "content": "A handler interface needs exactly one method most of the time: handle, which accepts a structured log record and does the actual writing."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512343494-979727408.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512343494-979727408.png",
+          "alt": "Diagram showing the Handler interface implemented by ConsoleHandler and FileHandler, each writing to a different output destination"
+        },
+        {
+          "type": "code",
+          "content": "class Handler {\n  handle(record) {\n    throw new Error('handle() must be implemented by a concrete handler');\n  }\n}\n\nclass ConsoleHandler extends Handler {\n  handle(record) {\n    console.log(record.formatted);\n  }\n}\n\nclass FileHandler extends Handler {\n  constructor(filePath, fs = require('fs')) {\n    super();\n    this.filePath = filePath;\n    this.fs = fs;\n  }\n\n  handle(record) {\n    this.fs.appendFileSync(this.filePath, record.formatted + '\\n');\n  }\n}\n\nmodule.exports = { Handler, ConsoleHandler, FileHandler };",
+          "code": {
+            "language": "javascript",
+            "content": "class Handler {\n  handle(record) {\n    throw new Error('handle() must be implemented by a concrete handler');\n  }\n}\n\nclass ConsoleHandler extends Handler {\n  handle(record) {\n    console.log(record.formatted);\n  }\n}\n\nclass FileHandler extends Handler {\n  constructor(filePath, fs = require('fs')) {\n    super();\n    this.filePath = filePath;\n    this.fs = fs;\n  }\n\n  handle(record) {\n    this.fs.appendFileSync(this.filePath, record.formatted + '\\n');\n  }\n}\n\nmodule.exports = { Handler, ConsoleHandler, FileHandler };"
+          },
+          "codes": {
+            "java": "public interface Handler {\n    void handle(LogRecord record);\n}\n\npublic class ConsoleHandler implements Handler {\n    @Override\n    public void handle(LogRecord record) {\n        System.out.println(record.getFormatted());\n    }\n}\n\npublic class FileHandler implements Handler {\n    private final String filePath;\n\n    public FileHandler(String filePath) {\n        this.filePath = filePath;\n    }\n\n    @Override\n    public void handle(LogRecord record) {\n        try (FileWriter fw = new FileWriter(filePath, true)) {\n            fw.write(record.getFormatted() + System.lineSeparator());\n        } catch (IOException e) {\n            throw new RuntimeException(e);\n        }\n    }\n}",
+            "python": "class Handler:\n    def handle(self, record):\n        raise NotImplementedError(\"handle() must be implemented by a concrete handler\")\n\n\nclass ConsoleHandler(Handler):\n    def handle(self, record):\n        print(record[\"formatted\"])\n\n\nclass FileHandler(Handler):\n    def __init__(self, file_path):\n        self.file_path = file_path\n\n    def handle(self, record):\n        with open(self.file_path, \"a\") as f:\n            f.write(record[\"formatted\"] + \"\\n\")",
+            "cpp": "class Handler {\npublic:\n    virtual void handle(const LogRecord& record) = 0;\n    virtual ~Handler() = default;\n};\n\nclass ConsoleHandler : public Handler {\npublic:\n    void handle(const LogRecord& record) override {\n        cout << record.getFormatted() << endl;\n    }\n};\n\nclass FileHandler : public Handler {\nprivate:\n    string filePath;\n\npublic:\n    FileHandler(string filePath) : filePath(filePath) {}\n\n    void handle(const LogRecord& record) override {\n        ofstream out(filePath, ios::app);\n        if (!out) {\n            throw runtime_error(\"Unable to open log file: \" + filePath);\n        }\n        out << record.getFormatted() << \"\\n\";\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the Strategy pattern again, applied to output. The logger holds a reference to one or more Handler objects and never cares which concrete class they are."
+        },
+        {
+          "type": "heading1",
+          "content": "4. A Pluggable Design Using Multiple Handlers",
+          "text": "4. A Pluggable Design Using Multiple Handlers"
+        },
+        {
+          "type": "paragraph",
+          "content": "A single logger often needs to send the same message to more than one place at once. A production service might log to the console for local debugging and to a remote service for aggregation."
+        },
+        {
+          "type": "heading3",
+          "content": "The logger holds a list, not a single handler",
+          "text": "The logger holds a list, not a single handler"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of a single handler reference, the logger keeps a list of handlers and loops over them for every record."
+        },
+        {
+          "type": "heading3",
+          "content": "Registering and removing handlers at runtime",
+          "text": "Registering and removing handlers at runtime"
+        },
+        {
+          "type": "paragraph",
+          "content": "A good design lets handlers be added or removed after the logger is constructed. This matters for tests, where you might attach a capturing handler temporarily and remove it afterward."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783495527797-826771466.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783495527797-826771466.png",
+          "alt": "A Logger routing formatted records through a Formatter to multiple pluggable handlers: console, file, and remote"
+        },
+        {
+          "type": "paragraph",
+          "content": "The diagram above shows the shape we are building toward. The logger never imports ConsoleHandler or FileHandler directly. It only knows about the Handler interface."
+        },
+        {
+          "type": "code",
+          "content": "class Logger {\n  constructor(name, minLevel = LogLevel.INFO) {\n    this.name = name;\n    this.minLevel = minLevel;\n    this.handlers = [];\n  }\n\n  addHandler(handler) {\n    this.handlers.push(handler);\n  }\n\n  removeHandler(handler) {\n    this.handlers = this.handlers.filter((h) => h !== handler);\n  }\n}\n\nmodule.exports = { Logger };",
+          "code": {
+            "language": "javascript",
+            "content": "class Logger {\n  constructor(name, minLevel = LogLevel.INFO) {\n    this.name = name;\n    this.minLevel = minLevel;\n    this.handlers = [];\n  }\n\n  addHandler(handler) {\n    this.handlers.push(handler);\n  }\n\n  removeHandler(handler) {\n    this.handlers = this.handlers.filter((h) => h !== handler);\n  }\n}\n\nmodule.exports = { Logger };"
+          },
+          "codes": {
+            "java": "public class Logger {\n    private final String name;\n    private final LogLevel minLevel;\n    private final List<Handler> handlers = new ArrayList<>();\n\n    public Logger(String name, LogLevel minLevel) {\n        this.name = name;\n        this.minLevel = minLevel;\n    }\n\n    public void addHandler(Handler handler) {\n        handlers.add(handler);\n    }\n\n    public void removeHandler(Handler handler) {\n        handlers.remove(handler);\n    }\n}",
+            "python": "class Logger:\n    def __init__(self, name, min_level=LogLevel.INFO):\n        self.name = name\n        self.min_level = min_level\n        self.handlers = []\n\n    def add_handler(self, handler):\n        self.handlers.append(handler)\n\n    def remove_handler(self, handler):\n        self.handlers = [h for h in self.handlers if h is not handler]",
+            "cpp": "class Logger {\nprivate:\n    string name;\n    LogLevel minLevel;\n    vector<Handler*> handlers;\n\npublic:\n    Logger(string name, LogLevel minLevel) : name(name), minLevel(minLevel) {}\n\n    void addHandler(Handler* handler) {\n        handlers.push_back(handler);\n    }\n\n    void removeHandler(Handler* handler) {\n        handlers.erase(remove(handlers.begin(), handlers.end(), handler), handlers.end());\n    }\n};"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Fan out, not fallback",
+          "content": "Multiple handlers on one logger is fan out. Every handler receives every record independently. It is not a fallback chain where the next handler only runs if the previous one fails."
+        },
+        {
+          "type": "heading1",
+          "content": "5. Formatting Messages With Useful Context",
+          "text": "5. Formatting Messages With Useful Context"
+        },
+        {
+          "type": "paragraph",
+          "content": "A raw message string like \"user not found\" is nearly useless in a production log stream with thousands of lines per minute."
+        },
+        {
+          "type": "paragraph",
+          "content": "A well designed logger attaches context automatically so every line is self describing, without the caller having to remember to add it."
+        },
+        {
+          "type": "heading3",
+          "content": "What belongs in every log line",
+          "text": "What belongs in every log line"
+        },
+        {
+          "type": "list",
+          "content": "[\"timestamp: when the event happened, in a sortable format such as ISO 8601\",\"level: DEBUG, INFO, WARN, or ERROR so lines can be filtered\",\"source: the module, class, or logger name that produced the line\",\"message: the human readable description of what happened\"]",
+          "items": [
+            "timestamp: when the event happened, in a sortable format such as ISO 8601",
+            "level: DEBUG, INFO, WARN, or ERROR so lines can be filtered",
+            "source: the module, class, or logger name that produced the line",
+            "message: the human readable description of what happened"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "heading3",
+          "content": "Separating the record from the formatter",
+          "text": "Separating the record from the formatter"
+        },
+        {
+          "type": "paragraph",
+          "content": "It helps to build a plain LogRecord object first, then hand it to a separate Formatter that turns it into a string. This keeps formatting swappable, just like handlers."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512346110-188314615.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512346110-188314615.png",
+          "alt": "Pipeline showing a raw level and message turned into a LogRecord and then into a formatted string by a separate Formatter"
+        },
+        {
+          "type": "code",
+          "content": "class LogRecord {\n  constructor(level, source, message) {\n    this.timestamp = new Date().toISOString();\n    this.level = level;\n    this.source = source;\n    this.message = message;\n  }\n}\n\nclass DefaultFormatter {\n  format(record) {\n    return `[${record.timestamp}] ${levelName(record.level)} ${record.source}: ${record.message}`;\n  }\n}\n\nmodule.exports = { LogRecord, DefaultFormatter };",
+          "code": {
+            "language": "javascript",
+            "content": "class LogRecord {\n  constructor(level, source, message) {\n    this.timestamp = new Date().toISOString();\n    this.level = level;\n    this.source = source;\n    this.message = message;\n  }\n}\n\nclass DefaultFormatter {\n  format(record) {\n    return `[${record.timestamp}] ${levelName(record.level)} ${record.source}: ${record.message}`;\n  }\n}\n\nmodule.exports = { LogRecord, DefaultFormatter };"
+          },
+          "codes": {
+            "java": "public class LogRecord {\n    private final Instant timestamp;\n    private final LogLevel level;\n    private final String source;\n    private final String message;\n\n    public LogRecord(LogLevel level, String source, String message) {\n        this.timestamp = Instant.now();\n        this.level = level;\n        this.source = source;\n        this.message = message;\n    }\n\n    public String getFormatted() {\n        return String.format(\"[%s] %s %s: %s\", timestamp, level, source, message);\n    }\n}",
+            "python": "from datetime import datetime, timezone\n\n\nclass LogRecord:\n    def __init__(self, level, source, message):\n        self.timestamp = datetime.now(timezone.utc).isoformat()\n        self.level = level\n        self.source = source\n        self.message = message\n\n\nclass DefaultFormatter:\n    def format(self, record):\n        return f\"[{record.timestamp}] {LogLevel.name_for(record.level)} {record.source}: {record.message}\"",
+            "cpp": "class LogRecord {\nprivate:\n    long long timestamp;\n    LogLevel level;\n    string source;\n    string message;\n\npublic:\n    LogRecord(LogLevel level, string source, string message)\n        : level(level), source(source), message(message) {\n        timestamp = chrono::duration_cast<chrono::milliseconds>(\n            chrono::system_clock::now().time_since_epoch()).count();\n    }\n\n    LogLevel getLevel() const {\n        return level;\n    }\n\n    string getFormatted() const {\n        return \"[\" + to_string(timestamp) + \"] \" + logLevelName(level) + \" \" + source + \": \" + message;\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "With this split, a team that wants JSON formatted logs for a log aggregation tool can write one new Formatter class and swap it in without touching Logger or any Handler."
+        },
+        {
+          "type": "heading1",
+          "content": "6. Wiring It Together: A Full Worked Example",
+          "text": "6. Wiring It Together: A Full Worked Example"
+        },
+        {
+          "type": "paragraph",
+          "content": "Now we connect Logger, Handler, and Formatter into one small working framework, matching the pluggable diagram from earlier."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 1: the logger builds a record and hands it to each handler",
+          "text": "Step 1: the logger builds a record and hands it to each handler"
+        },
+        {
+          "type": "heading3",
+          "content": "Step 2: each handler formats and writes independently",
+          "text": "Step 2: each handler formats and writes independently"
+        },
+        {
+          "type": "paragraph",
+          "content": "Note that in this version each handler owns its own formatter, so a remote handler could emit JSON while a console handler emits plain text, from the exact same log call."
+        },
+        {
+          "type": "code",
+          "content": "class Logger {\n  constructor(name, minLevel = LogLevel.INFO) {\n    this.name = name;\n    this.minLevel = minLevel;\n    this.handlers = [];\n  }\n\n  addHandler(handler) {\n    this.handlers.push(handler);\n  }\n\n  log(level, message) {\n    if (level < this.minLevel) return;\n    const record = new LogRecord(level, this.name, message);\n    for (const handler of this.handlers) {\n      handler.handle(record);\n    }\n  }\n\n  debug(message) { this.log(LogLevel.DEBUG, message); }\n  info(message) { this.log(LogLevel.INFO, message); }\n  warn(message) { this.log(LogLevel.WARN, message); }\n  error(message) { this.log(LogLevel.ERROR, message); }\n}\n\nclass RemoteHandler extends Handler {\n  constructor(client) {\n    super();\n    this.client = client;\n  }\n\n  handle(record) {\n    this.client.send({ ts: record.timestamp, level: levelName(record.level), source: record.source, msg: record.message });\n  }\n}\n\nconst logger = new Logger('PaymentService', LogLevel.DEBUG);\nlogger.addHandler(new ConsoleHandler());\nlogger.addHandler(new FileHandler('./payment.log'));\nlogger.addHandler(new RemoteHandler(remoteClient));\n\nlogger.info('Payment processed successfully');\nlogger.error('Payment gateway timed out');",
+          "code": {
+            "language": "javascript",
+            "content": "class Logger {\n  constructor(name, minLevel = LogLevel.INFO) {\n    this.name = name;\n    this.minLevel = minLevel;\n    this.handlers = [];\n  }\n\n  addHandler(handler) {\n    this.handlers.push(handler);\n  }\n\n  log(level, message) {\n    if (level < this.minLevel) return;\n    const record = new LogRecord(level, this.name, message);\n    for (const handler of this.handlers) {\n      handler.handle(record);\n    }\n  }\n\n  debug(message) { this.log(LogLevel.DEBUG, message); }\n  info(message) { this.log(LogLevel.INFO, message); }\n  warn(message) { this.log(LogLevel.WARN, message); }\n  error(message) { this.log(LogLevel.ERROR, message); }\n}\n\nclass RemoteHandler extends Handler {\n  constructor(client) {\n    super();\n    this.client = client;\n  }\n\n  handle(record) {\n    this.client.send({ ts: record.timestamp, level: levelName(record.level), source: record.source, msg: record.message });\n  }\n}\n\nconst logger = new Logger('PaymentService', LogLevel.DEBUG);\nlogger.addHandler(new ConsoleHandler());\nlogger.addHandler(new FileHandler('./payment.log'));\nlogger.addHandler(new RemoteHandler(remoteClient));\n\nlogger.info('Payment processed successfully');\nlogger.error('Payment gateway timed out');"
+          },
+          "codes": {
+            "java": "public class Logger {\n    private final String name;\n    private final LogLevel minLevel;\n    private final List<Handler> handlers = new ArrayList<>();\n\n    public Logger(String name, LogLevel minLevel) {\n        this.name = name;\n        this.minLevel = minLevel;\n    }\n\n    public void addHandler(Handler handler) {\n        handlers.add(handler);\n    }\n\n    public void log(LogLevel level, String message) {\n        if (level.getRank() < minLevel.getRank()) return;\n        LogRecord record = new LogRecord(level, name, message);\n        for (Handler handler : handlers) {\n            handler.handle(record);\n        }\n    }\n\n    public void debug(String message) { log(LogLevel.DEBUG, message); }\n    public void info(String message) { log(LogLevel.INFO, message); }\n    public void warn(String message) { log(LogLevel.WARN, message); }\n    public void error(String message) { log(LogLevel.ERROR, message); }\n}\n\npublic class RemoteHandler implements Handler {\n    private final RemoteClient client;\n\n    public RemoteHandler(RemoteClient client) {\n        this.client = client;\n    }\n\n    @Override\n    public void handle(LogRecord record) {\n        client.send(record);\n    }\n}\n\nLogger logger = new Logger(\"PaymentService\", LogLevel.DEBUG);\nlogger.addHandler(new ConsoleHandler());\nlogger.addHandler(new FileHandler(\"./payment.log\"));\nlogger.addHandler(new RemoteHandler(remoteClient));\n\nlogger.info(\"Payment processed successfully\");\nlogger.error(\"Payment gateway timed out\");",
+            "python": "class Logger:\n    def __init__(self, name, min_level=LogLevel.INFO):\n        self.name = name\n        self.min_level = min_level\n        self.handlers = []\n\n    def add_handler(self, handler):\n        self.handlers.append(handler)\n\n    def log(self, level, message):\n        if level < self.min_level:\n            return\n        record = LogRecord(level, self.name, message)\n        for handler in self.handlers:\n            handler.handle(record)\n\n    def debug(self, message): self.log(LogLevel.DEBUG, message)\n    def info(self, message): self.log(LogLevel.INFO, message)\n    def warn(self, message): self.log(LogLevel.WARN, message)\n    def error(self, message): self.log(LogLevel.ERROR, message)\n\n\nclass RemoteHandler(Handler):\n    def __init__(self, client):\n        self.client = client\n\n    def handle(self, record):\n        self.client.send({\n            \"ts\": record.timestamp,\n            \"level\": LogLevel.name_for(record.level),\n            \"source\": record.source,\n            \"msg\": record.message,\n        })\n\n\nlogger = Logger(\"PaymentService\", LogLevel.DEBUG)\nlogger.add_handler(ConsoleHandler())\nlogger.add_handler(FileHandler(\"./payment.log\"))\nlogger.add_handler(RemoteHandler(remote_client))\n\nlogger.info(\"Payment processed successfully\")\nlogger.error(\"Payment gateway timed out\")",
+            "cpp": "class Logger {\nprivate:\n    string name;\n    LogLevel minLevel;\n    vector<Handler*> handlers;\n\npublic:\n    Logger(string name, LogLevel minLevel) : name(name), minLevel(minLevel) {}\n\n    void addHandler(Handler* handler) {\n        handlers.push_back(handler);\n    }\n\n    void log(LogLevel level, string message) {\n        if (getRank(level) < getRank(minLevel)) return;\n        LogRecord record(level, name, message);\n        for (Handler* handler : handlers) {\n            handler->handle(record);\n        }\n    }\n\n    void debug(string message) { log(LogLevel::DEBUG, message); }\n    void info(string message)  { log(LogLevel::INFO, message); }\n    void warn(string message)  { log(LogLevel::WARN, message); }\n    void error(string message) { log(LogLevel::ERROR, message); }\n};\n\nclass RemoteHandler : public Handler {\nprivate:\n    RemoteClient* client;\n\npublic:\n    RemoteHandler(RemoteClient* client) : client(client) {}\n\n    void handle(const LogRecord& record) override {\n        client->send(record);\n    }\n};\n\nLogger logger(\"PaymentService\", LogLevel::DEBUG);\nlogger.addHandler(new ConsoleHandler());\nlogger.addHandler(new FileHandler(\"./payment.log\"));\nlogger.addHandler(new RemoteHandler(remoteClient));\n\nlogger.info(\"Payment processed successfully\");\nlogger.error(\"Payment gateway timed out\");"
+          }
+        },
+        {
+          "type": "example-box",
+          "title": "Reading the wiring above",
+          "text": "PaymentService creates one Logger and attaches three handlers at startup. Every call to info or error fans out to console, file, and remote automatically. No call site anywhere in the payment code needs to know how many handlers exist or what they do."
+        },
+        {
+          "type": "heading1",
+          "content": "7. Adding a New Output Without Touching Existing Code",
+          "text": "7. Adding a New Output Without Touching Existing Code"
+        },
+        {
+          "type": "paragraph",
+          "content": "Suppose product asks for a Slack alert on every error level log, without changing anything about the console or file behavior."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 1: write a new handler",
+          "text": "Step 1: write a new handler"
+        },
+        {
+          "type": "paragraph",
+          "content": "Create a SlackHandler class that implements the same Handler interface, filtering internally for error level records if needed."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 2: register it",
+          "text": "Step 2: register it"
+        },
+        {
+          "type": "paragraph",
+          "content": "Call logger.addHandler(new SlackHandler(webhookUrl)) once, wherever the logger is constructed."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 3: nothing else changes",
+          "text": "Step 3: nothing else changes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Logger, ConsoleHandler, FileHandler, and every call site that does logger.info or logger.error remain completely untouched."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512347716-308058800.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512347716-308058800.png",
+          "alt": "Diagram showing Logger, ConsoleHandler and FileHandler left unchanged while a new SlackHandler is added and sends an alert for error level records"
+        },
+        {
+          "type": "code",
+          "content": "class SlackHandler extends Handler {\n  constructor(webhookUrl, minLevel = LogLevel.ERROR) {\n    super();\n    this.webhookUrl = webhookUrl;\n    this.minLevel = minLevel;\n  }\n\n  handle(record) {\n    if (record.level < this.minLevel) return;\n    postToWebhook(this.webhookUrl, record.formatted || record.message);\n  }\n}\n\nlogger.addHandler(new SlackHandler('https://hooks.example.com/abc'));",
+          "code": {
+            "language": "javascript",
+            "content": "class SlackHandler extends Handler {\n  constructor(webhookUrl, minLevel = LogLevel.ERROR) {\n    super();\n    this.webhookUrl = webhookUrl;\n    this.minLevel = minLevel;\n  }\n\n  handle(record) {\n    if (record.level < this.minLevel) return;\n    postToWebhook(this.webhookUrl, record.formatted || record.message);\n  }\n}\n\nlogger.addHandler(new SlackHandler('https://hooks.example.com/abc'));"
+          },
+          "codes": {
+            "java": "public class SlackHandler implements Handler {\n    private final String webhookUrl;\n    private final LogLevel minLevel;\n\n    public SlackHandler(String webhookUrl, LogLevel minLevel) {\n        this.webhookUrl = webhookUrl;\n        this.minLevel = minLevel;\n    }\n\n    @Override\n    public void handle(LogRecord record) {\n        if (record.getLevel().getRank() < minLevel.getRank()) return;\n        WebhookClient.post(webhookUrl, record.getFormatted());\n    }\n}\n\nlogger.addHandler(new SlackHandler(\"https://hooks.example.com/abc\", LogLevel.ERROR));",
+            "python": "class SlackHandler(Handler):\n    def __init__(self, webhook_url, min_level=LogLevel.ERROR):\n        self.webhook_url = webhook_url\n        self.min_level = min_level\n\n    def handle(self, record):\n        if record.level < self.min_level:\n            return\n        post_to_webhook(self.webhook_url, record.message)\n\n\nlogger.add_handler(SlackHandler(\"https://hooks.example.com/abc\"))",
+            "cpp": "class SlackHandler : public Handler {\nprivate:\n    string webhookUrl;\n    LogLevel minLevel;\n\npublic:\n    SlackHandler(string webhookUrl, LogLevel minLevel)\n        : webhookUrl(webhookUrl), minLevel(minLevel) {}\n\n    void handle(const LogRecord& record) override {\n        if (getRank(record.getLevel()) < getRank(minLevel)) return;\n        WebhookClient::post(webhookUrl, record.getFormatted());\n    }\n};\n\nlogger.addHandler(new SlackHandler(\"https://hooks.example.com/abc\", LogLevel::ERROR));"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the entire point of the Strategy based handler design. New behavior is added by writing a new class, not by editing an existing one."
+        },
+        {
+          "type": "heading1",
+          "content": "8. Per Handler Filtering and Independent Thresholds",
+          "text": "8. Per Handler Filtering and Independent Thresholds"
+        },
+        {
+          "type": "paragraph",
+          "content": "So far the minimum level lived only on the Logger. In practice each handler often needs its own threshold too."
+        },
+        {
+          "type": "paragraph",
+          "content": "A console handler during development might show everything from debug upward, while the remote handler only forwards warn and above to avoid flooding a paid log aggregation service."
+        },
+        {
+          "type": "heading3",
+          "content": "Letting handlers opt out independently",
+          "text": "Letting handlers opt out independently"
+        },
+        {
+          "type": "paragraph",
+          "content": "The simplest way is to give each handler its own minLevel field and check it inside handle, before doing any actual writing."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Handler\",\"Typical minimum level\",\"Reason\"],\"rows\":[[\"ConsoleHandler\",\"debug\",\"Cheap, useful for local development\"],[\"FileHandler\",\"info\",\"Keeps disk usage reasonable in production\"],[\"RemoteHandler\",\"warn\",\"Remote ingestion is often billed per event\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Two layers of filtering",
+          "content": "The logger level is a first coarse filter. Each handler level is a second, finer filter. A message must pass both to actually reach an output."
+        },
+        {
+          "type": "heading1",
+          "content": "9. A Few Practical Considerations",
+          "text": "9. A Few Practical Considerations"
+        },
+        {
+          "type": "paragraph",
+          "content": "A class exercise version of this framework can stop at the design above, but real systems add a handful of practical concerns worth knowing."
+        },
+        {
+          "type": "heading3",
+          "content": "Buffering and async writes",
+          "text": "Buffering and async writes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Writing to a file or a remote service synchronously on every log call can slow down request handling. Many production loggers queue records and flush them on a background thread or timer."
+        },
+        {
+          "type": "heading3",
+          "content": "Structured versus plain text output",
+          "text": "Structured versus plain text output"
+        },
+        {
+          "type": "paragraph",
+          "content": "A remote log aggregation service usually wants structured JSON, not a formatted string meant for a terminal. This is another reason to keep the Formatter separate from the Handler."
+        },
+        {
+          "type": "heading3",
+          "content": "Failure isolation between handlers",
+          "text": "Failure isolation between handlers"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the remote handler throws because the network is down, that should never prevent the console or file handler from writing. Wrap each handler call in its own try or catch inside the loop."
+        },
+        {
+          "type": "code",
+          "content": "log(level, message) {\n  if (level < this.minLevel) return;\n  const record = new LogRecord(level, this.name, message);\n  for (const handler of this.handlers) {\n    try {\n      handler.handle(record);\n    } catch (err) {\n      console.error('Handler failed:', err.message);\n    }\n  }\n}",
+          "code": {
+            "language": "javascript",
+            "content": "log(level, message) {\n  if (level < this.minLevel) return;\n  const record = new LogRecord(level, this.name, message);\n  for (const handler of this.handlers) {\n    try {\n      handler.handle(record);\n    } catch (err) {\n      console.error('Handler failed:', err.message);\n    }\n  }\n}"
+          },
+          "codes": {
+            "java": "public void log(LogLevel level, String message) {\n    if (level.getRank() < minLevel.getRank()) return;\n    LogRecord record = new LogRecord(level, name, message);\n    for (Handler handler : handlers) {\n        try {\n            handler.handle(record);\n        } catch (Exception err) {\n            System.err.println(\"Handler failed: \" + err.getMessage());\n        }\n    }\n}",
+            "python": "def log(self, level, message):\n    if level < self.min_level:\n        return\n    record = LogRecord(level, self.name, message)\n    for handler in self.handlers:\n        try:\n            handler.handle(record)\n        except Exception as err:\n            print(f\"Handler failed: {err}\")",
+            "cpp": "void log(LogLevel level, string message) {\n    if (getRank(level) < getRank(minLevel)) return;\n    LogRecord record(level, name, message);\n    for (Handler* handler : handlers) {\n        try {\n            handler->handle(record);\n        } catch (const exception& err) {\n            cerr << \"Handler failed: \" << err.what() << endl;\n        }\n    }\n}"
+          }
+        },
+        {
+          "type": "heading1",
+          "content": "10. Trade Offs of the Pluggable Handler Design",
+          "text": "10. Trade Offs of the Pluggable Handler Design"
+        },
+        {
+          "type": "paragraph",
+          "content": "No design is free. Adding this much flexibility has a real cost that is worth naming honestly."
+        },
+        {
+          "type": "pros-cons",
+          "content": "{\"pros\":[\"New output destinations can be added without editing Logger or existing handlers\",\"Each handler can have its own threshold and formatter, matching its cost and purpose\",\"Handlers can be unit tested in isolation from the logger that uses them\",\"Failure in one handler does not take down logging for the rest of the system\"],\"cons\":[\"More classes and indirection than a single hardcoded console.log call\",\"Misconfigured handler ordering or duplicate handlers can cause duplicate log lines\",\"Async or buffered handlers add complexity around flushing on shutdown\"]}"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Connecting Back to Strategy and Observer",
+          "text": "11. Connecting Back to Strategy and Observer"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the Handler interface with swappable ConsoleHandler, FileHandler, and RemoteHandler implementations looks familiar, that is because it is Strategy applied to output."
+        },
+        {
+          "type": "paragraph",
+          "content": "The logger is the context. Each handler is an interchangeable strategy for the one thing that varies: where a formatted record actually goes."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is also a strong Observer flavor here if you squint. A logger with multiple handlers is a subject broadcasting an event, in this case a log record, to every handler that has subscribed by being added."
+        },
+        {
+          "type": "paragraph",
+          "content": "The difference from a textbook Observer is mostly naming. addHandler behaves exactly like subscribe, and log behaves exactly like notify. The two patterns solve overlapping problems and it is common for real logging frameworks to blend them."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512349170-746602149.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512349170-746602149.png",
+          "alt": "Diagram mapping Logger and Handler roles onto the Strategy and Observer patterns, showing Handler as both an interchangeable strategy and a subscribed observer"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once you can see a logging framework as Strategy for output plus Observer for broadcasting, most production logging libraries stop looking like magic and start looking like a small, sensible design you could have written yourself."
+        },
+        {
+          "type": "heading1",
+          "content": "12. Testing a Logger Built This Way",
+          "text": "12. Testing a Logger Built This Way"
+        },
+        {
+          "type": "paragraph",
+          "content": "A pluggable handler design pays off immediately when it is time to write tests, since a test can attach a handler that simply records everything in memory."
+        },
+        {
+          "type": "heading3",
+          "content": "A capturing handler for assertions",
+          "text": "A capturing handler for assertions"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of asserting against console output or a real file, tests attach a small InMemoryHandler and inspect its captured records afterward."
+        },
+        {
+          "type": "heading3",
+          "content": "Isolating the logger under test",
+          "text": "Isolating the logger under test"
+        },
+        {
+          "type": "paragraph",
+          "content": "Because Logger only depends on the Handler interface, no mocking framework is needed. A plain class that implements handle is enough."
+        },
+        {
+          "type": "code",
+          "content": "class InMemoryHandler implements Handler {\n    final List<LogRecord> records = new ArrayList<>();\n\n    @Override\n    public void handle(LogRecord record) {\n        records.add(record);\n    }\n}\n\nLogger testLogger = new Logger(\"test\", LogLevel.DEBUG);\nInMemoryHandler captured = new InMemoryHandler();\ntestLogger.addHandler(captured);\n\ntestLogger.warn(\"disk usage above 80 percent\");\n\nassert captured.records.size() == 1;\nassert captured.records.get(0).getLevel() == LogLevel.WARN;",
+          "code": {
+            "language": "java",
+            "content": "class InMemoryHandler implements Handler {\n    final List<LogRecord> records = new ArrayList<>();\n\n    @Override\n    public void handle(LogRecord record) {\n        records.add(record);\n    }\n}\n\nLogger testLogger = new Logger(\"test\", LogLevel.DEBUG);\nInMemoryHandler captured = new InMemoryHandler();\ntestLogger.addHandler(captured);\n\ntestLogger.warn(\"disk usage above 80 percent\");\n\nassert captured.records.size() == 1;\nassert captured.records.get(0).getLevel() == LogLevel.WARN;"
+          },
+          "codes": {
+            "java": "class InMemoryHandler implements Handler {\n    final List<LogRecord> records = new ArrayList<>();\n\n    @Override\n    public void handle(LogRecord record) {\n        records.add(record);\n    }\n}\n\nLogger testLogger = new Logger(\"test\", LogLevel.DEBUG);\nInMemoryHandler captured = new InMemoryHandler();\ntestLogger.addHandler(captured);\n\ntestLogger.warn(\"disk usage above 80 percent\");\n\nassert captured.records.size() == 1;\nassert captured.records.get(0).getLevel() == LogLevel.WARN;",
+            "python": "class InMemoryHandler(Handler):\n    def __init__(self):\n        self.records = []\n\n    def handle(self, record):\n        self.records.append(record)\n\n\ntest_logger = Logger(\"test\", LogLevel.DEBUG)\ncaptured = InMemoryHandler()\ntest_logger.add_handler(captured)\n\ntest_logger.warn(\"disk usage above 80 percent\")\n\nassert len(captured.records) == 1\nassert captured.records[0].level == LogLevel.WARN",
+            "cpp": "class InMemoryHandler : public Handler {\npublic:\n    vector<LogRecord> records;\n\n    void handle(const LogRecord& record) override {\n        records.push_back(record);\n    }\n};\n\nLogger testLogger(\"test\", LogLevel::DEBUG);\nInMemoryHandler captured;\ntestLogger.addHandler(&captured);\n\ntestLogger.warn(\"disk usage above 80 percent\");\n\nassert(captured.records.size() == 1);\nassert(captured.records[0].getLevel() == LogLevel::WARN);"
+          }
+        },
+        {
+          "type": "list",
+          "content": "[\"attach an in memory handler instead of mocking Logger itself\",\"assert on level, source, and message separately rather than on a formatted string\",\"reset or recreate the handler between test cases to avoid leaking state\"]",
+          "items": [
+            "attach an in memory handler instead of mocking Logger itself",
+            "assert on level, source, and message separately rather than on a formatted string",
+            "reset or recreate the handler between test cases to avoid leaking state"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Why this matters for interviews",
+          "content": "Being able to explain how your design makes testing easier, without any extra mocking machinery, is often what separates a good answer from a great one in an LLD interview."
+        },
+        {
+          "type": "paragraph",
+          "content": "A well designed logger is one of those small systems that quietly pays for itself the first time production breaks and you actually need the trail it left behind."
+        },
+        {
+          "type": "paragraph",
+          "content": "Start simple, a level check and one or two handlers cover most real needs, and only add complexity once a concrete requirement demands it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Keep the interface between your logger and its handlers narrow, that narrow seam is exactly what makes swapping or adding an output painless later."
+        }
+      ]
+    }
+  ]
+}

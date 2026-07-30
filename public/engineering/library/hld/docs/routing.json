@@ -1,0 +1,555 @@
+{
+  "slug": "routing",
+  "title": "Routing",
+  "content": [
+    {
+      "id": "routing",
+      "title": "Routing",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Picture a large office building with a mail room at the ground floor. An envelope arrives addressed to \"Legal, 4th floor\". Nobody expects it to wander the halls until it happens to land on the right desk. Someone in the mail room reads the address, checks it against a directory, and sends it up to the right department. A backend server does exactly this for every request that lands on it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every request that reaches your server carries two pieces of information that matter before anything else: an <strong>HTTP method</strong> and a <strong>URL path</strong>, something like <code>GET /users/42</code> or <code>POST /orders</code>. Before your application logic can run, something has to look at those two things and decide which function should actually handle the request. That something is the <strong>router</strong>."
+        },
+        {
+          "type": "paragraph",
+          "content": "Routing sounds almost too simple once you say it out loud: match a path to a function. But the details are where real backend systems live or die. How do you match a path that contains a variable, like a user id? What happens when two different routes could both plausibly match the same request? How do you keep the lookup fast when a service has hundreds or thousands of routes? And how does routing cooperate with everything else sitting around it, like middleware and gateways? This topic works through all of that."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396031250-60045823.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396031250-60045823.png",
+          "alt": "A router matches an incoming method and path to the one function that should handle it, like mail routed to the right office"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What a Router Actually Does",
+          "text": "1. What a Router Actually Does"
+        },
+        {
+          "type": "paragraph",
+          "content": "At its core, a router is a lookup structure. You register a set of rules ahead of time, each rule pairing a method and a path pattern with a handler function, and at request time the router searches that structure for the rule that fits the incoming request. If it finds one, it hands control to the matching handler. If it does not, it falls through to a default, usually a 404 response."
+        },
+        {
+          "type": "paragraph",
+          "content": "The key you search on has two parts, not one. <code>GET /users/42</code> and <code>DELETE /users/42</code> share the exact same path but must reach completely different handlers, one that reads a user and one that deletes it. So a router is really matching on the pair of <strong>method and path</strong> together, not the path alone."
+        },
+        {
+          "type": "note",
+          "title": "The one line version",
+          "content": "A router is the part of your server that decides which function should run for a given request, based on its HTTP method and URL path."
+        },
+        {
+          "type": "paragraph",
+          "content": "In a toy application you could write this matching logic by hand with a chain of if statements checking the method and path one by one. That works for five routes. It falls apart at fifty, both because it is slow to scan linearly and because it is miserable to maintain. This is exactly why every serious backend framework, whether it is Express, Spring, Django, or Gin, ships with a router as a first class piece of the framework rather than something you build yourself."
+        },
+        {
+          "type": "code",
+          "content": "// A route is really just: (method, path pattern) -> handler\napp.get('/users/:id', getUserHandler);\napp.post('/users', createUserHandler);\napp.delete('/users/:id', deleteUserHandler);",
+          "code": {
+            "language": "javascript",
+            "content": "// A route is really just: (method, path pattern) -> handler\napp.get('/users/:id', getUserHandler);\napp.post('/users', createUserHandler);\napp.delete('/users/:id', deleteUserHandler);"
+          },
+          "codes": {
+            "javascript": "// A route is really just: (method, path pattern) -> handler\napp.get('/users/:id', getUserHandler);\napp.post('/users', createUserHandler);\napp.delete('/users/:id', deleteUserHandler);"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice that registering a route does not run the handler. It only records an entry in the router. The handler only executes later, when an actual request arrives and its method and path satisfy that entry. Keeping registration and execution separate is what lets a router be built once at startup and then reused, unchanged, for every request the server ever receives."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Matching a Request: Method and Path",
+          "text": "2. Matching a Request: Method and Path"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a request arrives, the router first reads the method off the request line, then splits the path into segments using the forward slash as a separator. <code>/users/42/orders</code> becomes three segments: <code>users</code>, <code>42</code>, and <code>orders</code>. Matching then proceeds segment by segment against each registered route pattern, rather than treating the whole path as one opaque string."
+        },
+        {
+          "type": "paragraph",
+          "content": "A segment can match in one of a few ways. It can be an exact literal, where the segment in the request must equal the segment in the pattern character for character. It can be a parameter placeholder, which matches any non empty segment and captures its value. Or, less commonly, it can be a wildcard that matches one or more remaining segments at once. We look at each of these in the next few sections."
+        },
+        {
+          "type": "list",
+          "content": "[\"Method match: the request method must equal the method the route was registered under.\",\"Segment count: in the simplest routers, the number of path segments must line up with the pattern.\",\"Segment by segment comparison: each segment is checked as literal, parameter, or wildcard.\",\"First full match wins: the router stops at the first rule that satisfies every segment.\"]",
+          "items": [
+            "Method match: the request method must equal the method the route was registered under.",
+            "Segment count: in the simplest routers, the number of path segments must line up with the pattern.",
+            "Segment by segment comparison: each segment is checked as literal, parameter, or wildcard.",
+            "First full match wins: the router stops at the first rule that satisfies every segment."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "This segment by segment view matters later, because it is exactly the structure that lets fast routers organize their rules into a tree instead of a flat list, which we get to in the section on trees and tries."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Segment Type\",\"How It Matches\",\"Example\"],\"rows\":[[\"Literal\",\"Must equal the request segment exactly\",\"users, health, new\"],[\"Parameter\",\"Matches any single non empty segment\",\":id, :orderId\"],[\"Wildcard\",\"Matches one or more remaining segments\",\"*, files/*\"]]}"
+        },
+        {
+          "type": "example-box",
+          "title": "Tracing a match",
+          "text": "GET /users/42/orders against the pattern /users/:id/orders. Segment one, \"users\", matches the literal \"users\". Segment two, \"42\", matches the parameter \":id\" and is captured. Segment three, \"orders\", matches the literal \"orders\". All three segments agree, so the route matches and id is bound to \"42\"."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Path Parameters vs Query Parameters",
+          "text": "3. Path Parameters vs Query Parameters"
+        },
+        {
+          "type": "paragraph",
+          "content": "Two different mechanisms let a route accept variable data, and it is easy to blur them together if you have not seen them named side by side. A <strong>path parameter</strong> is a placeholder segment inside the route pattern itself, written as <code>:id</code> or <code>{id}</code> depending on the framework. A <strong>query parameter</strong> is a key and value pair appended after a question mark at the end of the URL, and it is not part of the route pattern at all."
+        },
+        {
+          "type": "code",
+          "content": "GET /users/42?include=orders&sort=recent\n\n// Path parameter, captured by the route pattern /users/:id\nparams = { id: \"42\" }\n\n// Query parameters, always available regardless of route pattern\nquery = { include: \"orders\", sort: \"recent\" }",
+          "code": {
+            "language": "text",
+            "content": "GET /users/42?include=orders&sort=recent\n\n// Path parameter, captured by the route pattern /users/:id\nparams = { id: \"42\" }\n\n// Query parameters, always available regardless of route pattern\nquery = { include: \"orders\", sort: \"recent\" }"
+          },
+          "codes": {
+            "text": "GET /users/42?include=orders&sort=recent\n\n// Path parameter, captured by the route pattern /users/:id\nparams = { id: \"42\" }\n\n// Query parameters, always available regardless of route pattern\nquery = { include: \"orders\", sort: \"recent\" }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The semantic difference is worth internalising rather than memorising. A path parameter identifies <strong>which resource</strong> you mean, so it participates directly in matching the route, and a request without it simply does not match that route at all. A query parameter modifies or filters a request for a resource that has already been identified, and it is essentially always optional, so the router treats it as separate from the matching process entirely."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Path Parameter\",\"Query Parameter\"],\"rows\":[[\"Location\",\"Inside the URL path, e.g. /users/:id\",\"After the question mark, e.g. ?sort=recent\"],[\"Purpose\",\"Identifies a specific resource\",\"Filters, sorts, or configures the response\"],[\"Required\",\"Always, or the route does not match\",\"Usually optional\"],[\"Affects routing\",\"Yes, part of the match\",\"No, read after the route is already matched\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "A useful rule of thumb when designing an endpoint: if leaving the value out would make the URL point at a completely different thing, it belongs in the path. If leaving it out just changes how the same thing is presented, it belongs in the query string."
+        },
+        {
+          "type": "note",
+          "title": "A small parsing pitfall",
+          "content": "Frameworks disagree on how to parse a repeated query key like ?tags=a&tags=b. Some produce an array, some keep only the last value. If your API accepts repeated keys, check your framework behavior explicitly rather than assuming."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Static Routes vs Dynamic Routes",
+          "text": "4. Static Routes vs Dynamic Routes"
+        },
+        {
+          "type": "paragraph",
+          "content": "A <strong>static route</strong> is one whose entire path is fixed text, like <code>/health</code> or <code>/users/new</code>. Nothing about it varies from request to request, so checking whether a path matches it is a plain string comparison. A <strong>dynamic route</strong> contains at least one parameter segment, like <code>/users/:id</code>, so matching it means checking that the fixed segments line up and then simply accepting whatever value sits in the parameter position."
+        },
+        {
+          "type": "paragraph",
+          "content": "The practical difference is speed and specificity. A static route can, in principle, be matched with a direct lookup, similar to looking a word up in a dictionary. A dynamic route needs a small amount of pattern matching work for every request, since the router cannot know ahead of time what value will show up in the parameter segment. Neither is slow in absolute terms on modern hardware, but the distinction becomes important once you have to decide which of two candidate routes should win, which is exactly the next section."
+        },
+        {
+          "type": "note",
+          "title": "Specificity is the underlying idea",
+          "content": "A static route is maximally specific, it describes exactly one path. A dynamic route is deliberately less specific, trading precision for the ability to cover a whole family of paths with one rule."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Route Precedence and Conflicts",
+          "text": "5. Route Precedence and Conflicts"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is a scenario that trips up almost everyone the first time they meet it. Suppose you register both of these routes."
+        },
+        {
+          "type": "code",
+          "content": "app.get('/users/:id', getUserHandler);\napp.get('/users/new', showNewUserFormHandler);",
+          "code": {
+            "language": "javascript",
+            "content": "app.get('/users/:id', getUserHandler);\napp.get('/users/new', showNewUserFormHandler);"
+          },
+          "codes": {
+            "javascript": "app.get('/users/:id', getUserHandler);\napp.get('/users/new', showNewUserFormHandler);"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "A request for <code>GET /users/new</code> is genuinely ambiguous on paper. It matches <code>/users/:id</code> with <code>id</code> captured as the literal string \"new\", and it also matches <code>/users/new</code> exactly. Which handler actually runs depends entirely on the framework rules and, in many frameworks, on registration order. In Express, for example, routes are tried in the order they were registered, so with the code above the dynamic route wins and the form handler is never reached, because <code>/users/:id</code> was declared first and happily swallows the request."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396031252-702727481.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396031252-702727481.png",
+          "alt": "A request can genuinely match two different route patterns at once, and registration order decides which one wins"
+        },
+        {
+          "type": "note",
+          "title": "The fix is ordering, not cleverness",
+          "content": "Register the more specific, static route before the more general, dynamic one. Some frameworks automatically prefer static matches regardless of order, but you should never rely on that without checking your framework documentation."
+        },
+        {
+          "type": "paragraph",
+          "content": "This class of bug is called a <strong>route conflict</strong>, and it gets worse as an API grows, because two routes that looked unrelated when they were written months apart can quietly start overlapping. Good API design keeps an eye out for this by grouping related routes together in the codebase and by preferring precise, static segments over parameters whenever the set of valid values is actually small and known ahead of time, such as <code>new</code>, <code>me</code>, or <code>search</code>."
+        },
+        {
+          "type": "paragraph",
+          "content": "Well built routers resolve this deterministically rather than leaving it to chance. Some rank routes by specificity automatically, treating a literal segment as more specific than a parameter segment at the same position. Others simply document that registration order is the tiebreaker. Either way, the lesson for you as the person writing routes is the same: assume overlap is possible, and be deliberate about which route should win."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A router that resolves conflicts by accident today will resolve them differently, and break something, the day someone adds one more route."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Nested and Grouped Routes",
+          "text": "6. Nested and Grouped Routes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Real APIs quickly grow into dozens of related routes, and writing every one of them out flat becomes hard to read and easy to get wrong. Most frameworks let you group routes under a shared path prefix, often called a sub router or a router group, so that related endpoints live together in the code the same way they live together in the URL space."
+        },
+        {
+          "type": "code",
+          "content": "const usersRouter = express.Router();\nusersRouter.get('/', listUsers);\nusersRouter.get('/:id', getUser);\nusersRouter.post('/', createUser);\n\napp.use('/users', usersRouter);\n// Final routes: GET /users, GET /users/:id, POST /users/:id",
+          "code": {
+            "language": "javascript",
+            "content": "const usersRouter = express.Router();\nusersRouter.get('/', listUsers);\nusersRouter.get('/:id', getUser);\nusersRouter.post('/', createUser);\n\napp.use('/users', usersRouter);\n// Final routes: GET /users, GET /users/:id, POST /users/:id"
+          },
+          "codes": {
+            "javascript": "const usersRouter = express.Router();\nusersRouter.get('/', listUsers);\nusersRouter.get('/:id', getUser);\nusersRouter.post('/', createUser);\n\napp.use('/users', usersRouter);\n// Final routes: GET /users, GET /users/:id, POST /users/:id"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Grouping is not just cosmetic. A router group is also a natural place to attach middleware that should apply to everything under that prefix, such as an authentication check that guards every <code>/admin/*</code> route without repeating the check on each individual handler. It keeps the relationship between a set of routes and the rules that govern them visible in one place rather than scattered across the file."
+        },
+        {
+          "type": "paragraph",
+          "content": "Nesting can go further than one level. An e commerce API might nest orders under users, giving routes like <code>/users/:userId/orders/:orderId</code>, which reads naturally as \"the order belonging to this user\". The tradeoff is that deep nesting makes URLs longer and handlers need to read more than one path parameter, so most teams cap nesting at two or three levels before flattening back out."
+        },
+        {
+          "type": "paragraph",
+          "content": "The same grouping idea shows up under different names across ecosystems. A Java Spring service groups routes with a class level <code>@RequestMapping</code> and per method <code>@GetMapping</code> or <code>@PostMapping</code> annotations, which plays the same role as an Express router group even though the syntax looks nothing alike."
+        },
+        {
+          "type": "code",
+          "content": "@RestController\n@RequestMapping(\"/users\")\nclass UserController {\n\n  @GetMapping(\"/{id}\")\n  User getUser(@PathVariable String id) { ... }\n\n  @PostMapping\n  User createUser(@RequestBody UserDto dto) { ... }\n}",
+          "code": {
+            "language": "java",
+            "content": "@RestController\n@RequestMapping(\"/users\")\nclass UserController {\n\n  @GetMapping(\"/{id}\")\n  User getUser(@PathVariable String id) { ... }\n\n  @PostMapping\n  User createUser(@RequestBody UserDto dto) { ... }\n}"
+          },
+          "codes": {
+            "java": "@RestController\n@RequestMapping(\"/users\")\nclass UserController {\n\n  @GetMapping(\"/{id}\")\n  User getUser(@PathVariable String id) { ... }\n\n  @PostMapping\n  User createUser(@RequestBody UserDto dto) { ... }\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Router Trees and Tries: How Fast Frameworks Match Routes",
+          "text": "7. Router Trees and Tries: How Fast Frameworks Match Routes"
+        },
+        {
+          "type": "paragraph",
+          "content": "A router with ten routes can afford to check each one in turn until it finds a match, and nobody will notice the cost. A router with two thousand routes cannot, because checking every single pattern on every single request would make the router itself a bottleneck. Frameworks built for high throughput, such as Fastify, Gin, and many others, solve this by organizing routes into a <strong>tree</strong> rather than a flat list, often called a radix tree or a trie."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396031249-909891311.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396031249-909891311.png",
+          "alt": "Fast frameworks match routes with a prefix tree keyed on path segments instead of checking every route in turn"
+        },
+        {
+          "type": "paragraph",
+          "content": "The idea mirrors the segment by segment matching described earlier. Each node in the tree represents one path segment, and children of a node represent the possible next segments. Matching a request becomes walking down the tree one segment at a time, taking the literal branch if one exists for that exact segment, and falling back to a parameter branch otherwise. This turns the cost of matching into something proportional to the <strong>length of the path</strong>, not the <strong>total number of registered routes</strong>, which is a dramatic difference at scale."
+        },
+        {
+          "type": "note",
+          "title": "Why this matters in an interview",
+          "content": "If asked how a router stays fast with a huge number of endpoints, the answer is a prefix tree keyed on path segments, giving lookup time proportional to path depth rather than route count."
+        },
+        {
+          "type": "note",
+          "title": "Real world trie routers",
+          "content": "Fastify uses a router called find my way, Gin uses httprouter, and both are built on exactly this radix tree idea, which is a large part of why they benchmark so well under heavy route counts."
+        },
+        {
+          "type": "paragraph",
+          "content": "This structure also naturally resolves a good chunk of the precedence questions from the previous section, because literal children and parameter children live at distinct positions in the tree, and a well implemented trie router checks literal branches before falling back to a parameter branch at the same depth, without the two being confused for each other."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Wildcard and Catch All Routes",
+          "text": "8. Wildcard and Catch All Routes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sometimes you want a route that matches anything beyond a certain point, rather than one specific segment. This is a <strong>wildcard</strong> or <strong>catch all</strong> route, commonly written with a star, like <code>/files/*</code> to match any file path underneath <code>/files</code>, or a bare <code>*</code> to match absolutely anything that reaches the router."
+        },
+        {
+          "type": "code",
+          "content": "// Serve any file under /static, whatever the remaining path looks like\napp.get('/static/*', serveStaticFile);\n\n// Must be registered LAST: catches anything nothing else matched\napp.use('*', (req, res) => res.status(404).send('Not found'));",
+          "code": {
+            "language": "javascript",
+            "content": "// Serve any file under /static, whatever the remaining path looks like\napp.get('/static/*', serveStaticFile);\n\n// Must be registered LAST: catches anything nothing else matched\napp.use('*', (req, res) => res.status(404).send('Not found'));"
+          },
+          "codes": {
+            "javascript": "// Serve any file under /static, whatever the remaining path looks like\napp.get('/static/*', serveStaticFile);\n\n// Must be registered LAST: catches anything nothing else matched\napp.use('*', (req, res) => res.status(404).send('Not found'));"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Catch all routes are genuinely useful for a handful of purposes: serving static files where the remaining path is a filesystem path, building a reverse proxy that forwards whatever it receives to another service, and providing a clean custom 404 handler instead of letting the framework return a bare default. The one rule that matters is ordering. A catch all route has to be registered <strong>after</strong> every specific route, or it will intercept requests that a more specific handler should have received, since the router generally tries routes in the order they were added and a wildcard is happy to match almost anything."
+        },
+        {
+          "type": "list",
+          "content": "[\"Serving a folder of static assets without listing every file as its own route.\",\"Forwarding unmatched paths to a legacy system during a gradual migration.\",\"Returning a single, well formatted 404 response instead of a framework default.\"]",
+          "items": [
+            "Serving a folder of static assets without listing every file as its own route.",
+            "Forwarding unmatched paths to a legacy system during a gradual migration.",
+            "Returning a single, well formatted 404 response instead of a framework default."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. How Routing Interacts With Middleware",
+          "text": "9. How Routing Interacts With Middleware"
+        },
+        {
+          "type": "paragraph",
+          "content": "Routing rarely happens in isolation. Most frameworks let you attach <strong>middleware</strong>, functions that run before a route handler and can inspect, modify, or reject the request on the way through. A request typically passes through a chain of middleware, then reaches the router, and only then reaches the specific handler the router selected."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275759631-935118512.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275759631-935118512.png",
+          "alt": "A request passes through global and then route-scoped middleware before the matched handler actually runs"
+        },
+        {
+          "type": "paragraph",
+          "content": "Middleware can be global, applied to every request regardless of route, or scoped to a specific route or router group, as mentioned earlier in the section on nested routes. Authentication checks, request logging, body size limits, and CORS headers are classic examples of middleware that commonly run before routing decides exactly which business logic to invoke."
+        },
+        {
+          "type": "paragraph",
+          "content": "The relationship is worth stating plainly: routing decides <strong>which function runs</strong>, and middleware decides <strong>what happens on the way there and back</strong>. Both matter for a complete request path, but they are solving different problems, and conflating them tends to produce handlers that are doing too much."
+        },
+        {
+          "type": "note",
+          "title": "Order of registration is order of execution",
+          "content": "Global middleware registered before a router runs on every request the router later matches. Middleware attached to a specific group only runs for requests inside that group. Getting this ordering backwards is a common source of subtle authentication gaps."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Routing and API Gateways",
+          "text": "10. Routing and API Gateways"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a system built from many small services rather than one large one, routing happens at more than one layer. An <strong>API gateway</strong> sits in front of the whole system and makes a coarse routing decision first, deciding which downstream service should even receive a given request, based on things like the path prefix or the hostname. Each individual service then runs its own internal router to decide which specific handler inside that service should process the request."
+        },
+        {
+          "type": "paragraph",
+          "content": "It helps to think of this as two routers doing two different jobs at two different granularities. The gateway routes by <strong>service</strong>, sending <code>/orders/*</code> to the orders service and <code>/payments/*</code> to the payments service. The service level router then routes by <strong>handler</strong> inside that one service, exactly as described throughout this topic. The full mechanics of gateways, including load balancing and cross cutting concerns like rate limiting, are covered in the API Gateways topic, since that is a distinct concern from the handler level matching this topic focuses on."
+        },
+        {
+          "type": "paragraph",
+          "content": "A concrete example makes the split obvious. An online store might run separate services for catalogue, orders, and payments behind one gateway. A request to <code>/orders/981/status</code> is routed by the gateway to the orders service purely based on the <code>/orders</code> prefix, and only then does the orders service own router match <code>/:id/status</code> to the specific handler that reads order status."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Versioned Routing",
+          "text": "11. Versioned Routing"
+        },
+        {
+          "type": "paragraph",
+          "content": "APIs change over time, but clients built against an older version cannot always upgrade the moment you ship a new one. Versioned routing solves this by keeping multiple versions of a route reachable at once, most commonly using a path prefix like <code>/v1/orders</code> and <code>/v2/orders</code>, each backed by its own router and, often, its own set of handlers."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275762068-678380483.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275762068-678380483.png",
+          "alt": "Versioned routing keeps older clients working through a URL prefix, a header, or content negotiation"
+        },
+        {
+          "type": "list",
+          "content": "[\"URL prefix versioning: /v1/orders and /v2/orders, simple and visible in every request.\",\"Header based versioning: the client sends a version in a custom header, keeping URLs stable.\",\"Content negotiation: the version is encoded in the Accept header alongside the media type.\"]",
+          "items": [
+            "URL prefix versioning: /v1/orders and /v2/orders, simple and visible in every request.",
+            "Header based versioning: the client sends a version in a custom header, keeping URLs stable.",
+            "Content negotiation: the version is encoded in the Accept header alongside the media type."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "URL prefix versioning is by far the most common in practice, mostly because it is the easiest to test, cache, and reason about, since two different versions are simply two different URLs rather than the same URL behaving differently depending on a header a developer might forget to send. A deeper comparison of versioning strategies and their tradeoffs lives in the API Versioning Strategies topic, since versioning touches far more than just the routing layer, including request and response shapes and deprecation policy."
+        },
+        {
+          "type": "pros-cons",
+          "content": "{\"pros\":[\"URL prefix is visible, cacheable, and trivial to route on\",\"Header based keeps URLs stable across versions for clients that treat the URL as an identifier\"],\"cons\":[\"URL prefix means the same resource has multiple URLs over time\",\"Header based hides the version from logs and browser history, making debugging harder\"]}"
+        },
+        {
+          "type": "note",
+          "title": "Version at the router, not inside the handler",
+          "content": "Keeping v1 and v2 as genuinely separate routes, even if they share most of their internal logic through shared functions, is much easier to reason about than a single handler branching internally on a version flag."
+        },
+        {
+          "type": "example-box",
+          "title": "Deprecating a version",
+          "text": "A team ships /v2/orders with a changed response shape while keeping /v1/orders alive and routed to the old handler. Clients migrate on their own schedule, and the v1 router entry is only deleted once monitoring shows real traffic has dropped to zero."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Common Pitfalls",
+          "text": "12. Common Pitfalls"
+        },
+        {
+          "type": "paragraph",
+          "content": "A handful of routing mistakes show up again and again across real codebases, and most of them are easy to avoid once you know to look for them."
+        },
+        {
+          "type": "list",
+          "content": "[\"Trailing slashes: whether /users and /users/ are treated as the same route differs by framework and by configuration, and inconsistency here causes confusing 404s for clients.\",\"Case sensitivity: /Users and /users may or may not match the same route depending on framework settings, and URLs are conventionally treated as case sensitive by the HTTP specification itself.\",\"Ambiguous overlapping routes: as covered earlier, a general dynamic route can silently swallow requests meant for a more specific static route.\",\"Parameter name collisions: reusing a parameter name like :id across nested routes for different resources makes handler code harder to read correctly.\",\"Forgetting to scope a catch all: a wildcard registered too early intercepts routes that were defined after it.\"]",
+          "items": [
+            "Trailing slashes: whether /users and /users/ are treated as the same route differs by framework and by configuration, and inconsistency here causes confusing 404s for clients.",
+            "Case sensitivity: /Users and /users may or may not match the same route depending on framework settings, and URLs are conventionally treated as case sensitive by the HTTP specification itself.",
+            "Ambiguous overlapping routes: as covered earlier, a general dynamic route can silently swallow requests meant for a more specific static route.",
+            "Parameter name collisions: reusing a parameter name like :id across nested routes for different resources makes handler code harder to read correctly.",
+            "Forgetting to scope a catch all: a wildcard registered too early intercepts routes that were defined after it."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pitfall\",\"Typical Fix\"],\"rows\":[[\"Trailing slash mismatch\",\"Configure the router to normalize trailing slashes, or redirect one form to the other\"],[\"Unexpected case sensitivity\",\"Lowercase incoming paths consistently, or enable case insensitive matching\"],[\"Static route shadowed by dynamic\",\"Register static routes before dynamic ones covering the same prefix\"],[\"Catch all firing too early\",\"Register wildcard and 404 handlers last, after every specific route\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "A cheap habit that prevents most of these",
+          "content": "Write a small test that hits every route with a sample request and asserts which handler responded. It catches precedence and ordering mistakes immediately, long before a client discovers them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Where Routing Sits in the Request Lifecycle",
+          "text": "13. Where Routing Sits in the Request Lifecycle"
+        },
+        {
+          "type": "paragraph",
+          "content": "Routing is deliberately one of the very first things that happens to an incoming request, and it is worth being precise about what comes before it and what comes after. Low level concerns like TLS termination and, in a distributed system, the API gateway hop described earlier, happen before a request even reaches your service router. Once the router has matched a request to a handler, the request body still has to be turned from raw bytes into a usable object, and that data still has to be checked before any business logic touches it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275763722-734538793.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275763722-734538793.png",
+          "alt": "Routing sits early in the request lifecycle, right after TLS termination and before serialization and validation"
+        },
+        {
+          "type": "paragraph",
+          "content": "That next stage, turning a raw request body into an in memory object your code can work with, is <strong>Serialization and Deserialization</strong>, and the stage after that, checking the shape and rules of that object before trusting it, is <strong>Request Validation and Transformation</strong>. Routing only answers the question of which code should run. It deliberately does not look inside the request body at all, and that separation of concerns is exactly why these are three distinct topics rather than one blurred together."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "14. Common Questions",
+          "text": "14. Common Questions"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Does the order routes are registered in actually matter?</strong> In most frameworks, yes, especially for resolving overlaps between static and dynamic routes, so register more specific routes first and catch all routes last."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Is routing the same thing as an API gateway?</strong> No. A gateway makes a coarse decision about which service should receive a request, while a router inside a service decides which specific handler should run. They are related but operate at different levels."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Why do trie based routers matter for performance?</strong> Because they make lookup time depend on the length of the path being matched rather than on the total number of registered routes, which stays fast even with thousands of endpoints."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Should query parameters ever change which handler runs?</strong> Generally no. Query parameters are meant to modify a request to an already identified resource, and using them to select entirely different behavior makes an API harder to predict and to cache."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>What is the safest way to avoid route conflicts?</strong> Keep routes organized by resource using groups, prefer literal segments over parameters where the set of values is small and known, and write a test that exercises every route to confirm the intended handler responds."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Does routing ever look inside the request body?</strong> No. Routing decides on method and path alone. Anything about the body, including its shape and validity, is handled by the deserialization and validation stages that run after a handler has already been selected."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Is a trailing slash difference worth worrying about?</strong> Yes for public APIs. Pick one convention, configure the router to enforce it consistently, and either redirect or reject the other form rather than silently supporting both as separate routes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "15. Key Takeaways",
+          "text": "15. Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"A router matches an incoming HTTP method and path to a specific handler function.\",\"Path parameters identify which resource a request refers to; query parameters filter or configure the response for an already identified resource.\",\"Static routes are fixed text; dynamic routes contain parameter segments and need pattern matching.\",\"Overlapping routes, like /users/:id versus /users/new, are resolved by specificity or registration order, and this is a common source of bugs.\",\"Grouping and nesting routes keeps related endpoints and their shared middleware organized together.\",\"Fast frameworks match routes using a tree keyed on path segments, keeping lookup speed independent of the total route count.\",\"Wildcard and catch all routes must be registered last so they do not swallow more specific routes.\",\"Routing is the first stage of the request pipeline; deserialization and validation always come after it, never before.\"]",
+          "items": [
+            "A router matches an incoming HTTP method and path to a specific handler function.",
+            "Path parameters identify which resource a request refers to; query parameters filter or configure the response for an already identified resource.",
+            "Static routes are fixed text; dynamic routes contain parameter segments and need pattern matching.",
+            "Overlapping routes, like /users/:id versus /users/new, are resolved by specificity or registration order, and this is a common source of bugs.",
+            "Grouping and nesting routes keeps related endpoints and their shared middleware organized together.",
+            "Fast frameworks match routes using a tree keyed on path segments, keeping lookup speed independent of the total route count.",
+            "Wildcard and catch all routes must be registered last so they do not swallow more specific routes.",
+            "Routing is the first stage of the request pipeline; deserialization and validation always come after it, never before."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Once routing has selected a handler, the request is still just a bag of raw bytes and headers. Turning that into something your code can actually trust and use is the job of the next two stages in this series, starting with how a body gets deserialized back into an object."
+        }
+      ]
+    }
+  ]
+}

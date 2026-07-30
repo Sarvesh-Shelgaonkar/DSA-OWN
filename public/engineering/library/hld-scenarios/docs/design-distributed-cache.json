@@ -1,0 +1,890 @@
+{
+  "problemId": "p-design-distributed-cache",
+  "title": "Design Distributed Cache",
+  "slug": "design-distributed-cache",
+  "sections": [
+    {
+      "id": "content",
+      "title": "Content"
+    }
+  ],
+  "content": [
+    {
+      "id": "content",
+      "title": "Content",
+      "blocks": [
+        {
+          "type": "heading1",
+          "text": "1. Problem Statement",
+          "content": "1. Problem Statement",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "<div style=\"border:2px solid #5b5fc7;border-radius:14px;padding:18px 22px;background:rgba(91,95,199,0.07);margin:4px 0 8px 0;\"><p style=\"margin:0 0 12px 0;\">Every database, no matter how well tuned, has a ceiling on how many reads per second it can absorb before latency starts creeping up and eventually the whole thing falls over. A distributed cache exists to keep the vast majority of read traffic from ever reaching that database at all, by holding a fast, in-memory copy of the data people actually ask for most often. This is a fundamentally different kind of system than the durable, quorum-replicated key-value store discussed elsewhere in this course: <strong>a cache is allowed to lose data</strong>. If a cache node crashes and its contents vanish, that is a performance problem, a wave of temporary cache misses, not a correctness problem, because the database underneath it still holds the real, durable truth.</p><p style=\"margin:0 0 12px 0;\">That single framing, <strong>speed and availability over durability</strong>, shapes every decision in this design. We are going to build a distributed, horizontally-scalable caching layer that sits in front of a database, supports the classic get, set, and delete operations, evicts data intelligently when it runs low on memory, and stays fast and available even when individual cache nodes fail.</p><img src=\"https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229316548-67990659.png\" alt=\"A high-level architecture diagram showing an application checking a local L1 cache, falling back to a distributed cache cluster routed through a consistent hash ring, and falling back further to the source of truth database on a full miss\" style=\"width:100%;border-radius:8px;margin:4px 0 14px 0;\" /></div>",
+          "content": "<div style=\"border:2px solid #5b5fc7;border-radius:14px;padding:18px 22px;background:rgba(91,95,199,0.07);margin:4px 0 8px 0;\"><p style=\"margin:0 0 12px 0;\">Every database, no matter how well tuned, has a ceiling on how many reads per second it can absorb before latency starts creeping up and eventually the whole thing falls over. A distributed cache exists to keep the vast majority of read traffic from ever reaching that database at all, by holding a fast, in-memory copy of the data people actually ask for most often. This is a fundamentally different kind of system than the durable, quorum-replicated key-value store discussed elsewhere in this course: <strong>a cache is allowed to lose data</strong>. If a cache node crashes and its contents vanish, that is a performance problem, a wave of temporary cache misses, not a correctness problem, because the database underneath it still holds the real, durable truth.</p><p style=\"margin:0 0 12px 0;\">That single framing, <strong>speed and availability over durability</strong>, shapes every decision in this design. We are going to build a distributed, horizontally-scalable caching layer that sits in front of a database, supports the classic get, set, and delete operations, evicts data intelligently when it runs low on memory, and stays fast and available even when individual cache nodes fail.</p><img src=\"https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229316548-67990659.png\" alt=\"A high-level architecture diagram showing an application checking a local L1 cache, falling back to a distributed cache cluster routed through a consistent hash ring, and falling back further to the source of truth database on a full miss\" style=\"width:100%;border-radius:8px;margin:4px 0 14px 0;\" /></div>"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "2. Functional Requirements",
+          "content": "2. Functional Requirements",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Get:</strong> retrieve a cached value by key, returning a clear miss if it is not present.\",\"<strong>Set:</strong> store a value under a key, with an optional time-to-live.\",\"<strong>Delete:</strong> explicitly remove a key from the cache.\",\"<strong>Automatic eviction:</strong> when memory fills up, the cache automatically removes entries according to a configurable policy rather than simply rejecting new writes.\",\"<strong>Horizontal scaling:</strong> the cache cluster can grow by adding nodes without a full outage or a full cold restart.\"]",
+          "items": [
+            "<strong>Get:</strong> retrieve a cached value by key, returning a clear miss if it is not present.",
+            "<strong>Set:</strong> store a value under a key, with an optional time-to-live.",
+            "<strong>Delete:</strong> explicitly remove a key from the cache.",
+            "<strong>Automatic eviction:</strong> when memory fills up, the cache automatically removes entries according to a configurable policy rather than simply rejecting new writes.",
+            "<strong>Horizontal scaling:</strong> the cache cluster can grow by adding nodes without a full outage or a full cold restart."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "3. Non-Functional Requirements",
+          "content": "3. Non-Functional Requirements",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Extremely low latency:</strong> a cache hit should take a small fraction of the time a database query would.\",\"<strong>High availability:</strong> losing a single cache node should degrade performance, not correctness or overall system availability.\",\"<strong>High throughput per node:</strong> a single cache node should handle a very large number of operations per second, since this is precisely the layer meant to absorb load the database cannot.\",\"<strong>Predictable memory usage:</strong> the cache should never grow unbounded and should evict gracefully under memory pressure.\",\"<strong>Staleness tolerance:</strong> the system explicitly accepts that cached data can be briefly out of date in exchange for speed.\"]",
+          "items": [
+            "<strong>Extremely low latency:</strong> a cache hit should take a small fraction of the time a database query would.",
+            "<strong>High availability:</strong> losing a single cache node should degrade performance, not correctness or overall system availability.",
+            "<strong>High throughput per node:</strong> a single cache node should handle a very large number of operations per second, since this is precisely the layer meant to absorb load the database cannot.",
+            "<strong>Predictable memory usage:</strong> the cache should never grow unbounded and should evict gracefully under memory pressure.",
+            "<strong>Staleness tolerance:</strong> the system explicitly accepts that cached data can be briefly out of date in exchange for speed."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Requirement\",\"Target\"],\"rows\":[[\"Get/set latency (p99)\",\"Under 1ms\"],[\"Availability\",\"99.9%\"],[\"Throughput per node\",\"~100,000 ops/sec\"],[\"Cache hit ratio (healthy state)\",\"Above 90%\"]]}",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "4. Clarifying Questions",
+          "content": "4. Clarifying Questions",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"Should the cache support only whole-value get and set, or also more complex data structures like lists, sets, or hashes?\",\"Is a single caching pattern (cache-aside, write-through, or write-back) mandated, or should different callers be able to choose per key or per workload?\",\"How large can individual values be, and does the cache need to support very large payloads efficiently?\",\"Should cached data ever be persisted to disk for faster cold starts, or is a fully in-memory, rebuild-from-database model acceptable?\",\"Is multi-region caching in scope, or is this design limited to a single region?\"]",
+          "items": [
+            "Should the cache support only whole-value get and set, or also more complex data structures like lists, sets, or hashes?",
+            "Is a single caching pattern (cache-aside, write-through, or write-back) mandated, or should different callers be able to choose per key or per workload?",
+            "How large can individual values be, and does the cache need to support very large payloads efficiently?",
+            "Should cached data ever be persisted to disk for faster cold starts, or is a fully in-memory, rebuild-from-database model acceptable?",
+            "Is multi-region caching in scope, or is this design limited to a single region?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "5. Assumptions & Constraints",
+          "content": "5. Assumptions & Constraints",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"The cache supports simple key-value get, set, and delete, with values up to a few hundred kilobytes.\",\"Cache-aside is the default pattern used by application code, with write-through and write-back available as opt-in alternatives for callers with different durability-versus-latency needs.\",\"The cache is primarily in-memory with no strong persistence guarantee; a full cluster restart is expected to start cold and repopulate from the database over time.\",\"This design covers a single-region deployment, with multi-region caching noted as a future extension.\",\"Eviction defaults to LRU, with LFU and TTL-based expiration available as configurable alternatives.\"]",
+          "items": [
+            "The cache supports simple key-value get, set, and delete, with values up to a few hundred kilobytes.",
+            "Cache-aside is the default pattern used by application code, with write-through and write-back available as opt-in alternatives for callers with different durability-versus-latency needs.",
+            "The cache is primarily in-memory with no strong persistence guarantee; a full cluster restart is expected to start cold and repopulate from the database over time.",
+            "This design covers a single-region deployment, with multi-region caching noted as a future extension.",
+            "Eviction defaults to LRU, with LFU and TTL-based expiration available as configurable alternatives."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "6. Capacity Estimation",
+          "content": "6. Capacity Estimation",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "6.1 Traffic Estimates",
+          "content": "6.1 Traffic Estimates",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider an application with a total read volume of <strong>500,000 requests per second</strong> against its primary data store, and suppose the caching layer achieves a healthy <strong>92 percent hit ratio</strong>. That means 500,000 times 0.92, or <strong>about 460,000 requests per second are served entirely by the cache</strong>, and only 500,000 minus 460,000, roughly <strong>40,000 requests per second actually reach the database</strong>. That difference, an order of magnitude reduction in database load, is the entire economic and performance justification for building this layer in the first place.",
+          "content": "Consider an application with a total read volume of <strong>500,000 requests per second</strong> against its primary data store, and suppose the caching layer achieves a healthy <strong>92 percent hit ratio</strong>. That means 500,000 times 0.92, or <strong>about 460,000 requests per second are served entirely by the cache</strong>, and only 500,000 minus 460,000, roughly <strong>40,000 requests per second actually reach the database</strong>. That difference, an order of magnitude reduction in database load, is the entire economic and performance justification for building this layer in the first place."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229319056-213088130.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229319056-213088130.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229319056-213088130.png",
+          "alt": "A split showing roughly 92 percent of traffic being cache hits and 8 percent being cache misses"
+        },
+        {
+          "type": "heading2",
+          "text": "6.2 Memory and Cluster Sizing",
+          "content": "6.2 Memory and Cluster Sizing",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "If the working set, the data that actually gets accessed frequently enough to be worth caching, is around 200GB, and each cache node comfortably holds 20GB of usable memory after accounting for overhead, then 200GB divided by 20GB per node is <strong>10 nodes needed for a single copy of the working set</strong>, or 20 nodes if running with one replica per shard for fault tolerance.",
+          "content": "If the working set, the data that actually gets accessed frequently enough to be worth caching, is around 200GB, and each cache node comfortably holds 20GB of usable memory after accounting for overhead, then 200GB divided by 20GB per node is <strong>10 nodes needed for a single copy of the working set</strong>, or 20 nodes if running with one replica per shard for fault tolerance."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Metric\",\"Estimate\"],\"rows\":[[\"Total read requests/sec\",\"500,000\"],[\"Cache hit ratio\",\"92%\"],[\"Requests served by cache\",\"~460,000/sec\"],[\"Requests reaching database\",\"~40,000/sec\"],[\"Working set size\",\"~200GB\"],[\"Cluster size (with replication)\",\"~20 nodes\"]]}",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "7. High-Level Architecture",
+          "content": "7. High-Level Architecture",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A request for cached data first checks a small, local <strong>L1 cache</strong> living in the application process itself, then falls back to the larger, shared <strong>L2 distributed cache cluster</strong>, and only falls all the way through to the database on a genuine full miss. The cluster itself is not one giant cache, it is many smaller shard nodes, each owning a slice of the keyspace via consistent hashing.",
+          "content": "A request for cached data first checks a small, local <strong>L1 cache</strong> living in the application process itself, then falls back to the larger, shared <strong>L2 distributed cache cluster</strong>, and only falls all the way through to the database on a genuine full miss. The cluster itself is not one giant cache, it is many smaller shard nodes, each owning a slice of the keyspace via consistent hashing."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229321133-442922752.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229321133-442922752.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229321133-442922752.png",
+          "alt": "A comprehensive architecture diagram showing an application checking a local L1 cache, falling back to a distributed cache cluster routed through a consistent hash ring across three shards, and falling back further to the source of truth database"
+        },
+        {
+          "type": "paragraph",
+          "text": "Breaking the client-side and cluster-side responsibilities apart shows how a get or set actually travels from application code to the correct shard, with replication and invalidation happening alongside it.",
+          "content": "Breaking the client-side and cluster-side responsibilities apart shows how a get or set actually travels from application code to the correct shard, with replication and invalidation happening alongside it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229323519-250906233.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229323519-250906233.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229323519-250906233.png",
+          "alt": "A microservices-style zoom showing an application using a cache client library that routes by hash to a shard router, which fans out to three shard nodes, with asynchronous replication to a standby and pub sub invalidation broadcasting to every shard"
+        },
+        {
+          "type": "paragraph",
+          "text": "Zooming into the cluster itself, it is worth being explicit that this is a real, multi-node cluster with its own replication, not a single cache box.",
+          "content": "Zooming into the cluster itself, it is worth being explicit that this is a real, multi-node cluster with its own replication, not a single cache box."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229325429-358897497.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229325429-358897497.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229325429-358897497.png",
+          "alt": "A zoomed-in cache cluster topology diagram showing three shards placed around a consistent hash ring, each backed by its own replica"
+        },
+        {
+          "type": "paragraph",
+          "text": "The two-tier local-plus-shared caching structure deserves its own close look, since it is specifically what defends against the hot-key problem discussed later in this doc.",
+          "content": "The two-tier local-plus-shared caching structure deserves its own close look, since it is specifically what defends against the hot-key problem discussed later in this doc."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013930-102369658.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013930-102369658.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013930-102369658.png",
+          "alt": "A zoomed-in tier diagram showing a small local L1 cache in the application process, falling back to the larger shared L2 distributed cache cluster, falling back further to the source of truth"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "8. Core Components",
+          "content": "8. Core Components",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "8.1 Cache Client Library",
+          "content": "8.1 Cache Client Library",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Embedded in every application server, responsible for hashing keys to determine which shard owns them, maintaining connections to the cluster, and implementing the local L1 cache layer.",
+          "content": "Embedded in every application server, responsible for hashing keys to determine which shard owns them, maintaining connections to the cluster, and implementing the local L1 cache layer."
+        },
+        {
+          "type": "heading2",
+          "text": "8.2 Cache Shard Node",
+          "content": "8.2 Cache Shard Node",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Holds an in-memory hashmap of keys to values for its portion of the keyspace, plus the bookkeeping structure (discussed in section 10) needed to implement its configured eviction policy efficiently.",
+          "content": "Holds an in-memory hashmap of keys to values for its portion of the keyspace, plus the bookkeeping structure (discussed in section 10) needed to implement its configured eviction policy efficiently."
+        },
+        {
+          "type": "heading2",
+          "text": "8.3 Shard Router",
+          "content": "8.3 Shard Router",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Uses consistent hashing to map a key to the shard node responsible for it, the same mechanism used by the distributed key-value store elsewhere in this course, applied here for load distribution rather than durability.",
+          "content": "Uses consistent hashing to map a key to the shard node responsible for it, the same mechanism used by the distributed key-value store elsewhere in this course, applied here for load distribution rather than durability."
+        },
+        {
+          "type": "heading2",
+          "text": "8.4 Pub-Sub Invalidator",
+          "content": "8.4 Pub-Sub Invalidator",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Broadcasts explicit invalidation messages to every cache layer (including local L1 caches across many application instances) when a piece of cached data needs to be proactively removed rather than waiting for its TTL to expire naturally.",
+          "content": "Broadcasts explicit invalidation messages to every cache layer (including local L1 caches across many application instances) when a piece of cached data needs to be proactively removed rather than waiting for its TTL to expire naturally."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "9. API Design",
+          "content": "9. API Design",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"get(key) returns the cached value, or a clear miss indicator if not present.\",\"set(key, value, ttlSeconds) stores a value, with an optional expiration.\",\"delete(key) explicitly removes a key.\",\"invalidate(key) broadcasts an explicit invalidation to every layer of the cache, used by the write-through and pub-sub invalidation patterns.\"]",
+          "items": [
+            "get(key) returns the cached value, or a clear miss indicator if not present.",
+            "set(key, value, ttlSeconds) stores a value, with an optional expiration.",
+            "delete(key) explicitly removes a key.",
+            "invalidate(key) broadcasts an explicit invalidation to every layer of the cache, used by the write-through and pub-sub invalidation patterns."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Why the API returns an explicit miss rather than null",
+          "text": "A stored value that happens to be null or empty needs to be distinguishable from \"this key was never cached at all,\" otherwise application code cannot correctly tell the difference between \"the cache says this value is genuinely absent\" and \"the cache simply does not have an opinion, go check the database.\" An explicit miss indicator, separate from the value itself, avoids that entire class of subtle bug.",
+          "content": "A stored value that happens to be null or empty needs to be distinguishable from \"this key was never cached at all,\" otherwise application code cannot correctly tell the difference between \"the cache says this value is genuinely absent\" and \"the cache simply does not have an opinion, go check the database.\" An explicit miss indicator, separate from the value itself, avoids that entire class of subtle bug.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "10. Database Design",
+          "content": "10. Database Design",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Internally, each cache node organizes its data as a hashmap for O(1) key lookup, paired with a doubly linked list ordered by recency of access, the classic structure behind an efficient LRU implementation.",
+          "content": "Internally, each cache node organizes its data as a hashmap for O(1) key lookup, paired with a doubly linked list ordered by recency of access, the classic structure behind an efficient LRU implementation."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229329179-391498660.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229329179-391498660.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229329179-391498660.png",
+          "alt": "A diagram showing a get operation doing a hashmap lookup and moving the accessed node to the front of the list, and a put operation evicting the tail of the list, the least recently used entry, when the cache is at capacity"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229331278-338564607.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229331278-338564607.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229331278-338564607.png",
+          "alt": "An entity relationship style diagram showing a cache cluster divided into shards, each shard backed by a replica and hosted on a node"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "11. Data Modeling Decisions",
+          "content": "11. Data Modeling Decisions",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "As with the distributed key-value store, <strong>consistent hashing</strong> governs how keys map to shard nodes, so that adding or removing a cache node only requires rebalancing a small fraction of the keyspace rather than a full reshuffle. The important difference in framing here: losing a shard in this system means a temporary wave of cache misses for the keys it owned, not lost data, since the database remains the durable source of truth underneath. That relaxed risk posture is exactly why a cache cluster can run leaner, with less replication overhead, than a database cluster serving the same key space would need.",
+          "content": "As with the distributed key-value store, <strong>consistent hashing</strong> governs how keys map to shard nodes, so that adding or removing a cache node only requires rebalancing a small fraction of the keyspace rather than a full reshuffle. The important difference in framing here: losing a shard in this system means a temporary wave of cache misses for the keys it owned, not lost data, since the database remains the durable source of truth underneath. That relaxed risk posture is exactly why a cache cluster can run leaner, with less replication overhead, than a database cluster serving the same key space would need."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "12. High-Level Data Flow",
+          "content": "12. High-Level Data Flow",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "12.1 Write Flow (Cache-Aside)",
+          "content": "12.1 Write Flow (Cache-Aside)",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229333149-818342673.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229333149-818342673.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229333149-818342673.png",
+          "alt": "A sequence diagram showing an application setting a key in the cache and the value later being flushed to the database asynchronously"
+        },
+        {
+          "type": "heading2",
+          "text": "12.2 Read Flow (Cache-Aside)",
+          "content": "12.2 Read Flow (Cache-Aside)",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229334808-427780022.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229334808-427780022.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229334808-427780022.png",
+          "alt": "A sequence diagram showing an application checking the cache, missing, reading from the database, and populating the cache before returning"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "13. Detailed Workflows",
+          "content": "13. Detailed Workflows",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229336551-985605270.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229336551-985605270.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229336551-985605270.png",
+          "alt": "A worked example sequence diagram: Alice requests a profile page causing a cache miss and database read that populates the cache, and Bob requesting the same profile moments later gets a fast cache hit"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Alice</strong> opens a profile page that has not been viewed by anyone recently. The application checks the cache, gets a miss, reads the profile from the database, populates the cache with that value, and returns it to Alice, the whole round trip dominated by that one database read. Thirty seconds later, <strong>Bob</strong> opens the exact same profile. This time the cache check is a hit, and the response comes back an order of magnitude faster, with the database never touched at all for Bob's request. That difference, repeated across millions of requests a day for popular content, is the entire value proposition of this layer made concrete.",
+          "content": "<strong>Alice</strong> opens a profile page that has not been viewed by anyone recently. The application checks the cache, gets a miss, reads the profile from the database, populates the cache with that value, and returns it to Alice, the whole round trip dominated by that one database read. Thirty seconds later, <strong>Bob</strong> opens the exact same profile. This time the cache check is a hit, and the response comes back an order of magnitude faster, with the database never touched at all for Bob's request. That difference, repeated across millions of requests a day for popular content, is the entire value proposition of this layer made concrete."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "14. Caching Strategy",
+          "content": "14. Caching Strategy",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "This section is really the heart of the whole design, since caching strategy IS the product here. Three patterns cover the overwhelming majority of real use cases.",
+          "content": "This section is really the heart of the whole design, since caching strategy IS the product here. Three patterns cover the overwhelming majority of real use cases."
+        },
+        {
+          "type": "heading2",
+          "text": "14.1 Cache-Aside",
+          "content": "14.1 Cache-Aside",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013272-27850905.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013272-27850905.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013272-27850905.png",
+          "alt": "A cache-aside pattern diagram showing a read checking the cache, falling back to the database on a miss, and populating the cache afterward"
+        },
+        {
+          "type": "paragraph",
+          "text": "The application code explicitly checks the cache first and manages populating it on a miss. This is the most common pattern because it is simple and resilient: if the cache is entirely down, reads still work, just slower, falling through to the database every time.",
+          "content": "The application code explicitly checks the cache first and manages populating it on a miss. This is the most common pattern because it is simple and resilient: if the cache is entirely down, reads still work, just slower, falling through to the database every time."
+        },
+        {
+          "type": "heading2",
+          "text": "14.2 Write-Through",
+          "content": "14.2 Write-Through",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229339703-642295617.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229339703-642295617.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229339703-642295617.png",
+          "alt": "A write through pattern diagram showing a write going to the cache and then synchronously to the database before acknowledging success"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every write updates the cache and the database together, synchronously, before returning success. This guarantees the cache is never stale relative to what was just written, at the cost of every write paying the full latency of the database write, not just the cache write.",
+          "content": "Every write updates the cache and the database together, synchronously, before returning success. This guarantees the cache is never stale relative to what was just written, at the cost of every write paying the full latency of the database write, not just the cache write."
+        },
+        {
+          "type": "heading2",
+          "text": "14.3 Write-Back (Write-Behind)",
+          "content": "14.3 Write-Back (Write-Behind)",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229341313-964708468.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229341313-964708468.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229341313-964708468.png",
+          "alt": "A write back pattern diagram showing a write hitting the cache immediately and being acknowledged right away, with the database write happening asynchronously later"
+        },
+        {
+          "type": "paragraph",
+          "text": "A write lands in the cache and is acknowledged to the caller immediately, with the database update happening asynchronously afterward. This is the fastest write path by far, but it carries real durability risk: if the cache node crashes before that asynchronous flush happens, the write is lost entirely, which makes this pattern appropriate only for data where that risk is genuinely acceptable.",
+          "content": "A write lands in the cache and is acknowledged to the caller immediately, with the database update happening asynchronously afterward. This is the fastest write path by far, but it carries real durability risk: if the cache node crashes before that asynchronous flush happens, the write is lost entirely, which makes this pattern appropriate only for data where that risk is genuinely acceptable."
+        },
+        {
+          "type": "heading2",
+          "text": "14.4 Eviction Policies",
+          "content": "14.4 Eviction Policies",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>LRU (least recently used)</strong> evicts whatever has not been accessed in the longest time, implemented efficiently with the hashmap-plus-linked-list structure from section 10. <strong>LFU (least frequently used)</strong> evicts based on access count rather than recency, which better protects consistently popular items from a temporary burst of unrelated traffic, at the cost of needing to track and maintain frequency counts, more bookkeeping than LRU requires. <strong>TTL-based expiration</strong> removes entries after a fixed time regardless of access pattern, simplest of all, and often layered on top of LRU or LFU rather than used entirely alone.",
+          "content": "<strong>LRU (least recently used)</strong> evicts whatever has not been accessed in the longest time, implemented efficiently with the hashmap-plus-linked-list structure from section 10. <strong>LFU (least frequently used)</strong> evicts based on access count rather than recency, which better protects consistently popular items from a temporary burst of unrelated traffic, at the cost of needing to track and maintain frequency counts, more bookkeeping than LRU requires. <strong>TTL-based expiration</strong> removes entries after a fixed time regardless of access pattern, simplest of all, and often layered on top of LRU or LFU rather than used entirely alone."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "15. Message Queues & Async Processing",
+          "content": "15. Message Queues & Async Processing",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Write-back's asynchronous flush to the database, and pub-sub invalidation broadcasts across cache layers, are the two genuinely async workloads in this system. Both benefit from a durable queue in front of them so a temporary downstream slowdown (a busy database, a slow cache node) does not directly translate into dropped writes or missed invalidations.",
+          "content": "Write-back's asynchronous flush to the database, and pub-sub invalidation broadcasts across cache layers, are the two genuinely async workloads in this system. Both benefit from a durable queue in front of them so a temporary downstream slowdown (a busy database, a slow cache node) does not directly translate into dropped writes or missed invalidations."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "16. Load Balancing Strategy",
+          "content": "16. Load Balancing Strategy",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229342875-18793385.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229342875-18793385.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229342875-18793385.png",
+          "alt": "Application servers routed by a shard router to the correct cache shard"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because every key has exactly one correct shard owner via consistent hashing, \"load balancing\" here is really about even key distribution across shards (helped by virtual nodes, the same technique used in the distributed key-value store design) rather than arbitrary request routing.",
+          "content": "Because every key has exactly one correct shard owner via consistent hashing, \"load balancing\" here is really about even key distribution across shards (helped by virtual nodes, the same technique used in the distributed key-value store design) rather than arbitrary request routing."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "17. Scaling Strategy",
+          "content": "17. Scaling Strategy",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013932-702132908.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013932-702132908.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013932-702132908.png",
+          "alt": "A flowchart showing a shard being added to the ring once memory utilization crosses a target threshold"
+        },
+        {
+          "type": "paragraph",
+          "text": "Adding a shard to the ring redistributes a small, bounded slice of keys to the new node, the same consistent-hashing benefit seen elsewhere. Unlike a durable database, a newly added cache shard can start completely empty and simply warm up naturally as requests for its newly-owned keys come in and miss, populate, and get cached going forward.",
+          "content": "Adding a shard to the ring redistributes a small, bounded slice of keys to the new node, the same consistent-hashing benefit seen elsewhere. Unlike a durable database, a newly added cache shard can start completely empty and simply warm up naturally as requests for its newly-owned keys come in and miss, populate, and get cached going forward."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "18. Database Scaling",
+          "content": "18. Database Scaling",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "This section is worth addressing directly by contrast: the \"database\" being scaled here is the cache cluster itself, and it scales purely by adding shards, since there is no durability-driven replication factor to reason carefully about the way there would be for the actual source-of-truth database sitting behind this cache. Light replication (one replica per shard) exists purely to reduce how often a single node failure causes a burst of cache misses, not to guarantee data survival.",
+          "content": "This section is worth addressing directly by contrast: the \"database\" being scaled here is the cache cluster itself, and it scales purely by adding shards, since there is no durability-driven replication factor to reason carefully about the way there would be for the actual source-of-truth database sitting behind this cache. Light replication (one replica per shard) exists purely to reduce how often a single node failure causes a burst of cache misses, not to guarantee data survival."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "19. Consistency & Availability",
+          "content": "19. Consistency & Availability",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229346058-148261425.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229346058-148261425.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229346058-148261425.png",
+          "alt": "A diagram showing the choice of availability over strict consistency, justified by the fact that losing a cache node means slower reads, not wrong data, since the database remains the source of truth"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is close to the easiest CAP-theorem call in the entire course. A cache almost always chooses <strong>availability</strong>, because the worst-case failure mode, a stale or missing cache entry, degrades gracefully into \"slightly slower, but still correct\" rather than \"wrong.\" The database underneath remains the actual source of truth, and the cache is free to be wrong, briefly, exactly because something else is always there to fall back on.",
+          "content": "This is close to the easiest CAP-theorem call in the entire course. A cache almost always chooses <strong>availability</strong>, because the worst-case failure mode, a stale or missing cache entry, degrades gracefully into \"slightly slower, but still correct\" rather than \"wrong.\" The database underneath remains the actual source of truth, and the cache is free to be wrong, briefly, exactly because something else is always there to fall back on."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "20. Reliability & Fault Tolerance",
+          "content": "20. Reliability & Fault Tolerance",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229347779-24313686.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229347779-24313686.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229347779-24313686.png",
+          "alt": "A cache shard with a read replica, and the database still holding the source of truth if the shard fails entirely"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a shard fails, its keys simply become misses until the shard (or its replica) recovers, and every one of those misses falls through cleanly to the database, exactly as designed. This is a fundamentally simpler failure story than the durable key-value store's hinted-handoff-and-anti-entropy-repair machinery, precisely because correctness was never on the line here to begin with.",
+          "content": "When a shard fails, its keys simply become misses until the shard (or its replica) recovers, and every one of those misses falls through cleanly to the database, exactly as designed. This is a fundamentally simpler failure story than the durable key-value store's hinted-handoff-and-anti-entropy-repair machinery, precisely because correctness was never on the line here to begin with."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "21. Security Considerations",
+          "content": "21. Security Considerations",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Cache traffic should run over an encrypted internal network segment, and access should be restricted to the application servers that legitimately need it, since a cache frequently holds copies of sensitive data (user sessions, personal profile fields) even though it is not the durable system of record for that data. Standard authentication between application servers and the cache cluster prevents an unauthorized process from reading or poisoning cached values.",
+          "content": "Cache traffic should run over an encrypted internal network segment, and access should be restricted to the application servers that legitimately need it, since a cache frequently holds copies of sensitive data (user sessions, personal profile fields) even though it is not the durable system of record for that data. Standard authentication between application servers and the cache cluster prevents an unauthorized process from reading or poisoning cached values."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "22. Monitoring & Observability",
+          "content": "22. Monitoring & Observability",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Cache hit ratio is the single most important metric in this entire system</strong>, full stop. A sustained drop in hit ratio is often the very first visible symptom of a much bigger problem elsewhere, a cache node that silently died, a deploy that changed key naming and broke lookups, a traffic pattern shift toward less cacheable content. Per-shard latency, eviction rate, and memory utilization round out the picture, and a sudden spike in eviction rate specifically flags that the working set has outgrown current cluster capacity.",
+          "content": "<strong>Cache hit ratio is the single most important metric in this entire system</strong>, full stop. A sustained drop in hit ratio is often the very first visible symptom of a much bigger problem elsewhere, a cache node that silently died, a deploy that changed key naming and broke lookups, a traffic pattern shift toward less cacheable content. Per-shard latency, eviction rate, and memory utilization round out the picture, and a sudden spike in eviction rate specifically flags that the working set has outgrown current cluster capacity."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "23. Bottlenecks & Single Points of Failure",
+          "content": "23. Bottlenecks & Single Points of Failure",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229349503-802723280.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229349503-802723280.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229349503-802723280.png",
+          "alt": "A map of two bottlenecks: a single extremely hot key overwhelming its shard, fixed by request coalescing plus a local L1 cache, and a cold cache after a full cluster restart, fixed by gradual warm up with the database absorbing temporary extra load"
+        },
+        {
+          "type": "paragraph",
+          "text": "The defining bottleneck in any distributed cache is the <strong>hot key problem</strong>: consistent hashing guarantees even distribution of the keyspace, but says nothing about even distribution of access frequency. A single viral item can generate enough traffic to overwhelm the one shard that happens to own it, even while every other shard sits comfortably idle.",
+          "content": "The defining bottleneck in any distributed cache is the <strong>hot key problem</strong>: consistent hashing guarantees even distribution of the keyspace, but says nothing about even distribution of access frequency. A single viral item can generate enough traffic to overwhelm the one shard that happens to own it, even while every other shard sits comfortably idle."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229351057-335617139.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229351057-335617139.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229351057-335617139.png",
+          "alt": "A diagram showing thousands of requests for one viral key being absorbed by request coalescing (one shared fetch for all concurrent waiters) and a local L1 cache reducing repeat traffic to the shared cluster"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Request coalescing</strong> ensures that if a thousand requests for the same missing key arrive within milliseconds of each other, only one of them actually goes and fetches the value, with the other 999 simply waiting on that first fetch's result, rather than triggering a thousand redundant database reads. The <strong>local L1 cache</strong> layer from section 7 compounds this protection further, since it absorbs a meaningful fraction of repeat reads for a hot key before they ever reach the shared cluster at all.",
+          "content": "<strong>Request coalescing</strong> ensures that if a thousand requests for the same missing key arrive within milliseconds of each other, only one of them actually goes and fetches the value, with the other 999 simply waiting on that first fetch's result, rather than triggering a thousand redundant database reads. The <strong>local L1 cache</strong> layer from section 7 compounds this protection further, since it absorbs a meaningful fraction of repeat reads for a hot key before they ever reach the shared cluster at all."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "24. Trade-Offs",
+          "content": "24. Trade-Offs",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The three caching patterns from section 14 form a genuine spectrum: <strong>cache-aside</strong> is the simplest and most resilient to a fully down cache, at the cost of every miss paying full database latency; <strong>write-through</strong> keeps the cache always fresh at the cost of every write being as slow as the database; <strong>write-back</strong> is the fastest for writes by far, at the cost of a real durability risk if the cache fails before flushing. Most real systems use different patterns for different data, cache-aside for read-heavy, rarely-written data, write-back only for data where losing the last few seconds of writes on a crash is genuinely tolerable.",
+          "content": "The three caching patterns from section 14 form a genuine spectrum: <strong>cache-aside</strong> is the simplest and most resilient to a fully down cache, at the cost of every miss paying full database latency; <strong>write-through</strong> keeps the cache always fresh at the cost of every write being as slow as the database; <strong>write-back</strong> is the fastest for writes by far, at the cost of a real durability risk if the cache fails before flushing. Most real systems use different patterns for different data, cache-aside for read-heavy, rarely-written data, write-back only for data where losing the last few seconds of writes on a crash is genuinely tolerable."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229352574-375732895.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229352574-375732895.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229352574-375732895.png",
+          "alt": "A comparison of TTL expiration, the simplest invalidation approach, explicit invalidation on write, and pub sub broadcast invalidation across multiple cache layers"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>TTL expiration</strong> requires no coordination at all and is trivially simple, at the cost of data staying stale for up to the full TTL window after a real update happens. <strong>Explicit invalidation on write</strong> keeps data fresher, at the cost of the write path now needing to know about and reach every cache layer holding a copy. <strong>Pub-sub invalidation</strong> broadcasts that same invalidation out to potentially many cache layers, including local L1 caches spread across an entire fleet of application instances, solving the multi-layer freshness problem at the cost of running an additional messaging system.",
+          "content": "<strong>TTL expiration</strong> requires no coordination at all and is trivially simple, at the cost of data staying stale for up to the full TTL window after a real update happens. <strong>Explicit invalidation on write</strong> keeps data fresher, at the cost of the write path now needing to know about and reach every cache layer holding a copy. <strong>Pub-sub invalidation</strong> broadcasts that same invalidation out to potentially many cache layers, including local L1 caches spread across an entire fleet of application instances, solving the multi-layer freshness problem at the cost of running an additional messaging system."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "25. Cost Optimization",
+          "content": "25. Cost Optimization",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229354189-500291313.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229354189-500291313.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229354189-500291313.png",
+          "alt": "A cost breakdown dominated by memory, which is expensive per gigabyte, with compute being a comparatively minor cost"
+        },
+        {
+          "type": "paragraph",
+          "text": "Memory is expensive, meaningfully more so per gigabyte than disk-based database storage, so right-sizing the cluster against the actual working set (not simply over-provisioning generously) is the primary cost lever here. Choosing a shorter default TTL for less-critical data, and being deliberate about which data actually earns a place in the cache at all rather than caching indiscriminately, both directly reduce the memory footprint needed.",
+          "content": "Memory is expensive, meaningfully more so per gigabyte than disk-based database storage, so right-sizing the cluster against the actual working set (not simply over-provisioning generously) is the primary cost lever here. Choosing a shorter default TTL for less-critical data, and being deliberate about which data actually earns a place in the cache at all rather than caching indiscriminately, both directly reduce the memory footprint needed."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "26. Edge Cases",
+          "content": "26. Edge Cases",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"A full cluster restart leaves every shard cold simultaneously, causing a temporary spike in database load as the cache rewarms from scratch, worth planning capacity headroom for.\",\"A write-back write is lost when a cache node crashes before its asynchronous flush completes, which the design accepts as a known, bounded risk for that specific pattern.\",\"A hot key so extreme that even request coalescing and a local L1 cache cannot fully absorb it, at which point the underlying data may genuinely need to be restructured (denormalized, precomputed) rather than solved purely at the caching layer.\",\"A shard rebalance after adding a node causes a brief wave of misses for the specific keys that moved, which is expected and self-resolving as they repopulate.\"]",
+          "items": [
+            "A full cluster restart leaves every shard cold simultaneously, causing a temporary spike in database load as the cache rewarms from scratch, worth planning capacity headroom for.",
+            "A write-back write is lost when a cache node crashes before its asynchronous flush completes, which the design accepts as a known, bounded risk for that specific pattern.",
+            "A hot key so extreme that even request coalescing and a local L1 cache cannot fully absorb it, at which point the underlying data may genuinely need to be restructured (denormalized, precomputed) rather than solved purely at the caching layer.",
+            "A shard rebalance after adding a node causes a brief wave of misses for the specific keys that moved, which is expected and self-resolving as they repopulate."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "27. Production Considerations",
+          "content": "27. Production Considerations",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229355847-627856046.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229355847-627856046.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229355847-627856046.png",
+          "alt": "A canary deployment flowchart rolling new cache node software to one shard first before a full rolling upgrade"
+        },
+        {
+          "type": "paragraph",
+          "text": "Upgrading cache node software rolls out one shard at a time, watched for healthy hit-ratio and latency metrics before the next shard follows, since taking down too many shards simultaneously would cause a broader-than-intended wave of misses hitting the database all at once.",
+          "content": "Upgrading cache node software rolls out one shard at a time, watched for healthy hit-ratio and latency metrics before the next shard follows, since taking down too many shards simultaneously would cause a broader-than-intended wave of misses hitting the database all at once."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "28. Future Improvements",
+          "content": "28. Future Improvements",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"Multi-region cache replication for lower latency to geographically distant application servers.\",\"Adaptive eviction policies that automatically switch between LRU and LFU based on observed access patterns per key namespace.\",\"Optional lightweight persistence (periodic snapshotting) to speed up cold starts after a full cluster restart.\",\"Smarter, automatic hot-key detection that proactively promotes a key into local L1 caches across the fleet before it becomes a bottleneck, rather than reacting after the fact.\"]",
+          "items": [
+            "Multi-region cache replication for lower latency to geographically distant application servers.",
+            "Adaptive eviction policies that automatically switch between LRU and LFU based on observed access patterns per key namespace.",
+            "Optional lightweight persistence (periodic snapshotting) to speed up cold starts after a full cluster restart.",
+            "Smarter, automatic hot-key detection that proactively promotes a key into local L1 caches across the fleet before it becomes a bottleneck, rather than reacting after the fact."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "29. Follow-Up Questions",
+          "content": "29. Follow-Up Questions",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"How would you detect a hot key automatically, before it becomes a visible bottleneck, rather than relying on manual investigation after the fact?\",\"What changes if the cache needed to support more complex data structures, like sorted sets or lists, rather than simple key-value pairs?\",\"How would you design cross-region cache invalidation if this cluster needed to span multiple geographic regions?\",\"How would you decide, for a specific piece of data, which of the three caching patterns is the right fit?\"]",
+          "items": [
+            "How would you detect a hot key automatically, before it becomes a visible bottleneck, rather than relying on manual investigation after the fact?",
+            "What changes if the cache needed to support more complex data structures, like sorted sets or lists, rather than simple key-value pairs?",
+            "How would you design cross-region cache invalidation if this cluster needed to span multiple geographic regions?",
+            "How would you decide, for a specific piece of data, which of the three caching patterns is the right fit?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "30. Final Architecture Diagram",
+          "content": "30. Final Architecture Diagram",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Pulling every piece together: an application fleet checks a local L1 cache first, falls back to a distributed cache cluster routed through a consistent hash ring across replicated shards, and falls back further to the source-of-truth database on a full miss, with pub-sub invalidation keeping every layer honest and monitoring watching the whole thing end to end.",
+          "content": "Pulling every piece together: an application fleet checks a local L1 cache first, falls back to a distributed cache cluster routed through a consistent hash ring across replicated shards, and falls back further to the source-of-truth database on a full miss, with pub-sub invalidation keeping every layer honest and monitoring watching the whole thing end to end."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229357493-299460223.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229357493-299460223.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785229357493-299460223.png",
+          "alt": "A final, complete architecture diagram showing an application fleet, a local L1 cache, a cache client library, a consistent hash ring routing to three replicated shards, a source of truth database, pub sub invalidation, and monitoring"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Complete Code Implementation",
+          "content": "Complete Code Implementation",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The following classes illustrate the core mechanisms discussed above: an O(1) LRU cache, consistent hashing for shard placement, and request coalescing for hot keys.",
+          "content": "The following classes illustrate the core mechanisms discussed above: an O(1) LRU cache, consistent hashing for shard placement, and request coalescing for hot keys."
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.util.HashMap;\nimport java.util.Map;\n\n// A classic O(1) get and put LRU cache using a hashmap paired with a\n// doubly linked list ordered by recency of access.\npublic class LRUCache<K, V> {\n    private class Node {\n        K key; V value; Node prev, next;\n        Node(K key, V value) { this.key = key; this.value = value; }\n    }\n\n    private final int capacity;\n    private final Map<K, Node> map = new HashMap<>();\n    private final Node head = new Node(null, null);\n    private final Node tail = new Node(null, null);\n\n    public LRUCache(int capacity) {\n        this.capacity = capacity;\n        head.next = tail;\n        tail.prev = head;\n    }\n\n    public V get(K key) {\n        Node node = map.get(key);\n        if (node == null) return null;\n        moveToFront(node);\n        return node.value;\n    }\n\n    public void put(K key, V value) {\n        Node existing = map.get(key);\n        if (existing != null) {\n            existing.value = value;\n            moveToFront(existing);\n            return;\n        }\n        if (map.size() >= capacity) {\n            Node lru = tail.prev;\n            remove(lru);\n            map.remove(lru.key);\n        }\n        Node fresh = new Node(key, value);\n        addToFront(fresh);\n        map.put(key, fresh);\n    }\n\n    private void moveToFront(Node node) {\n        remove(node);\n        addToFront(node);\n    }\n\n    private void remove(Node node) {\n        node.prev.next = node.next;\n        node.next.prev = node.prev;\n    }\n\n    private void addToFront(Node node) {\n        node.next = head.next;\n        node.prev = head;\n        head.next.prev = node;\n        head.next = node;\n    }\n}",
+            "python": "# A classic O(1) get and put LRU cache using Python's built in OrderedDict,\n# which maintains insertion order and supports moving a key to the end.\nfrom collections import OrderedDict\n\nclass LRUCache:\n    def __init__(self, capacity):\n        self.capacity = capacity\n        self.cache = OrderedDict()\n\n    def get(self, key):\n        if key not in self.cache:\n            return None\n        self.cache.move_to_end(key)\n        return self.cache[key]\n\n    def put(self, key, value):\n        if key in self.cache:\n            self.cache.move_to_end(key)\n        self.cache[key] = value\n        if len(self.cache) > self.capacity:\n            self.cache.popitem(last=False)  # evict least recently used",
+            "cpp": "#include <unordered_map>\n#include <list>\nusing namespace std;\n\n// A classic O(1) get and put LRU cache using a hashmap paired with a\n// doubly linked list ordered by recency of access.\ntemplate <typename K, typename V>\nclass LRUCache {\n    int capacity;\n    list<pair<K, V>> items; // front is most recently used\n    unordered_map<K, typename list<pair<K, V>>::iterator> map;\n\npublic:\n    LRUCache(int cap) : capacity(cap) {}\n\n    bool get(const K& key, V& outValue) {\n        auto it = map.find(key);\n        if (it == map.end()) return false;\n        items.splice(items.begin(), items, it->second);\n        outValue = it->second->second;\n        return true;\n    }\n\n    void put(const K& key, const V& value) {\n        auto it = map.find(key);\n        if (it != map.end()) {\n            it->second->second = value;\n            items.splice(items.begin(), items, it->second);\n            return;\n        }\n        if ((int)items.size() >= capacity) {\n            auto last = items.back();\n            map.erase(last.first);\n            items.pop_back();\n        }\n        items.push_front({key, value});\n        map[key] = items.begin();\n    }\n};"
+          },
+          "code": {
+            "language": "java",
+            "content": "import java.util.HashMap;\nimport java.util.Map;\n\n// A classic O(1) get and put LRU cache using a hashmap paired with a\n// doubly linked list ordered by recency of access.\npublic class LRUCache<K, V> {\n    private class Node {\n        K key; V value; Node prev, next;\n        Node(K key, V value) { this.key = key; this.value = value; }\n    }\n\n    private final int capacity;\n    private final Map<K, Node> map = new HashMap<>();\n    private final Node head = new Node(null, null);\n    private final Node tail = new Node(null, null);\n\n    public LRUCache(int capacity) {\n        this.capacity = capacity;\n        head.next = tail;\n        tail.prev = head;\n    }\n\n    public V get(K key) {\n        Node node = map.get(key);\n        if (node == null) return null;\n        moveToFront(node);\n        return node.value;\n    }\n\n    public void put(K key, V value) {\n        Node existing = map.get(key);\n        if (existing != null) {\n            existing.value = value;\n            moveToFront(existing);\n            return;\n        }\n        if (map.size() >= capacity) {\n            Node lru = tail.prev;\n            remove(lru);\n            map.remove(lru.key);\n        }\n        Node fresh = new Node(key, value);\n        addToFront(fresh);\n        map.put(key, fresh);\n    }\n\n    private void moveToFront(Node node) {\n        remove(node);\n        addToFront(node);\n    }\n\n    private void remove(Node node) {\n        node.prev.next = node.next;\n        node.next.prev = node.prev;\n    }\n\n    private void addToFront(Node node) {\n        node.next = head.next;\n        node.prev = head;\n        head.next.prev = node;\n        head.next = node;\n    }\n}"
+          },
+          "content": "import java.util.HashMap;\nimport java.util.Map;\n\n// A classic O(1) get and put LRU cache using a hashmap paired with a\n// doubly linked list ordered by recency of access.\npublic class LRUCache<K, V> {\n    private class Node {\n        K key; V value; Node prev, next;\n        Node(K key, V value) { this.key = key; this.value = value; }\n    }\n\n    private final int capacity;\n    private final Map<K, Node> map = new HashMap<>();\n    private final Node head = new Node(null, null);\n    private final Node tail = new Node(null, null);\n\n    public LRUCache(int capacity) {\n        this.capacity = capacity;\n        head.next = tail;\n        tail.prev = head;\n    }\n\n    public V get(K key) {\n        Node node = map.get(key);\n        if (node == null) return null;\n        moveToFront(node);\n        return node.value;\n    }\n\n    public void put(K key, V value) {\n        Node existing = map.get(key);\n        if (existing != null) {\n            existing.value = value;\n            moveToFront(existing);\n            return;\n        }\n        if (map.size() >= capacity) {\n            Node lru = tail.prev;\n            remove(lru);\n            map.remove(lru.key);\n        }\n        Node fresh = new Node(key, value);\n        addToFront(fresh);\n        map.put(key, fresh);\n    }\n\n    private void moveToFront(Node node) {\n        remove(node);\n        addToFront(node);\n    }\n\n    private void remove(Node node) {\n        node.prev.next = node.next;\n        node.next.prev = node.prev;\n    }\n\n    private void addToFront(Node node) {\n        node.next = head.next;\n        node.prev = head;\n        head.next.prev = node;\n        head.next = node;\n    }\n}",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A request coalescer that ensures a single in-flight fetch is shared by every concurrent waiter for the same hot key:",
+          "content": "A request coalescer that ensures a single in-flight fetch is shared by every concurrent waiter for the same hot key:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.util.Map;\nimport java.util.concurrent.CompletableFuture;\nimport java.util.concurrent.ConcurrentHashMap;\n\n// Ensures that if many callers request the same missing key at nearly the\n// same moment, only one of them actually performs the expensive fetch,\n// while the rest share that single fetch's result.\npublic class HotKeyCoalescer<V> {\n    private final Map<String, CompletableFuture<V>> inFlight = new ConcurrentHashMap<>();\n\n    public CompletableFuture<V> fetch(String key, java.util.function.Supplier<V> loader) {\n        return inFlight.computeIfAbsent(key, k -> {\n            CompletableFuture<V> future = CompletableFuture.supplyAsync(loader);\n            future.whenComplete((result, error) -> inFlight.remove(key));\n            return future;\n        });\n    }\n}",
+            "cpp": "#include <functional>\n#include <future>\n#include <map>\n#include <memory>\n#include <mutex>\n#include <string>\n#include <thread>\n\n// Ensures that if many callers request the same missing key at nearly the\n// same moment, only one of them actually performs the expensive fetch,\n// while the rest share that single fetch's result.\ntemplate <typename V>\nclass HotKeyCoalescer {\npublic:\n    std::shared_future<V> fetch(const std::string& key, std::function<V()> loader) {\n        std::lock_guard<std::mutex> lock(mutex_);\n        auto it = inFlight_.find(key);\n        if (it != inFlight_.end()) return it->second;\n\n        auto promise = std::make_shared<std::promise<V>>();\n        std::shared_future<V> future = promise->get_future().share();\n        inFlight_[key] = future;\n\n        std::thread([this, key, loader, promise]() {\n            V result = loader();\n            promise->set_value(result);\n            std::lock_guard<std::mutex> lock(mutex_);\n            inFlight_.erase(key);\n        }).detach();\n\n        return future;\n    }\n\nprivate:\n    std::map<std::string, std::shared_future<V>> inFlight_;\n    std::mutex mutex_;\n};\n",
+            "python": "import threading\nfrom concurrent.futures import Future\nfrom typing import Callable, Dict, Generic, TypeVar\n\nV = TypeVar(\"V\")\n\n\n# Ensures that if many callers request the same missing key at nearly the\n# same moment, only one of them actually performs the expensive fetch,\n# while the rest share that single fetch's result.\nclass HotKeyCoalescer(Generic[V]):\n    def __init__(self):\n        self._in_flight: Dict[str, \"Future[V]\"] = {}\n        self._lock = threading.Lock()\n\n    def fetch(self, key: str, loader: Callable[[], V]) -> \"Future[V]\":\n        with self._lock:\n            if key in self._in_flight:\n                return self._in_flight[key]\n            future: \"Future[V]\" = Future()\n            self._in_flight[key] = future\n\n        def run() -> None:\n            try:\n                result = loader()\n                future.set_result(result)\n            finally:\n                with self._lock:\n                    self._in_flight.pop(key, None)\n\n        threading.Thread(target=run, daemon=True).start()\n        return future\n"
+          },
+          "code": {
+            "language": "java",
+            "content": "import java.util.Map;\nimport java.util.concurrent.CompletableFuture;\nimport java.util.concurrent.ConcurrentHashMap;\n\n// Ensures that if many callers request the same missing key at nearly the\n// same moment, only one of them actually performs the expensive fetch,\n// while the rest share that single fetch's result.\npublic class HotKeyCoalescer<V> {\n    private final Map<String, CompletableFuture<V>> inFlight = new ConcurrentHashMap<>();\n\n    public CompletableFuture<V> fetch(String key, java.util.function.Supplier<V> loader) {\n        return inFlight.computeIfAbsent(key, k -> {\n            CompletableFuture<V> future = CompletableFuture.supplyAsync(loader);\n            future.whenComplete((result, error) -> inFlight.remove(key));\n            return future;\n        });\n    }\n}"
+          },
+          "content": "import java.util.Map;\nimport java.util.concurrent.CompletableFuture;\nimport java.util.concurrent.ConcurrentHashMap;\n\n// Ensures that if many callers request the same missing key at nearly the\n// same moment, only one of them actually performs the expensive fetch,\n// while the rest share that single fetch's result.\npublic class HotKeyCoalescer<V> {\n    private final Map<String, CompletableFuture<V>> inFlight = new ConcurrentHashMap<>();\n\n    public CompletableFuture<V> fetch(String key, java.util.function.Supplier<V> loader) {\n        return inFlight.computeIfAbsent(key, k -> {\n            CompletableFuture<V> future = CompletableFuture.supplyAsync(loader);\n            future.whenComplete((result, error) -> inFlight.remove(key));\n            return future;\n        });\n    }\n}",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Deliverables Recap",
+          "content": "Deliverables Recap",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "This design covers a two-tier local-plus-shared caching architecture, consistent hashing for shard placement, the three classic caching patterns (cache-aside, write-through, write-back) with an honest trade-off between latency and durability risk for each, LRU and LFU eviction with a real O(1) implementation, request coalescing and local caching as the defense against the hot-key problem, and a clear framing throughout that this system deliberately trades durability for speed, since the database underneath it always remains the actual source of truth.",
+          "content": "This design covers a two-tier local-plus-shared caching architecture, consistent hashing for shard placement, the three classic caching patterns (cache-aside, write-through, write-back) with an honest trade-off between latency and durability risk for each, LRU and LFU eviction with a real O(1) implementation, request coalescing and local caching as the defense against the hot-key problem, and a clear framing throughout that this system deliberately trades durability for speed, since the database underneath it always remains the actual source of truth."
+        }
+      ]
+    }
+  ]
+}

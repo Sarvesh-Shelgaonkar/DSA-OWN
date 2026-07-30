@@ -1,0 +1,311 @@
+{
+  "title": "Page Faults",
+  "slug": "page-faults",
+  "content": [
+    {
+      "id": "page-faults",
+      "title": "Page Faults",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "A page fault is a hardware trap triggered when a running program accesses a page that is not currently mapped into physical memory. The sibling Demand Paging chapter in this module already walks through the full handling sequence for that trap, from the moment it fires to the process resuming normally."
+        },
+        {
+          "type": "paragraph",
+          "content": "This chapter assumes that sequence and goes a level deeper, into the different types of page faults a system actually sees. Not every page fault is the same event wearing a different hat: some resolve in nanoseconds with no disk involved at all, some genuinely have to wait on disk, and some are not really faults the OS can fix at all, they are illegal accesses that end the program. Knowing which is which, and why, is what separates a rough sense of paging from being able to reason about it precisely."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969066-764227609.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969066-764227609.png",
+          "alt": "page-faults",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969066-764227609.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Three Types of Page Faults: Minor, Major, and Invalid",
+          "text": "1. Three Types of Page Faults: Minor, Major, and Invalid"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every page fault starts the same way: the processor memory management hardware notices that the page table entry for the address being accessed is marked not present, and it raises a trap. From that single starting point, though, the operating system fault handler can end up doing very different amounts of work, depending on what it finds when it looks closer. Operating systems textbooks and real kernels both group the possibilities into three classic categories."
+        },
+        {
+          "type": "paragraph",
+          "content": "A minor fault, also called a soft fault, means the data the process wants is already sitting somewhere in physical RAM, it just is not currently mapped into this particular process page table. A major fault, also called a hard fault, means the data genuinely is not in RAM anywhere and has to be read in from disk before anything else can happen. An invalid fault means the access itself was never going to succeed, the process touched memory it was never allowed to touch, and the OS job is not to fix anything but to stop the process."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Fault Type\",\"What It Means\"],\"rows\":[[\"Minor (soft)\",\"Page exists in RAM already, just not mapped into this process yet\"],[\"Major (hard)\",\"Page does not exist in RAM at all, must be read from disk\"],[\"Invalid\",\"Access is illegal, there is no page to map, ever\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969066-120308850.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969066-120308850.png",
+          "alt": "Three Types of Page Faults: Minor, Major, and Invalid",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969066-120308850.png"
+        },
+        {
+          "type": "note",
+          "title": "Different names, same idea",
+          "content": "Different tools and textbooks use different words for the same categories. Windows performance tools and some textbooks say soft fault and hard fault, Linux tools like ps and perf say minor fault and major fault. This chapter uses minor and major, but if you see soft or hard elsewhere, they mean exactly the same thing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Minor Faults: The Page Is Already in RAM",
+          "text": "2. Minor Faults: The Page Is Already in RAM"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a minor fault, the OS fault handler discovers that the physical frame it needs already exists in RAM. This happens in a couple of common situations: the page is shared with another process that already has it loaded, such as a page of a shared library that many running programs use at once, or the page belonged to this same process, was evicted from its page table for bookkeeping reasons, but its physical frame was never actually reused or overwritten by anything else."
+        },
+        {
+          "type": "paragraph",
+          "content": "Because the data is already exactly where it needs to be, resolving a minor fault is cheap. The OS does not touch the disk at all, it simply updates the page table entry for the faulting process so that it points at the frame that already holds the data, marks the entry present, and lets the process continue. This typically finishes in microseconds, nowhere close to the cost of a real disk read."
+        },
+        {
+          "type": "paragraph",
+          "content": "A concrete example makes this click: two unrelated programs both link against the same shared C library. The first program to run touches a page of that library and the OS loads it into a physical frame. When the second program starts and touches the very same library page, its own page table entry says not present, it has never mapped that page before, but the frame holding the library code is already sitting in RAM from the first program. The OS just points the second process page table entry at that existing frame. No disk access ever happens."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969066-752819552.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969066-752819552.png",
+          "alt": "Minor Faults: The Page Is Already in RAM",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969066-752819552.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Major Faults: Fetching the Page From Disk",
+          "text": "3. Major Faults: Fetching the Page From Disk"
+        },
+        {
+          "type": "paragraph",
+          "content": "A major fault is the case most people actually picture when they hear the words page fault. Here the page genuinely does not exist anywhere in physical RAM, and the only place to find it is disk, either in the swap area for a page that was evicted, or in the backing file for a memory mapped file that has not been read yet."
+        },
+        {
+          "type": "paragraph",
+          "content": "Resolving a major fault means the OS has to find a free physical frame, possibly evicting another page first if RAM is full, issue a real disk read for the missing page, wait for that read to complete, and only then update the page table entry and resume the process. Disk access, even on fast SSDs, is dramatically slower than a memory access, often by several orders of magnitude, which is exactly why major faults are the expensive case."
+        },
+        {
+          "type": "paragraph",
+          "content": "A realistic example: a program memory maps a large file, say a multi gigabyte dataset, but only reads a portion of it at startup. The first time it touches a part of the file it has not read yet, there is no page table entry for that region at all in RAM, and there never was, because the file was mapped lazily. That first touch triggers a major fault, the OS reads the relevant block of the file from disk into a frame, and only then does the access complete."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-847097162.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-847097162.png",
+          "alt": "Major Faults: Fetching the Page From Disk",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-847097162.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Invalid Faults: When the Access Was Never Legal",
+          "text": "4. Invalid Faults: When the Access Was Never Legal"
+        },
+        {
+          "type": "paragraph",
+          "content": "An invalid fault looks identical to the other two at the very first instant, the processor still raises a page fault trap because the address was not present in the page table. The difference is what the OS finds when it checks: the address the process touched does not belong to any region it is allowed to use at all. There is no shared frame to point at, and there is no backing file or swap page to fetch, because this memory was never legitimately allocated to the process in the first place."
+        },
+        {
+          "type": "paragraph",
+          "content": "Two everyday bugs produce this: dereferencing a null pointer, which points at address zero, a region no well behaved program ever legitimately maps, and reading or writing past the end of a valid allocation, commonly called a buffer overrun, which walks off the edge of memory the process does own into memory it does not. Both look, from the CPU point of view, like a plain page fault at first."
+        },
+        {
+          "type": "paragraph",
+          "content": "Unlike a minor or major fault, the OS cannot silently fix this one. There is nothing to map and nothing to fetch, the access was simply never going to be valid. Instead, the operating system terminates the offending process, and on Unix like systems such as Linux and macOS, it does this by delivering a signal called SIGSEGV, better known by the message every programmer eventually sees: segmentation fault."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-929859753.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-929859753.png",
+          "alt": "Invalid Faults: When the Access Was Never Legal",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-929859753.png"
+        },
+        {
+          "type": "code",
+          "content": "int *p = 0;       // p does not point at anything valid\n*p = 42;            // dereferencing it touches an address with no mapping\n// the CPU raises a page fault trap\n// the OS finds no legal mapping for this address at all\n// the OS delivers SIGSEGV, the process is terminated",
+          "code": "int *p = 0;       // p does not point at anything valid\n*p = 42;            // dereferencing it touches an address with no mapping\n// the CPU raises a page fault trap\n// the OS finds no legal mapping for this address at all\n// the OS delivers SIGSEGV, the process is terminated",
+          "codes": {
+            "c": "int *p = 0;       // p does not point at anything valid\n*p = 42;            // dereferencing it touches an address with no mapping\n// the CPU raises a page fault trap\n// the OS finds no legal mapping for this address at all\n// the OS delivers SIGSEGV, the process is terminated"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Not every illegal access is caught the same way",
+          "content": "An invalid fault is what the OS catches through a missing mapping in the page table itself. Some illegal accesses, like writing to a read only page that is mapped, are caught by a permission check instead of a missing entry, and technically raise a protection fault, but the outcome for the process is the same: it does not get to continue."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Comparing Minor, Major, and Invalid Faults",
+          "text": "5. Comparing Minor, Major, and Invalid Faults"
+        },
+        {
+          "type": "paragraph",
+          "content": "Placed side by side, the three fault types differ along a small number of dimensions that matter in practice: what actually caused the fault, whether the OS needs to touch disk to resolve it, and what ultimately happens to the process. The table below is worth committing to memory, it comes up constantly in interviews and in real debugging."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Fault Type\",\"Cause\",\"Disk Access Needed\",\"Typical Outcome\"],\"rows\":[[\"Minor / soft\",\"Page exists in RAM but is not mapped into this process page table yet\",\"No\",\"Page table entry updated, process resumes almost immediately\"],[\"Major / hard\",\"Page does not exist in RAM anywhere, must be fetched from swap or a backing file\",\"Yes\",\"Process pauses while the OS reads from disk, then resumes\"],[\"Invalid\",\"Access references memory the process was never allowed to touch\",\"No, nothing to fetch\",\"OS terminates the process, typically via SIGSEGV\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-32877832.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-32877832.png",
+          "alt": "Comparing Minor, Major, and Invalid Faults",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-32877832.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Two of the three, minor and major, are both instances of legitimate demand paging: the OS successfully resolves them and the process never even knows a fault happened. The third, invalid, is not really paging at all, it is the memory protection system doing its job and catching a genuine bug. Keeping that boundary clear, resolved by the OS versus fatal to the process, is the single most useful mental model for this whole topic."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. A Worked Example That Distinguishes All Three",
+          "text": "6. A Worked Example That Distinguishes All Three"
+        },
+        {
+          "type": "paragraph",
+          "content": "Nothing cements this classification like tracing three different programs, or three different moments in the same program, through the exact same starting event: a memory access that turns out to require a page fault trap."
+        },
+        {
+          "type": "list",
+          "content": "[\"A program dereferences a pointer into a shared library page that another running process already loaded into RAM. The frame already exists, so this is a minor fault, resolved by a page table update alone.\",\"A program memory maps a large file at startup but has not actually read most of it yet. The first read into an untouched region finds no frame anywhere in RAM, so this is a major fault, resolved by an actual disk read.\",\"A program follows an uninitialized wild pointer into memory it was never allocated. There is no frame to find and nothing to fetch, so this is an invalid fault, and the OS ends the process with SIGSEGV.\"]",
+          "items": [
+            "A program dereferences a pointer into a shared library page that another running process already loaded into RAM. The frame already exists, so this is a minor fault, resolved by a page table update alone.",
+            "A program memory maps a large file at startup but has not actually read most of it yet. The first read into an untouched region finds no frame anywhere in RAM, so this is a major fault, resolved by an actual disk read.",
+            "A program follows an uninitialized wild pointer into memory it was never allocated. There is no frame to find and nothing to fetch, so this is an invalid fault, and the OS ends the process with SIGSEGV."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-718179264.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-718179264.png",
+          "alt": "A Worked Example That Distinguishes All Three",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-718179264.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Scenario\",\"Fault Type\"],\"rows\":[[\"Dereferences a shared library page already loaded by another process\",\"Minor\"],[\"Reads an untouched region of a memory mapped file\",\"Major\"],[\"Follows an uninitialized wild pointer into unmapped memory\",\"Invalid, SIGSEGV\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice that all three begin with the exact same hardware event, a page table entry marked not present triggering a trap. Everything that makes them different happens after that point, inside the OS fault handler, as it investigates what is really going on before deciding how, or whether, to fix it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Page Fault Rate as a Health and Monitoring Signal",
+          "text": "7. Page Fault Rate as a Health and Monitoring Signal"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a healthy, normally running system, minor faults happen constantly and are almost never a concern. Shared libraries get mapped into new processes all the time, memory gets reclaimed and reused, and every one of those triggers a cheap minor fault that resolves in microseconds. Seeing minor faults in a profiler is completely routine, and a system with zero minor faults would actually be unusual."
+        },
+        {
+          "type": "paragraph",
+          "content": "Major faults are different. A healthy system still has some, every program has to load its code and data from disk at least once, but the RATE of major faults specifically is what monitoring tools watch closely. A sudden spike in major faults per second is a classic, concrete sign that a system is under memory pressure: too many processes are competing for too little RAM, useful pages keep getting evicted just before they are needed again, and the system is being forced to go back to disk over and over."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is exactly the forward pointer worth remembering: when the major fault rate climbs high enough for long enough, the system can slide into thrashing, a state where it spends more time paging data in and out than doing actual work. The dedicated Thrashing chapter in this module covers what that looks like and how systems recover from it, this chapter is only concerned with recognizing why the major fault rate is the number to watch in the first place."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-749818564.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-749818564.png",
+          "alt": "Page Fault Rate as a Health and Monitoring Signal",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-749818564.png"
+        },
+        {
+          "type": "note",
+          "title": "How this shows up on a real machine",
+          "content": "Tools like ps and top on Linux, and Activity Monitor on macOS, can report page fault counts per process, and utilities built for performance work break them down into minor and major separately. A process with a high and climbing major fault count is a strong hint it needs more RAM, or that something is thrashing pages in and out unnecessarily."
+        },
+        {
+          "type": "code",
+          "content": "ps -o min_flt,maj_flt -p 4821\n\n MINFL  MAJFL\n 18320      4\n\n# MINFL is minor faults counted since the process started\n# MAJFL is major faults, the number worth watching under memory pressure",
+          "code": "ps -o min_flt,maj_flt -p 4821\n\n MINFL  MAJFL\n 18320      4\n\n# MINFL is minor faults counted since the process started\n# MAJFL is major faults, the number worth watching under memory pressure",
+          "codes": {
+            "bash": "ps -o min_flt,maj_flt -p 4821\n\n MINFL  MAJFL\n 18320      4\n\n# MINFL is minor faults counted since the process started\n# MAJFL is major faults, the number worth watching under memory pressure"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Segmentation Faults and the Invalid Fault Connection",
+          "text": "8. Segmentation Faults and the Invalid Fault Connection"
+        },
+        {
+          "type": "paragraph",
+          "content": "The words segmentation fault get thrown around loosely, but the mechanism behind them is precise and worth understanding exactly. On Unix like systems, when a process touches memory it was never allowed to access, the processor memory management hardware raises the exact same kind of trap as any other page fault: a page fault exception."
+        },
+        {
+          "type": "paragraph",
+          "content": "The operating system fault handler takes over, as it always does, and checks what the process was trying to do. For a minor or major fault, it finds a legitimate reason: a shared page, a swapped out page, a lazily loaded file. For an invalid access, it finds nothing, the address simply is not part of any region this process is permitted to touch, and there is no legal way to satisfy the request."
+        },
+        {
+          "type": "paragraph",
+          "content": "At that point the OS stops trying to help and instead delivers a signal to the process, SIGSEGV, short for segmentation violation signal. The default behavior for SIGSEGV is to terminate the process immediately, usually printing the message segmentation fault to the terminal and optionally writing a core dump for later debugging. Every time a programmer sees that message, an invalid page fault is exactly what happened underneath it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-470048718.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-470048718.png",
+          "alt": "Segmentation Faults and the Invalid Fault Connection",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969067-470048718.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Common Mistakes and Interview Angle",
+          "text": "9. Common Mistakes and Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "A few misunderstandings come up often enough to call out directly."
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming every page fault is a sign of a problem. Minor faults are routine and expected in any running system, and even a reasonable amount of major faults is completely normal, every program has to load from disk sometime. What actually matters is a sustained high RATE of major faults, not their mere existence.\",\"Confusing an invalid fault with a major fault. A major fault is a success story, the OS finds the page and loads it, the process never even notices. An invalid fault is a failure the OS cannot resolve at all, it does not fetch anything, it terminates the process. They start with the same trap but end in completely different places.\",\"Treating soft and hard as different phenomena from minor and major. They are simply alternate names used by different tools and textbooks for the exact same two categories.\"]",
+          "items": [
+            "Assuming every page fault is a sign of a problem. Minor faults are routine and expected in any running system, and even a reasonable amount of major faults is completely normal, every program has to load from disk sometime. What actually matters is a sustained high RATE of major faults, not their mere existence.",
+            "Confusing an invalid fault with a major fault. A major fault is a success story, the OS finds the page and loads it, the process never even notices. An invalid fault is a failure the OS cannot resolve at all, it does not fetch anything, it terminates the process. They start with the same trap but end in completely different places.",
+            "Treating soft and hard as different phenomena from minor and major. They are simply alternate names used by different tools and textbooks for the exact same two categories."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Interview angle",
+          "content": "Be ready to name and precisely distinguish all three fault types with a concrete example for each: a minor fault when a page is already resident, like a shared library another process already loaded, a major fault when a page genuinely has to come from disk, like the first touch of a lazily loaded memory mapped file, and an invalid fault when the access itself is illegal, like a null pointer dereference or a buffer overrun. Also be ready to connect the dots precisely: a segmentation fault is what you get when an invalid page fault leads the OS to deliver a SIGSEGV signal, terminating the process, it is the visible, everyday symptom of an invalid page fault happening under the hood."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,498 @@
+{
+  "slug": "state-management",
+  "title": "State Management",
+  "content": [
+    {
+      "id": "state-management",
+      "title": "State Management",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Ask five different MCP implementations where the conversation history lives, or where a user's current task context is kept, and you would expect five different answers if state were scattered randomly across the system. It is not. MCP has a fairly strong, consistent opinion about where state belongs, and understanding that opinion explains a lot about why servers can be swapped, restarted, and scaled the way they can."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What State Means Here",
+          "id": "stm-what-state-means"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172933097-326519809.png",
+          "alt": "The host holds most state, the client holds session state, and the server stays mostly stateless",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172933097-326519809.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "State, in this context, is any information that has to persist across more than one message for the system to behave correctly, conversation history, a user's current task, which subscriptions are active, what the last few tool results were. It is distinct from the message content itself, which is transient by nature, sent once and then gone."
+        },
+        {
+          "type": "note",
+          "title": "State versus a single message",
+          "content": "A single request's arguments are not state, they exist only for the duration of handling that one call. State is specifically what has to survive beyond that, carried forward into future messages rather than discarded once the current one is answered."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth separating this cleanly from persistence in the database sense, state here is about what a running process remembers in order to make sense of the next message, not about whether data is durably saved to disk anywhere in the system."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping this narrow definition in mind is what makes the rest of this lesson click, once state is understood as specifically the information one message depends on another to supply, it becomes much easier to see exactly where it does and does not belong in an MCP system."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Most State Lives in the Host",
+          "id": "stm-state-in-host"
+        },
+        {
+          "type": "paragraph",
+          "text": "The host application, the chat interface or agent runtime a user actually interacts with, is where the bulk of meaningful state lives, the full conversation history, the current turn's context, and the results of every tool call made so far during that conversation. This is consistent with the host's role as described in MCP Host Architecture, it is the one component with a full view of the user's ongoing task."
+        },
+        {
+          "type": "paragraph",
+          "text": "This concentration is deliberate rather than incidental, the host is the only component that ever sees the entire picture, a user's original question, every tool call made in service of answering it, and every intermediate result, so it is the natural place for the authoritative record of all of that to live."
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful way to check this in a real system, ask what would be lost if the host process itself restarted, if the answer is the entire conversation and task context, that confirms the host really is where the meaningful state was concentrated all along."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. The Client Holds Session State, Not Conversation State",
+          "id": "stm-client-session-state"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172935542-396361327.png",
+          "alt": "A client holds session state, not conversation state",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172935542-396361327.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A client instance, one per connected server, holds a narrower slice of state, the negotiated capabilities and subscriptions for its one session, exactly what was described in Session Management. It does not hold or need to hold the broader conversation, that stays with the host, which may be juggling several client instances at once."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Component\",\"Typical state held\"],\"rows\":[[\"Host\",\"Full conversation history, overall task context\"],[\"Client instance\",\"One session's capabilities and subscriptions\"],[\"Server\",\"As little as possible, ideally none tied to conversation\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "If a host is connected to three servers through three client instances, none of those instances know anything about what the other two are doing, or about the conversation as a whole, each one's job is narrowly scoped to keeping its own session with its own server correct."
+        },
+        {
+          "type": "paragraph",
+          "text": "This narrow scoping is also why a client instance can be discarded and recreated relatively cheaply if a server session needs to be restarted, there is comparatively little to rebuild, capabilities and subscriptions, rather than an entire conversation history."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Servers Are Usually Designed Stateless",
+          "id": "stm-servers-stateless"
+        },
+        {
+          "type": "paragraph",
+          "text": "A well-designed MCP server tries hard not to remember anything about a conversation between one tool call and the next. Each incoming request is expected to carry everything the server needs to answer it, arguments, context, whatever is relevant, rather than the server relying on memory of earlier calls in that same session."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{ \"jsonrpc\": \"2.0\", \"id\": 5, \"method\": \"tools/call\", \"params\": { \"name\": \"summarize\", \"arguments\": { \"text\": \"the full document text goes here, not a reference to something said earlier\" } } }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a design convention encouraged by the architecture rather than something enforced by the protocol itself, nothing stops a server implementation from keeping memory between calls, but doing so trades away the reliability and scaling benefits that make stateless servers so much easier to operate."
+        },
+        {
+          "type": "paragraph",
+          "text": "This mirrors a pattern familiar from ordinary web development, a stateless HTTP API handler that reads everything it needs from the request body rather than from server-side session variables, MCP simply applies the same discipline to tool calls and resource reads."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Why Statelessness Is the Default Goal",
+          "id": "stm-why-stateless-goal"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172937285-184650672.png",
+          "alt": "A stateless server is easier to scale",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172937285-184650672.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A stateless server can be restarted, replaced, or load balanced across many instances without anything breaking, because there is no in-memory conversation history that would be lost. Any of a fleet of identical server processes can answer any incoming request equally well, since none of them are relying on having personally seen the earlier messages in that conversation."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Property\",\"Stateless server\",\"Stateful server\"],\"rows\":[[\"Restart mid-conversation\",\"Safe, no data lost\",\"Loses in-memory history\"],[\"Horizontal scaling\",\"Any instance can answer any request\",\"Requests must stick to one instance\"],[\"Reasoning about behavior\",\"Each call understood in isolation\",\"Behavior depends on call history\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "None of this means statelessness is free of tradeoffs, it does require the host to do a bit more work packaging up relevant context on every call, but that cost is small and predictable compared to the fragility a stateful server would introduce at scale."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Session State Is the One Exception",
+          "id": "stm-session-exception"
+        },
+        {
+          "type": "paragraph",
+          "text": "This does not mean a server holds literally nothing, the session-scoped bookkeeping covered in Session Management, negotiated capabilities and active subscriptions, does live on the server for the life of a session. The distinction that matters is between this thin, session-lifetime bookkeeping and any deeper conversation or task state, which should never accumulate on the server side."
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to think of session state as plumbing rather than content, it exists to keep the connection itself working correctly, not to remember anything about what the conversation was actually about. A server can lose its session state entirely, simply by the session ending, without losing any part of the actual conversation, because that conversation was never stored there."
+        },
+        {
+          "type": "note",
+          "title": "Session state does not grow with conversation length",
+          "content": "Notice that a session's capabilities and subscriptions do not get larger as a conversation goes on, unlike conversation history, which grows with every turn. This is a useful signal for telling the two kinds of state apart in an unfamiliar codebase."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Passing Context Explicitly Instead of Remembering It",
+          "id": "stm-passing-context"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172939466-544831128.png",
+          "alt": "Context gets passed explicitly on each call",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172939466-544831128.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a tool call genuinely needs earlier context, the previous step's output, a user's stated preference, that context is passed explicitly as part of the new request's arguments, rather than the server being expected to recall it from an earlier call. This keeps every request self-contained and independently understandable."
+        },
+        {
+          "type": "note",
+          "title": "A quick test for statelessness",
+          "content": "If you can take any single request out of a session and hand it to a completely fresh server instance that has never seen this conversation before, and it still produces the correct result, the server is behaving statelessly. If it cannot, some hidden state has crept in."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "# Stateless: everything relevant travels with the request\n{ \"name\": \"translate\", \"arguments\": { \"text\": \"hello\", \"target_language\": \"fr\", \"prior_translation_style\": \"formal\" } }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This does shift some responsibility onto the host, it has to actually track what context is relevant and include it on each subsequent call, but that responsibility sits naturally with the host anyway, since it already holds the full conversation history described earlier."
+        },
+        {
+          "type": "paragraph",
+          "text": "Explicit context passing also makes tool calls easier to test in isolation, a single call with all its arguments given can be replayed exactly, checked against an expected result, and reasoned about without needing to first reconstruct some hidden prior state."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Resource State Is Different From Conversation State",
+          "id": "stm-resource-state-different"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth distinguishing conversation state from the state a resource represents, a file on disk, a row in a database, a live sensor reading. A server is expected to know about that underlying data, that is exactly its job, what it should avoid is layering conversation memory, what a particular client asked for last time, on top of that legitimate resource state."
+        },
+        {
+          "type": "paragraph",
+          "text": "A file resource server, for instance, absolutely should know the current contents of the files it exposes, that is the actual data it is responsible for. What it should not do is remember that a particular client previously asked about that file three times today and start behaving differently as a result."
+        },
+        {
+          "type": "paragraph",
+          "text": "One helpful boundary to draw, resource state answers what does this data currently look like, a question the server is uniquely positioned to answer, conversation state answers what has this particular client and I been discussing, a question that belongs entirely to the host."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is also why a resource read is safe to repeat freely, reading the same file twice in a row should simply return its current contents both times, with no side effect from the first read changing what the second read returns."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Implications for Scaling",
+          "id": "stm-scaling-implications"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172941354-477768406.png",
+          "alt": "A stateless server scales horizontally",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172941354-477768406.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because a stateless server does not care which specific instance answers a given request, scaling it horizontally is straightforward, add more identical instances behind a load balancer, and any of them can pick up the next request. A server that quietly accumulated per-conversation state in memory would break the moment a request landed on a different instance than the one that handled the previous turn."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is precisely the property that makes it reasonable to run a popular MCP server behind a standard load balancer the same way any stateless web service would be deployed, without any special session affinity or sticky routing required at the infrastructure level."
+        },
+        {
+          "type": "paragraph",
+          "text": "It also simplifies operational tooling considerably, health checks, rolling deployments, and autoscaling policies designed for ordinary stateless services apply to MCP servers without modification, none of them need any special awareness of in-flight conversations."
+        },
+        {
+          "type": "paragraph",
+          "text": "A team operating a popular MCP server can add capacity the same day demand spikes, simply by starting more instances, precisely because no instance is privileged with conversation memory the others lack."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Implications for Reliability",
+          "id": "stm-reliability-implications"
+        },
+        {
+          "type": "paragraph",
+          "text": "Statelessness also makes recovering from a crash far less costly. If a stateless server process dies and restarts, the host and client can simply reconnect, establish a new session, and continue, exactly as described in Session Management, because the server was never the sole holder of any conversation history that would otherwise be lost forever."
+        },
+        {
+          "type": "paragraph",
+          "text": "Contrast this with the host, which does need to preserve the conversation across a server restart, but that preservation happens entirely on the host side, the host simply reconnects and continues driving the conversation forward, resending whatever context the newly restarted server needs."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A stateless server crashing mid-session loses nothing the host cannot resend.",
+            "A stateless server being redeployed with a new version does not require any conversation migration.",
+            "Multiple stateless server instances can serve the same client across its session without any handoff logic."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "This same property is what makes rolling upgrades of a server fleet routine rather than risky, older and newer server instances can serve requests side by side during a deployment, since neither is holding conversation state the other lacks."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. State Duplication Across Multiple Servers",
+          "id": "stm-state-duplication"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a host is connected to several servers at once, each maintains its own thin session state independently, and none of them share or need to share state with each other. Any coordination across servers, combining results from two different tools into one answer, is the host's job, not something the servers themselves are expected to negotiate."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lack of shared state between servers is a feature, not a gap, it means two servers can be developed, deployed, and scaled completely independently of each other, with the host as the only component that ever needs to understand how their outputs relate."
+        },
+        {
+          "type": "paragraph",
+          "text": "If two servers did need to share some piece of state, a shared cache or a common data store, that coordination would happen through infrastructure the servers themselves manage, outside the scope of MCP entirely, MCP itself never provides a channel for one server to talk directly to another."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Anti-Pattern: A Server That Remembers Too Much",
+          "id": "stm-antipattern-remembers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172943016-98055113.png",
+          "alt": "A server remembering client state is an anti-pattern",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172943016-98055113.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A common mistake is building a server that keeps its own internal log of everything a client has asked, and starts using that log to make decisions, silently changing behavior on the third call in a way the second call never suggested. This breaks the stateless contract, makes the server's behavior harder to reason about, and reintroduces exactly the fragility statelessness was meant to avoid."
+        },
+        {
+          "type": "paragraph",
+          "text": "A telltale sign of this anti-pattern in practice is a server whose behavior changes depending on which client instance happens to be connected, or depending on how many prior calls occurred, even though none of that information was passed explicitly in the current request's arguments."
+        },
+        {
+          "type": "paragraph",
+          "text": "This anti-pattern tends to creep in gradually rather than being designed in deliberately, a small in-memory cache added for performance quietly becomes load-bearing once some other code path starts depending on it always being present, and the server is stateful in practice long before anyone labeled it that way."
+        },
+        {
+          "type": "paragraph",
+          "text": "Catching this early usually comes down to one habit, whenever a server implementation reaches for a variable that persists across calls, ask explicitly whether that variable represents legitimate resource state or accidental conversation memory before writing another line."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Caching Is Not the Same as Statefulness",
+          "id": "stm-caching-not-stateful"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172944607-113283931.png",
+          "alt": "Caching is compared against session statefulness",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172944607-113283931.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A stateless server is allowed to cache, keeping a computed result around briefly to avoid redoing expensive work, as long as that cache is purely an internal optimization detail that never changes the correctness of a response. The moment a cache starts silently altering what answer a client receives based on some earlier, unrelated call, it has crossed the line from optimization into hidden state."
+        },
+        {
+          "type": "note",
+          "title": "A simple test",
+          "content": "If deleting the entire cache at any moment would only ever cost some extra latency, never a wrong or missing answer, it is safe caching. If deleting it would change the correctness of future responses, it is actually hidden conversation state wearing a cache's name."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Safe: purely an optimization, correctness holds with or without it\ncache = {}\ndef expensive_lookup(key):\n    if key in cache:\n        return cache[key]\n    result = compute(key)\n    cache[key] = result\n    return result"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Time-to-live expiry on a cache is a good practical safeguard here too, a cache entry that automatically disappears after a short window is far less likely to accidentally calcify into load-bearing hidden state than one that lives forever."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Where Long-Running Operations Fit",
+          "id": "stm-long-running-operations"
+        },
+        {
+          "type": "paragraph",
+          "text": "A long-running tool call, one that takes minutes rather than milliseconds, might seem to require the server to hold state across that duration, and it does, but only for the lifetime of that single outstanding request, tracked the same way any in-flight request is tracked at the client-server communication layer. Once that request completes, nothing about it needs to be remembered afterward."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Kind of persistence\",\"Acceptable in a stateless server\"],\"rows\":[[\"Tracking one request while it is still in progress\",\"Yes, this is normal in-flight bookkeeping\"],[\"Remembering a completed request's details for later calls\",\"No, this is exactly the hidden state to avoid\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This distinction matters in practice for progress notifications too, a server reporting progress on a long call is reporting on that one in-flight request, not accumulating a history of every long call it has ever handled."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Worked Example: A Stateful Server Versus a Stateless One",
+          "id": "stm-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Compare two implementations of the same summarization tool across two calls in one session."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Stateful version: call one sends a document and the server stores it in memory keyed by session id, call two sends only \"summarize it shorter\" with no document, relying entirely on the server remembering call one.",
+            "Stateless version: call one sends the document and returns a summary, call two sends the same document again along with \"summarize it shorter\" as an explicit instruction.",
+            "If the stateful server restarts between call one and call two, it fails outright, having lost its only copy of the document.",
+            "The stateless version succeeds regardless of which server instance answers call two, because everything it needs travels with the request."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Common Mistakes in State Management",
+          "id": "stm-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Letting a server accumulate conversation history in memory instead of receiving what it needs on each request.",
+            "Assuming the same server instance will handle every call in a session, breaking horizontal scaling.",
+            "Confusing legitimate resource state, like a database row, with illegitimate conversation memory.",
+            "Relying on a server to remember earlier arguments instead of the host resending necessary context explicitly.",
+            "Treating session-scoped bookkeeping as if it were a place to store arbitrary conversation state."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Most of these mistakes share a root cause worth naming directly, treating a server as if it were a long-lived conversational partner with memory, rather than a stateless function that happens to be invoked repeatedly, once that mental shift happens, most of the antipatterns above become easy to spot before they are written."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Practice: Spot the Hidden State",
+          "id": "stm-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Review this tool call sequence and identify where the server would need to secretly remember something between calls for the second call to make sense, then rewrite the second call so it is fully self-contained."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "# Call 1\n{ \"name\": \"search\", \"arguments\": { \"query\": \"invoice errors\" } }\n# Call 2, relies on server memory of call 1's results\n{ \"name\": \"filter_results\", \"arguments\": { \"keep\": \"only the first three\" } }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A stateless rewrite would have call two include the actual results from call one directly in its arguments, so any server instance could answer it correctly without having seen call one at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "Try the same exercise on a tool you use regularly in any system, list every piece of information a second call depends on that was only ever communicated in a first call, and decide whether that dependency should really be traveling explicitly instead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "stm-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "State concentrates in the host and, to a much smaller extent, the client's session bookkeeping, while servers are designed to stay as stateless as possible, taking everything they need as explicit input on each request. This is what makes servers cheap to restart, scale horizontally, and swap out without disrupting the broader conversation."
+        },
+        {
+          "type": "paragraph",
+          "text": "With a clear picture of where state lives, the next lesson, Request-Response Flow, walks through a single request all the way from the host, through a client, across the transport, into a server, and back, tying every architectural piece covered so far into one concrete path."
+        }
+      ]
+    }
+  ]
+}

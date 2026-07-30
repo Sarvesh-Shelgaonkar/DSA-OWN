@@ -1,0 +1,489 @@
+{
+  "slug": "query-optimization",
+  "title": "Query Optimization",
+  "content": [
+    {
+      "id": "query-optimization",
+      "title": "Query Optimization",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Adding the right index, covered elsewhere in this section, is only half the story. A database can have every index it needs and still run a slow query, if the query itself is written in a way that defeats those indexes, or asks for far more work than the actual result requires. Query optimization is about finding and fixing exactly that gap, between what a query is asking the database to do, and what it actually needs to do."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284187901-202102193.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284187901-202102193.png",
+          "alt": "For any single query, the database considers several possible ways to execute it, and picks whichever one it estimates will be cheapest"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What a Query Optimizer Actually Does",
+          "text": "1. What a Query Optimizer Actually Does"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every time a query runs, the database <strong>query planner</strong> (or optimizer) considers multiple possible ways to execute it, which index to use, if any, which order to join tables in, whether to sort before or after filtering, and estimates the cost of each approach before picking the one it believes will be cheapest. This happens automatically, invisibly, before a single row is actually read."
+        },
+        {
+          "type": "paragraph",
+          "content": "This automatic decision-making is genuinely valuable, it means most queries run reasonably well without any manual tuning at all. It also means that when a query is slow, the fix is rarely to force the planner toward a specific plan by hand, it is almost always to give the planner better information or a better-shaped query to work with in the first place."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is also why two databases running what looks like the identical query can behave completely differently under load. The SQL text is the same, but the row counts, the statistics, and the available indexes differ between environments, so the optimizer reaches a different decision in each one. A query that is fast in a small staging database with a thousand rows can pick an entirely different, much worse plan in production against a hundred million rows, which is why load testing against realistic data volumes matters so much more than it first appears."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Reading an Execution Plan",
+          "text": "2. Reading an Execution Plan"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284190532-580419362.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284190532-580419362.png",
+          "alt": "Running EXPLAIN ANALYZE reveals exactly which plan the database chose, and how expensive each step actually was"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every major database exposes a way to see exactly which plan it chose, PostgreSQL and MySQL both support <code>EXPLAIN</code>, and its more detailed cousin <code>EXPLAIN ANALYZE</code>, which actually runs the query and reports real timing alongside the plan."
+        },
+        {
+          "type": "code",
+          "content": "EXPLAIN ANALYZE\nSELECT * FROM orders WHERE customer_id = 42;\n\n-- Output shows whether it used an index scan or a full sequential scan,\n-- how many rows it estimated vs actually found, and how long each step took.",
+          "code": {
+            "language": "sql",
+            "content": "EXPLAIN ANALYZE\nSELECT * FROM orders WHERE customer_id = 42;\n\n-- Output shows whether it used an index scan or a full sequential scan,\n-- how many rows it estimated vs actually found, and how long each step took."
+          },
+          "codes": {
+            "sql": "EXPLAIN ANALYZE\nSELECT * FROM orders WHERE customer_id = 42;\n\n-- Output shows whether it used an index scan or a full sequential scan,\n-- how many rows it estimated vs actually found, and how long each step took."
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Learning to read this output is arguably the single highest-leverage skill for query optimization, it tells you directly whether an index is actually being used, and exactly where time is really being spent, rather than guessing."
+        },
+        {
+          "type": "note",
+          "title": "What to actually look for",
+          "content": "Two numbers matter most in a plan: the estimated row count versus the actual row count (a large mismatch signals stale statistics), and which operation dominates the total time, since that is almost always where an optimization effort should focus first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Join Algorithms the Planner Chooses From",
+          "text": "2.1 Join Algorithms the Planner Chooses From"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every join in a plan is executed with one of three basic algorithms, and knowing them turns a plan from a wall of text into a story you can reason about. The optimizer picks whichever one it estimates will finish fastest given the row counts and indexes it knows about, so seeing which one got chosen tells you a lot about what the optimizer believes about your data."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284192663-727326168.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284192663-727326168.png",
+          "alt": "How the planner chooses between nested loop, hash join, and merge join"
+        },
+        {
+          "type": "paragraph",
+          "content": "A nested loop scans the outer table row by row, and for each row it probes the inner table, usually through an index. This is cheap when the outer side is small and the inner side has a good index to jump straight to matching rows, which is exactly the shape of a typical foreign key lookup. It gets expensive fast when the outer side is large, because the per-row probe cost multiplies out."
+        },
+        {
+          "type": "paragraph",
+          "content": "A hash join builds an in-memory hash table from the smaller input keyed on the join column, then streams the larger input through it, looking up each row in constant time. This scales well when neither side is sorted and there is no useful index, but it needs enough working memory to hold the hash table, and when that memory budget is exceeded the database spills to disk and performance degrades sharply."
+        },
+        {
+          "type": "paragraph",
+          "content": "A merge join takes two inputs that are already sorted on the join key, usually because an index provided that order for free, and walks both in lock step the way you would merge two sorted card piles. This is the cheapest option when the sort order is already available, but forcing a sort just to enable a merge join is rarely worth it compared to a hash join."
+        },
+        {
+          "type": "note",
+          "title": "Reading this in a plan",
+          "content": "If you see a nested loop over a large row count with no index on the inner side, that is almost always the single biggest win available in the plan. Fixing it is often just adding the missing index on the join column."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The N+1 Query Problem",
+          "text": "3. The N+1 Query Problem"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284194646-903334831.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284194646-903334831.png",
+          "alt": "Fetching a list, then issuing one more query per item to get related data, turns 1 query into N+1 separate round trips"
+        },
+        {
+          "type": "paragraph",
+          "content": "One of the most common, costly patterns in real applications: fetching a list of records with one query, then looping over that list and issuing a separate query for each item related data, one query for the list of posts, and then one more query per post to fetch its author. What looks like \"just a loop\" in application code is actually N+1 separate round trips to the database, each paying its own network and query overhead."
+        },
+        {
+          "type": "code",
+          "content": "# the N+1 problem\nposts = db.query(\"SELECT * FROM posts\")\nfor post in posts:\n    author = db.query(f\"SELECT * FROM users WHERE id = {post.author_id}\")  # N extra queries\n\n# the fix: one query with a join, or one batched IN query\nposts = db.query(\"\"\"\n    SELECT posts.*, users.name FROM posts\n    JOIN users ON users.id = posts.author_id\n\"\"\")",
+          "code": {
+            "language": "python",
+            "content": "# the N+1 problem\nposts = db.query(\"SELECT * FROM posts\")\nfor post in posts:\n    author = db.query(f\"SELECT * FROM users WHERE id = {post.author_id}\")  # N extra queries\n\n# the fix: one query with a join, or one batched IN query\nposts = db.query(\"\"\"\n    SELECT posts.*, users.name FROM posts\n    JOIN users ON users.id = posts.author_id\n\"\"\")"
+          },
+          "codes": {
+            "python": "class FakeDatabase:\n    def __init__(self):\n        self.posts = {1: \"Scaling Postgres\", 2: \"Intro to Read Replicas\", 3: \"Query Optimization 101\"}\n        self.authors = {1: \"Asha\", 2: \"Marco\", 3: \"Asha\"}\n        self.query_count = 0\n\n    def fetch_all_post_ids(self):\n        self.query_count += 1\n        return list(self.posts.keys())\n\n    def fetch_author_for_post(self, post_id):\n        self.query_count += 1\n        return self.authors[post_id]\n\n    def fetch_posts_with_authors_joined(self):\n        self.query_count += 1\n        return {post_id: self.authors[post_id] for post_id in self.posts}\n\n    def reset_query_count(self):\n        self.query_count = 0\n\n\n# the N+1 problem: one query for the list, then one more per row\ndef run_n_plus_one(db):\n    db.reset_query_count()\n    post_ids = db.fetch_all_post_ids()\n    for post_id in post_ids:\n        author = db.fetch_author_for_post(post_id)  # N extra queries\n        print(f\"post {post_id} -> author {author}\")\n    print(f\"N+1 approach used {db.query_count} queries for {len(post_ids)} posts\")\n\n\n# the fix: one query with a join instead of N extra round trips\ndef run_joined(db):\n    db.reset_query_count()\n    posts_with_authors = db.fetch_posts_with_authors_joined()\n    for post_id, author in posts_with_authors.items():\n        print(f\"post {post_id} -> author {author}\")\n    print(f\"Joined approach used {db.query_count} query for {len(posts_with_authors)} posts\")\n\n\nif __name__ == \"__main__\":\n    database = FakeDatabase()\n    run_n_plus_one(database)\n    print()\n    run_joined(database)\n",
+            "java": "import java.util.*;\n\nclass FakeDatabase {\n    private final Map<Integer, String> posts = new LinkedHashMap<>();\n    private final Map<Integer, String> authors = new HashMap<>();\n    private int queryCount = 0;\n\n    FakeDatabase() {\n        posts.put(1, \"Scaling Postgres\");\n        posts.put(2, \"Intro to Read Replicas\");\n        posts.put(3, \"Query Optimization 101\");\n        authors.put(1, \"Asha\");\n        authors.put(2, \"Marco\");\n        authors.put(3, \"Asha\");\n    }\n\n    List<Integer> fetchAllPostIds() {\n        queryCount++;\n        return new ArrayList<>(posts.keySet());\n    }\n\n    String fetchAuthorForPost(int postId) {\n        queryCount++;\n        return authors.get(postId);\n    }\n\n    Map<Integer, String> fetchPostsWithAuthorsJoined() {\n        queryCount++;\n        Map<Integer, String> joined = new LinkedHashMap<>();\n        for (Map.Entry<Integer, String> e : posts.entrySet()) {\n            joined.put(e.getKey(), authors.get(e.getKey()));\n        }\n        return joined;\n    }\n\n    int getQueryCount() {\n        return queryCount;\n    }\n\n    void resetQueryCount() {\n        queryCount = 0;\n    }\n}\n\npublic class Main {\n\n    // the N+1 problem: one query for the list, then one more per row\n    static void runNPlusOne(FakeDatabase db) {\n        db.resetQueryCount();\n        List<Integer> postIds = db.fetchAllPostIds();\n        for (int postId : postIds) {\n            String author = db.fetchAuthorForPost(postId); // N extra queries\n            System.out.println(\"post \" + postId + \" -> author \" + author);\n        }\n        System.out.println(\"N+1 approach used \" + db.getQueryCount() + \" queries for \" + postIds.size() + \" posts\");\n    }\n\n    // the fix: one query with a join instead of N extra round trips\n    static void runJoined(FakeDatabase db) {\n        db.resetQueryCount();\n        Map<Integer, String> postsWithAuthors = db.fetchPostsWithAuthorsJoined();\n        for (Map.Entry<Integer, String> e : postsWithAuthors.entrySet()) {\n            System.out.println(\"post \" + e.getKey() + \" -> author \" + e.getValue());\n        }\n        System.out.println(\"Joined approach used \" + db.getQueryCount() + \" query for \" + postsWithAuthors.size() + \" posts\");\n    }\n\n    public static void main(String[] args) {\n        FakeDatabase db = new FakeDatabase();\n        runNPlusOne(db);\n        System.out.println();\n        runJoined(db);\n    }\n}\n",
+            "cpp": "#include <iostream>\n#include <map>\n#include <vector>\n#include <string>\n\nclass FakeDatabase {\npublic:\n    FakeDatabase() {\n        posts_ = {{1, \"Scaling Postgres\"}, {2, \"Intro to Read Replicas\"}, {3, \"Query Optimization 101\"}};\n        authors_ = {{1, \"Asha\"}, {2, \"Marco\"}, {3, \"Asha\"}};\n    }\n\n    std::vector<int> fetchAllPostIds() {\n        queryCount_++;\n        std::vector<int> ids;\n        for (const auto& kv : posts_) ids.push_back(kv.first);\n        return ids;\n    }\n\n    std::string fetchAuthorForPost(int postId) {\n        queryCount_++;\n        return authors_[postId];\n    }\n\n    std::map<int, std::string> fetchPostsWithAuthorsJoined() {\n        queryCount_++;\n        std::map<int, std::string> joined;\n        for (const auto& kv : posts_) joined[kv.first] = authors_[kv.first];\n        return joined;\n    }\n\n    int getQueryCount() const { return queryCount_; }\n    void resetQueryCount() { queryCount_ = 0; }\n\nprivate:\n    std::map<int, std::string> posts_;\n    std::map<int, std::string> authors_;\n    int queryCount_ = 0;\n};\n\n// the N+1 problem: one query for the list, then one more per row\nvoid runNPlusOne(FakeDatabase& db) {\n    db.resetQueryCount();\n    std::vector<int> postIds = db.fetchAllPostIds();\n    for (int postId : postIds) {\n        std::string author = db.fetchAuthorForPost(postId); // N extra queries\n        std::cout << \"post \" << postId << \" -> author \" << author << std::endl;\n    }\n    std::cout << \"N+1 approach used \" << db.getQueryCount() << \" queries for \" << postIds.size() << \" posts\" << std::endl;\n}\n\n// the fix: one query with a join instead of N extra round trips\nvoid runJoined(FakeDatabase& db) {\n    db.resetQueryCount();\n    std::map<int, std::string> postsWithAuthors = db.fetchPostsWithAuthorsJoined();\n    for (const auto& kv : postsWithAuthors) {\n        std::cout << \"post \" << kv.first << \" -> author \" << kv.second << std::endl;\n    }\n    std::cout << \"Joined approach used \" << db.getQueryCount() << \" query for \" << postsWithAuthors.size() << \" posts\" << std::endl;\n}\n\nint main() {\n    FakeDatabase db;\n    runNPlusOne(db);\n    std::cout << std::endl;\n    runJoined(db);\n    return 0;\n}\n"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Batching as an alternative to a join",
+          "text": "3.1 Batching as an alternative to a join"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284196444-393780378.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284196444-393780378.png",
+          "alt": "Collecting every needed id first and fetching them all in one query avoids both the N+1 pattern and an unnecessary join"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a join is not a natural fit, batching is a simpler alternative: collect every id actually needed across a whole list first, then issue a single query using <code>WHERE id IN (...)</code> to fetch them all at once, rather than one query per item. This turns N+1 round trips into exactly 2, still a dramatic improvement, without needing to restructure the query into a join at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Avoiding SELECT *",
+          "text": "4. Avoiding SELECT *"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284198232-671501178.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284198232-671501178.png",
+          "alt": "Fetching every column wastes bandwidth on data the application never actually uses"
+        },
+        {
+          "type": "paragraph",
+          "content": "<code>SELECT *</code> is convenient, and quietly wasteful. It transfers every column, including ones the application never actually uses, over the network, and can also prevent the database from using a covering index, covered under Indexing elsewhere in this section, since that optimization only works when the requested columns are known in advance and match the index."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a schema evolution risk hiding here too, a table that later gains a new large column (a big JSON blob, an embedded document) silently makes every existing SELECT * query slower and heavier, without a single line of application code changing, simply because the schema grew underneath it."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a narrower exception worth naming so it does not get treated as a blanket rule violation: an interactive debugging session where you genuinely want to see every column of a handful of rows is a reasonable place to reach for SELECT star. The rule is about what ships in application code and runs on every request, not about how you poke at data by hand."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Query Rewriting for the Planner",
+          "text": "5. Query Rewriting for the Planner"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284200566-150174726.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284200566-150174726.png",
+          "alt": "The exact same logical question can be written in a way that forces a slow plan, or a way that lets the planner choose a fast one"
+        },
+        {
+          "type": "paragraph",
+          "content": "The same logical question can often be expressed in more than one way, and not all of them lead the planner to the same plan. A correlated subquery, one that re-runs for every row of the outer query, can force a slow, row-by-row execution plan, while rewriting the same logic as a join often lets the planner choose a much more efficient, set-based approach instead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 A concrete before-and-after",
+          "text": "5.1 A concrete before-and-after"
+        },
+        {
+          "type": "paragraph",
+          "content": "A query checking whether any order exists for a customer is often written as a correlated EXISTS subquery or, worse, a COUNT(*) that the application then just checks for greater than zero. Rewriting it as a plain EXISTS, which lets the database stop as soon as it finds a single match rather than counting every one, is a small rewrite that can meaningfully change the resulting plan and its cost."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Correlated Subqueries Are a Hidden N Plus One",
+          "text": "5.2 Correlated Subqueries Are a Hidden N Plus One"
+        },
+        {
+          "type": "paragraph",
+          "content": "A subquery in the SELECT list that references a column from the outer query is called a correlated subquery, and it runs once per outer row, which is the same cost shape as the N plus one problem covered earlier, just written as a single SQL statement instead of a loop in application code. The optimizer can sometimes decorrelate a simple case automatically, but it cannot always prove the rewrite is safe, so relying on that is not a strategy."
+        },
+        {
+          "type": "code",
+          "content": "-- Runs the inner COUNT once per order row\nSELECT o.id, o.total,\n  (SELECT COUNT(*) FROM order_items i WHERE i.order_id = o.id) AS item_count\nFROM orders o\nWHERE o.customer_id = 42;\n\n-- Same result, single pass with a join and aggregation\nSELECT o.id, o.total, COUNT(i.id) AS item_count\nFROM orders o\nLEFT JOIN order_items i ON i.order_id = o.id\nWHERE o.customer_id = 42\nGROUP BY o.id, o.total;",
+          "code": {
+            "language": "sql",
+            "content": "-- Runs the inner COUNT once per order row\nSELECT o.id, o.total,\n  (SELECT COUNT(*) FROM order_items i WHERE i.order_id = o.id) AS item_count\nFROM orders o\nWHERE o.customer_id = 42;\n\n-- Same result, single pass with a join and aggregation\nSELECT o.id, o.total, COUNT(i.id) AS item_count\nFROM orders o\nLEFT JOIN order_items i ON i.order_id = o.id\nWHERE o.customer_id = 42\nGROUP BY o.id, o.total;"
+          },
+          "codes": {
+            "sql": "-- Runs the inner COUNT once per order row\nSELECT o.id, o.total,\n  (SELECT COUNT(*) FROM order_items i WHERE i.order_id = o.id) AS item_count\nFROM orders o\nWHERE o.customer_id = 42;\n\n-- Same result, single pass with a join and aggregation\nSELECT o.id, o.total, COUNT(i.id) AS item_count\nFROM orders o\nLEFT JOIN order_items i ON i.order_id = o.id\nWHERE o.customer_id = 42\nGROUP BY o.id, o.total;"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The rewritten version asks the database for exactly one plan that joins and aggregates in a single pass, which is almost always cheaper than repeating a small query thousands of times, even though each individual repetition looks fast in isolation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Statistics and Why They Matter",
+          "text": "6. Statistics and Why They Matter"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030018-326250256.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030018-326250256.png",
+          "alt": "The planner relies on statistics about data distribution to estimate costs; stale statistics lead directly to poor plan choices"
+        },
+        {
+          "type": "paragraph",
+          "content": "The planner does not know the real content of a table, it relies on periodically collected <strong>statistics</strong>, roughly how many rows exist, how values are distributed, to estimate costs. After a large data change, a bulk import, a mass deletion, those statistics can go stale, and the planner can make a poor choice based on outdated assumptions until they are refreshed."
+        },
+        {
+          "type": "paragraph",
+          "content": "Most databases refresh statistics automatically on a schedule or after a threshold amount of change, PostgreSQL autovacuum being a well-known example, but a sudden, large, one-off data change can still outpace that automatic schedule, which is why manually triggering a statistics refresh after a major bulk operation is a common, sensible precaution."
+        },
+        {
+          "type": "paragraph",
+          "content": "Histograms are the other piece of the statistics picture, capturing the distribution of values within a column rather than just the count of distinct values. A histogram is what lets the optimizer estimate that a filter on a common value will match a large fraction of the table while the same filter on a rare value will match almost none of it, producing very different plans for what looks like the identical query with only the literal value changed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Prepared Statements and Plan Caching",
+          "text": "6.1 Prepared Statements and Plan Caching"
+        },
+        {
+          "type": "paragraph",
+          "content": "Parsing a query and building an execution plan for it is not free, so most databases cache the plan for a prepared statement and reuse it the next time the same statement runs with different parameter values. This is a meaningful performance win for queries that run thousands of times a second with only the parameter values changing."
+        },
+        {
+          "type": "paragraph",
+          "content": "The catch is a problem called parameter sniffing. The database builds the very first plan using the specific parameter values from that first execution, and if those values happened to be unusually rare or unusually common compared to the rest of the table, the cached plan can be a poor fit for every subsequent call with more typical values. A plan optimized for a rare value might choose an index scan that becomes a disaster once reused for a common value that matches millions of rows."
+        },
+        {
+          "type": "note",
+          "title": "Practical fix",
+          "content": "If a query performs inconsistently between calls with different parameters, suspect a stale cached plan before anything else. Most databases provide a way to force a fresh plan, and this single check has resolved more mystery slowdowns than almost any other technique."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Common Anti-Patterns",
+          "text": "7. Common Anti-Patterns"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Functions wrapped around indexed columns</strong> in a WHERE clause (<code>WHERE YEAR(created_at) = 2026</code>) often prevent the index on that column from being used at all.\",\"<strong>Leading wildcard searches</strong> (<code>LIKE '%term'</code>) cannot use a standard B-Tree index efficiently, since the index is sorted by the start of the string, not the middle.\",\"<strong>Implicit type conversion</strong> between a column and a compared value can silently disable an index if the types do not match exactly.\"]",
+          "items": [
+            "<strong>Functions wrapped around indexed columns</strong> in a WHERE clause (<code>WHERE YEAR(created_at) = 2026</code>) often prevent the index on that column from being used at all.",
+            "<strong>Leading wildcard searches</strong> (<code>LIKE '%term'</code>) cannot use a standard B-Tree index efficiently, since the index is sorted by the start of the string, not the middle.",
+            "<strong>Implicit type conversion</strong> between a column and a compared value can silently disable an index if the types do not match exactly."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Deep pagination with OFFSET",
+          "text": "7.1 Deep pagination with OFFSET"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284204246-131563154.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284204246-131563154.png",
+          "alt": "A large OFFSET forces the database to scan and discard every earlier row before it can return the page you actually asked for"
+        },
+        {
+          "type": "paragraph",
+          "content": "Paginating with a large <code>OFFSET</code> (page 1000 of a listing, skipping the first 100,000 rows) forces the database to actually scan and discard every one of those skipped rows before it can return the page you asked for, getting slower the deeper a user pages in. <strong>Cursor-based pagination</strong>, remembering the last seen id or timestamp and querying \"give me the next page after this value,\" avoids that scan entirely, jumping directly to the right starting point using an index instead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Join order matters too",
+          "text": "7.2 Join order matters too"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284205944-561485417.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284205944-561485417.png",
+          "alt": "Filtering down to a small result set before joining against a much larger table is usually far cheaper than joining the large table first"
+        },
+        {
+          "type": "paragraph",
+          "content": "When joining several tables, filtering down to a small set of rows as early as possible, before joining against a much larger table, is usually far cheaper than joining everything together first and filtering afterward. Most planners handle this reordering automatically, but a query written in a way that makes early filtering impossible (a filter that can only apply after a join completes) can force a needlessly expensive plan regardless of how smart the planner is."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.3 A Missing Join Condition Creates a Cartesian Product",
+          "text": "7.3 A Missing Join Condition Creates a Cartesian Product"
+        },
+        {
+          "type": "paragraph",
+          "content": "Forgetting a join condition, or writing one that does not actually match rows correctly, does not usually produce an error. Instead the database happily returns every combination of rows from both tables, known as a cartesian product, silently multiplying a result set that should have had a few hundred rows into millions."
+        },
+        {
+          "type": "paragraph",
+          "content": "This shows up in a plan as a join step whose estimated and actual row count is wildly larger than either input table, which is one of the easiest mistakes to spot once you know to look for it, and one of the easiest to miss if you only skim the plan for obviously slow-looking node names."
+        },
+        {
+          "type": "note",
+          "title": "Defensive habit",
+          "content": "Always check that a query returns roughly the row count you expect before assuming it is correct just because it ran without an error. A silently exploded join is a correctness bug wearing a performance bug costume."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Real-World Tools",
+          "text": "8. Real-World Tools"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Tool\",\"What it shows\"],\"rows\":[[\"EXPLAIN / EXPLAIN ANALYZE\",\"The chosen execution plan and real timing per step\"],[\"Slow query log\",\"Every query exceeding a configured duration threshold, for auditing after the fact\"],[\"pg_stat_statements (Postgres)\",\"Aggregated statistics on which queries run most often and cost the most overall\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Application-level tools matter here too, many ORMs (object-relational mappers) have a well-known tendency to generate N+1 patterns by default unless explicitly told to eager-load related data, most modern ORMs provide a specific method for this, worth knowing and using deliberately rather than relying on the ORM defaults."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Visualizing a Plan Instead of Reading Raw Text",
+          "text": "8.1 Visualizing a Plan Instead of Reading Raw Text"
+        },
+        {
+          "type": "paragraph",
+          "content": "A deeply nested plan with several joins can be genuinely hard to parse as plain text, since the indentation carries a lot of the meaning and it is easy to lose track of which node belongs under which. Most database admin tools and several free web based visualizers turn the raw plan into a tree diagram with each node sized or colored by its cost, which makes the single expensive step jump out visually instead of requiring careful reading."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is worth reaching for on any plan with more than three or four joins. Below that, the raw text is usually fast enough to scan directly, and pasting a plan into an external tool is an extra step that is not always worth it for a simple query."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Common Mistakes",
+          "text": "9. Common Mistakes"
+        },
+        {
+          "type": "list",
+          "content": "[\"Adding an index first, without confirming through an execution plan that the query itself, not the missing index, is actually the bottleneck.\",\"Never revisiting query patterns as an application evolves, letting an N+1 pattern silently creep back in with new features.\",\"Optimizing based on a small development dataset that does not reflect real production data volume or distribution.\"]",
+          "items": [
+            "Adding an index first, without confirming through an execution plan that the query itself, not the missing index, is actually the bottleneck.",
+            "Never revisiting query patterns as an application evolves, letting an N+1 pattern silently creep back in with new features.",
+            "Optimizing based on a small development dataset that does not reflect real production data volume or distribution."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "A related habit worth building is re-checking a query plan after a schema change, not just when it first ships. An index that was dropped during a migration, a column that changed type, or a table that grew past a statistics threshold can all silently flip a plan from fast to slow with no code change at all, so the query that was optimized once is not optimized forever."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 A Practical Optimization Checklist",
+          "text": "9.1 A Practical Optimization Checklist"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a query is slow, working through the same short checklist in order finds the problem far faster than guessing. This is the order that tends to catch the most expensive mistakes first."
+        },
+        {
+          "type": "list",
+          "content": "[\"Run EXPLAIN ANALYZE and find the single step consuming the most actual time, not just the step with the scariest name.\",\"Check whether the row estimate for that step is close to the actual row count. A large gap means stale statistics, not a query problem.\",\"Look for a sequential scan on a large table where a WHERE clause suggests an index should be usable.\",\"Look for a nested loop over a large row count, which usually means a missing index on the inner side.\",\"Check whether a function call or type conversion is wrapped around an indexed column, which silently disables that index.\",\"Confirm the query is not fetching more columns or more rows than the application actually uses.\"]",
+          "items": [
+            "Run EXPLAIN ANALYZE and find the single step consuming the most actual time, not just the step with the scariest name.",
+            "Check whether the row estimate for that step is close to the actual row count. A large gap means stale statistics, not a query problem.",
+            "Look for a sequential scan on a large table where a WHERE clause suggests an index should be usable.",
+            "Look for a nested loop over a large row count, which usually means a missing index on the inner side.",
+            "Check whether a function call or type conversion is wrapped around an indexed column, which silently disables that index.",
+            "Confirm the query is not fetching more columns or more rows than the application actually uses."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. HLD Interview: How to Talk About This",
+          "text": "10. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "Strong answers describe a concrete diagnostic process, look at the execution plan first, rather than guessing at a fix. Being able to name the N+1 problem specifically, and explain why rewriting a query can matter as much as adding an index, shows practical, hands-on experience rather than textbook knowledge."
+        },
+        {
+          "type": "blockQuote",
+          "content": "An index gives a query a fast path to take. Query optimization is making sure the query actually asks to take it."
+        },
+        {
+          "type": "paragraph",
+          "content": "A strong answer also shows judgment about cost. Interviewers are listening for whether you would spend a day chasing a query that already runs in ten milliseconds, or whether you can correctly identify that the real win is elsewhere. Naming the twenty percent of queries responsible for eighty percent of database load, and optimizing those first, demonstrates the same prioritization instinct that matters in every other part of system design."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "Key Takeaways",
+          "text": "Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"A query optimizer estimates the cost of multiple possible execution plans and picks the cheapest one automatically.\",\"Reading an execution plan directly, rather than guessing, is the most reliable way to diagnose a slow query.\",\"The N+1 query problem turns one logical fetch into many separate round trips, and is one of the most common, costly patterns in real applications.\",\"SELECT * wastes bandwidth and can prevent covering index optimizations.\",\"The same logical query can be rewritten in ways that lead the planner to a dramatically different, often faster, plan.\",\"Stale statistics about data distribution can cause the planner to make a poor choice until they are refreshed.\"]",
+          "items": [
+            "A query optimizer estimates the cost of multiple possible execution plans and picks the cheapest one automatically.",
+            "Reading an execution plan directly, rather than guessing, is the most reliable way to diagnose a slow query.",
+            "The N+1 query problem turns one logical fetch into many separate round trips, and is one of the most common, costly patterns in real applications.",
+            "SELECT * wastes bandwidth and can prevent covering index optimizations.",
+            "The same logical query can be rewritten in ways that lead the planner to a dramatically different, often faster, plan.",
+            "Stale statistics about data distribution can cause the planner to make a poor choice until they are refreshed."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

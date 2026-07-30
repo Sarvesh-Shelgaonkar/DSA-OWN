@@ -1,0 +1,720 @@
+{
+  "slug": "change-data-capture",
+  "title": "Change Data Capture (CDC)",
+  "content": [
+    {
+      "id": "change-data-capture",
+      "title": "Change Data Capture (CDC)",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Your users live in a database, but they also need to be searchable in Elasticsearch, cached in Redis, and analysed in a data warehouse. When a user changes their name, all of those copies need to update. How do you keep them in sync without bogging down the application?"
+        },
+        {
+          "type": "paragraph",
+          "content": "The naive answer is to have the app write to all of them at once. That turns out to be surprisingly broken, as we will see. The robust answer is change data capture, or CDC."
+        },
+        {
+          "type": "paragraph",
+          "content": "Change data capture watches the database for changes, every insert, update, and delete, and streams them out as events. Other systems consume those events and update themselves, so every copy stays in sync with the source, automatically."
+        },
+        {
+          "type": "paragraph",
+          "content": "This idea, treating database changes as a stream of events, quietly powers a huge amount of modern data infrastructure, from search to analytics to microservice communication."
+        },
+        {
+          "type": "paragraph",
+          "content": "The name says exactly what it does: it captures the changes to your data as they happen, rather than asking for the current state over and over."
+        },
+        {
+          "type": "paragraph",
+          "content": "Once you see the database as a source of events, a whole class of synchronization problems that used to be painful becomes routine."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278791915-170874714.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278791915-170874714.png",
+          "alt": "CDC captures every database change and streams it to search, cache, and analytics"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What Change Data Capture Is",
+          "text": "1. What Change Data Capture Is"
+        },
+        {
+          "type": "paragraph",
+          "content": "Change data capture is a technique for detecting and capturing changes made to data in a database, and delivering those changes to other systems as a stream of events."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every row level change becomes an event. An insert produces a created event, an update produces an updated event with the new values, and a delete produces a deleted event. Consumers of the stream react to each one."
+        },
+        {
+          "type": "paragraph",
+          "content": "The key property is that it happens outside the application. The app just writes to its database as normal. CDC observes those writes separately and turns them into events, so the application does not have to know or care who needs the data."
+        },
+        {
+          "type": "list",
+          "content": "[\"Captures inserts, updates, and deletes at the row level\",\"Turns each change into an event on a stream\",\"Runs alongside the database, not inside the application\",\"Keeps downstream systems in sync with the source of truth\"]",
+          "items": [
+            "Captures inserts, updates, and deletes at the row level",
+            "Turns each change into an event on a stream",
+            "Runs alongside the database, not inside the application",
+            "Keeps downstream systems in sync with the source of truth"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "The one line version",
+          "content": "Change data capture streams every change in a database out as events, so other systems can stay in sync without the application having to tell each of them."
+        },
+        {
+          "type": "paragraph",
+          "content": "Contrast this with an application that has to remember to update the cache, the index, and the warehouse every time it writes. With CDC, none of that lives in the application, it is derived from the one place the data actually changed."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is why CDC scales so well organizationally. Teams add consumers of the change stream on their own schedule, without ever coordinating a change to the service that owns the data."
+        },
+        {
+          "type": "paragraph",
+          "content": "That separation is the whole point. The team that owns the database does not need to know who consumes its changes, and new consumers can appear without the database owner lifting a finger."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is publish subscribe, but the publisher is the database itself, and it never has to be modified to add a new subscriber."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Problem: Keeping Systems in Sync",
+          "text": "2. The Problem: Keeping Systems in Sync"
+        },
+        {
+          "type": "paragraph",
+          "content": "To see why CDC exists, look at the obvious alternative, called dual writes. The application writes to the database, and then also writes to the search index, the cache, and everything else, one after another."
+        },
+        {
+          "type": "paragraph",
+          "content": "This seems fine until you consider failure. What if the database write succeeds but the search index write fails? Now the two disagree, and there is no easy way to fix it. The application has no transaction spanning both systems, so a crash between the two writes leaves them permanently inconsistent."
+        },
+        {
+          "type": "paragraph",
+          "content": "Dual writes also couple everything together. The application now has to know about the search index, the cache, the warehouse, and handle the failure of each. Every new consumer means more code and more ways to fail inside the write path."
+        },
+        {
+          "type": "list",
+          "content": "[\"Partial failures leave systems permanently inconsistent\",\"There is no shared transaction across separate systems\",\"The application is coupled to every downstream it must update\",\"The write path grows slower and more fragile with each new consumer\"]",
+          "items": [
+            "Partial failures leave systems permanently inconsistent",
+            "There is no shared transaction across separate systems",
+            "The application is coupled to every downstream it must update",
+            "The write path grows slower and more fragile with each new consumer"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "CDC solves this at a stroke. The application does one thing, write to its database in a single transaction. CDC then derives all the other updates from that one committed source of truth, so there is nothing to get out of sync."
+        },
+        {
+          "type": "note",
+          "title": "Dual writes are a trap",
+          "content": "Writing to two systems from the application looks simple but has no atomicity, so any failure between the writes causes drift. CDC avoids the problem by deriving everything from one committed database."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth sitting with why dual writes cannot be made safe with simple retries. If the second write keeps failing, you either block the user on something unrelated to their action, or you give up and accept drift. Neither is acceptable for important data."
+        },
+        {
+          "type": "paragraph",
+          "content": "You cannot wrap a database and a search index in one transaction either, because they are separate systems with no shared commit. That impossibility is the root of the problem."
+        },
+        {
+          "type": "paragraph",
+          "content": "CDC sidesteps it entirely by having exactly one authoritative write, the database commit, and turning everything else into a consequence of that commit rather than a second write that might fail."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. How CDC Works: Reading the Log",
+          "text": "3. How CDC Works: Reading the Log"
+        },
+        {
+          "type": "paragraph",
+          "content": "The clever part of modern CDC is where it gets the changes from. It does not poll the tables or add triggers. It reads the database transaction log."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029031-241790507.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029031-241790507.png",
+          "alt": "CDC tails the database transaction log instead of querying the tables"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every durable database already writes a transaction log, called the write ahead log in Postgres or the binlog in MySQL. Before a change is applied, it is recorded in this log, which is how the database recovers after a crash. That log is a perfect, ordered record of every change that ever happened."
+        },
+        {
+          "type": "paragraph",
+          "content": "Log based CDC tails that log. A connector reads new entries as they are written and turns each one into a change event. Because it reads the log the database already keeps, it adds almost no load to the database and misses nothing, not even changes made outside the application."
+        },
+        {
+          "type": "list",
+          "content": "[\"The database records every change in its transaction log for durability\",\"A CDC connector reads new log entries as they appear\",\"Each entry becomes a change event with the old and new row values\",\"This adds minimal load and captures every change, in order\"]",
+          "items": [
+            "The database records every change in its transaction log for durability",
+            "A CDC connector reads new log entries as they appear",
+            "Each entry becomes a change event with the old and new row values",
+            "This adds minimal load and captures every change, in order"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Why the log, not the tables",
+          "content": "The transaction log is already a complete, ordered history of every change. Reading it is low overhead and catches everything, which is why log based CDC is the modern standard."
+        },
+        {
+          "type": "paragraph",
+          "content": "In Postgres this is built on a replication slot, the same mechanism used to feed read replicas. The CDC connector registers as if it were a replica and receives the stream of changes, which is why it is so low impact."
+        },
+        {
+          "type": "paragraph",
+          "content": "One consequence to watch is that the database holds on to log segments a slot has not yet consumed. If a CDC connector stops for a long time, the log can grow and fill the disk, so a stalled connector is something to monitor."
+        },
+        {
+          "type": "paragraph",
+          "content": "Deletes get special treatment. A delete event often carries the old row so consumers know what to remove, and log based CDC can also emit a tombstone, a marker that says this key is gone, which downstream systems use to clean up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Log-Based vs Query-Based vs Trigger-Based",
+          "text": "4. Log-Based vs Query-Based vs Trigger-Based"
+        },
+        {
+          "type": "paragraph",
+          "content": "There are three ways to capture changes, and they differ a lot in cost and completeness."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"How it works\",\"Tradeoff\"],\"rows\":[[\"Log based\",\"Read the transaction log\",\"Low overhead, complete, near real time, the modern default\"],[\"Query based\",\"Poll for rows changed since last check\",\"Simple but misses deletes and adds query load\"],[\"Trigger based\",\"Database triggers write changes to a table\",\"Captures everything but slows down every write\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Query based CDC polls the table for rows with an updated timestamp newer than the last poll. It is easy to build but it cannot see deletes, since a deleted row is simply gone, and it adds constant query load while still missing changes between polls."
+        },
+        {
+          "type": "paragraph",
+          "content": "Trigger based CDC uses database triggers to record each change into a separate table. It captures everything, including deletes, but every write now fires a trigger, which slows down the application database and adds complexity."
+        },
+        {
+          "type": "paragraph",
+          "content": "Log based CDC avoids both downsides. It sees every change including deletes, adds almost no load, and works in near real time. This is why tools like Debezium are built around reading the log, and why it is the approach to reach for."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a fourth option people sometimes forget: the outbox, which we cover shortly. It is a design pattern layered on top of log based CDC rather than a separate capture mechanism."
+        },
+        {
+          "type": "paragraph",
+          "content": "A quick rule of thumb: if the database supports log based CDC, use it. Fall back to query based only for legacy systems where reading the log is not possible."
+        },
+        {
+          "type": "paragraph",
+          "content": "The gap between the approaches is not small. Log based is near real time and complete, while query based can be minutes stale and blind to deletes, which for many use cases is the difference between working and not."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. A Change Events Journey",
+          "text": "5. A Change Events Journey"
+        },
+        {
+          "type": "paragraph",
+          "content": "Following one change from the database to a downstream system makes the whole pipeline concrete."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278795307-347355598.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785278795307-347355598.png",
+          "alt": "A row update flows from the database log through the connector to the search index"
+        },
+        {
+          "type": "list",
+          "content": "[\"The application updates a row in the database inside a transaction\",\"The database commits the change and records it in the transaction log\",\"The CDC connector reads the new log entry\",\"It emits a change event describing what changed, with the new values\",\"A consumer, such as a search indexer, applies the change to its own copy\"]",
+          "items": [
+            "The application updates a row in the database inside a transaction",
+            "The database commits the change and records it in the transaction log",
+            "The CDC connector reads the new log entry",
+            "It emits a change event describing what changed, with the new values",
+            "A consumer, such as a search indexer, applies the change to its own copy"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "content": "A change event is usually a rich object. It carries the table, the operation, the row before the change, the row after, and a timestamp. That is enough for any consumer to update itself precisely."
+        },
+        {
+          "type": "code",
+          "content": "{\n  \"op\": \"update\",\n  \"table\": \"users\",\n  \"before\": { \"id\": 42, \"name\": \"Alexa\" },\n  \"after\":  { \"id\": 42, \"name\": \"Alex\" },\n  \"ts\": 1735689600\n}",
+          "code": "{\n  \"op\": \"update\",\n  \"table\": \"users\",\n  \"before\": { \"id\": 42, \"name\": \"Alexa\" },\n  \"after\":  { \"id\": 42, \"name\": \"Alex\" },\n  \"ts\": 1735689600\n}",
+          "codes": {
+            "json": "{\n  \"op\": \"update\",\n  \"table\": \"users\",\n  \"before\": { \"id\": 42, \"name\": \"Alexa\" },\n  \"after\":  { \"id\": 42, \"name\": \"Alex\" },\n  \"ts\": 1735689600\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Because the event contains both the before and after state, consumers can do sophisticated things, like invalidating a cache key based on the old value while indexing the new one."
+        },
+        {
+          "type": "paragraph",
+          "content": "Connectors also apply transformations before publishing, often called single message transforms. You can rename fields, drop sensitive columns, or reshape the event so consumers see a clean contract rather than raw table columns."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is where you can decouple consumers from your physical schema. Rather than exposing the exact table layout, you transform each change into a stable, meaningful event."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is always some latency, usually milliseconds to a second or two, between the database commit and the event reaching a consumer. It is near real time, not instant, which matters for use cases that expect immediate global consistency."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. The Outbox Pattern",
+          "text": "6. The Outbox Pattern"
+        },
+        {
+          "type": "paragraph",
+          "content": "CDC also elegantly solves a classic microservices problem: how to update the database and publish an event, reliably, without dual writes."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396028796-987588710.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396028796-987588710.png",
+          "alt": "The outbox pattern writes the business row and an outbox row in one transaction, then CDC publishes it"
+        },
+        {
+          "type": "paragraph",
+          "content": "The trick is the outbox. In the same database transaction that changes your business data, you also insert a row into an outbox table describing the event you want to publish. Because it is one transaction, either both happen or neither does, so they can never disagree."
+        },
+        {
+          "type": "paragraph",
+          "content": "CDC then reads the outbox table from the log and publishes each outbox row as a real event to your message broker. The event is guaranteed to be published if and only if the business change was committed."
+        },
+        {
+          "type": "list",
+          "content": "[\"Write the business change and an outbox row in a single transaction\",\"Atomicity guarantees the event exists exactly when the change does\",\"CDC reads the outbox and publishes the event to the broker\",\"No dual write, so the database and the event stream never drift apart\"]",
+          "items": [
+            "Write the business change and an outbox row in a single transaction",
+            "Atomicity guarantees the event exists exactly when the change does",
+            "CDC reads the outbox and publishes the event to the broker",
+            "No dual write, so the database and the event stream never drift apart"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Outbox plus CDC is the reliable way",
+          "content": "The outbox pattern, drained by CDC, is the standard solution for reliably publishing events from a service. It replaces the fragile dual write with a single atomic transaction."
+        },
+        {
+          "type": "paragraph",
+          "content": "A practical detail: the outbox table is usually polled or tailed and then its rows are marked processed or deleted, so it does not grow forever. With log based CDC, the connector reads inserts to the outbox directly from the log."
+        },
+        {
+          "type": "paragraph",
+          "content": "The events you write to the outbox should be meaningful domain events, like OrderPlaced, not raw row dumps. That keeps consumers decoupled from your internal tables even though CDC is the delivery mechanism."
+        },
+        {
+          "type": "paragraph",
+          "content": "This pattern is so common in microservices that it has become the default answer to the question, how do I update my data and reliably tell other services about it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. CDC with Debezium and Kafka",
+          "text": "7. CDC with Debezium and Kafka"
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice, the most common CDC stack is Debezium streaming into Kafka."
+        },
+        {
+          "type": "paragraph",
+          "content": "Debezium is an open source CDC platform with connectors for Postgres, MySQL, MongoDB, and more. It tails the database log and publishes change events, typically onto Kafka topics, one topic per table."
+        },
+        {
+          "type": "paragraph",
+          "content": "From there, any number of consumers read the change stream. One consumer updates a search index, another warms a cache, another loads a warehouse, and each does so independently, exactly like publish subscribe over the database changes."
+        },
+        {
+          "type": "list",
+          "content": "[\"Debezium connectors read the transaction log of common databases\",\"Change events are published to Kafka, usually one topic per table\",\"Consumers subscribe to the topics they care about\",\"Kafka retention means a new consumer can replay history to build its state\"]",
+          "items": [
+            "Debezium connectors read the transaction log of common databases",
+            "Change events are published to Kafka, usually one topic per table",
+            "Consumers subscribe to the topics they care about",
+            "Kafka retention means a new consumer can replay history to build its state"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "This combination is powerful because it turns your database into a source of events without changing the application at all. The app keeps writing rows, and a whole event driven ecosystem grows around the change stream."
+        },
+        {
+          "type": "paragraph",
+          "content": "Debezium runs on Kafka Connect, so it inherits its scaling and fault tolerance. If a connector task dies, it restarts and resumes from the last recorded log position, so it does not miss or duplicate wholesale."
+        },
+        {
+          "type": "paragraph",
+          "content": "Managed options exist too, from cloud database change streams to hosted Debezium, so you do not always have to operate the connector fleet yourself."
+        },
+        {
+          "type": "paragraph",
+          "content": "The mental model to carry away is simple: point a connector at a database, and its changes become a topic other systems can subscribe to, just like any other event stream."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Common Use Cases",
+          "text": "8. Common Use Cases"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once you can stream every database change, a lot of hard synchronization problems become easy."
+        },
+        {
+          "type": "list",
+          "content": "[\"Search indexing: keep Elasticsearch in sync with the database automatically\",\"Cache invalidation: update or evict cache entries the moment the underlying row changes\",\"Data warehousing: continuously load changes into an analytics store instead of nightly batch jobs\",\"Microservice sync: let one service react to another service data changes without direct calls\",\"Audit logs: the change stream is a complete, ordered history of every modification\"]",
+          "items": [
+            "Search indexing: keep Elasticsearch in sync with the database automatically",
+            "Cache invalidation: update or evict cache entries the moment the underlying row changes",
+            "Data warehousing: continuously load changes into an analytics store instead of nightly batch jobs",
+            "Microservice sync: let one service react to another service data changes without direct calls",
+            "Audit logs: the change stream is a complete, ordered history of every modification"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The warehouse case is especially common. Traditional analytics relied on heavy nightly extracts that hammered the database. CDC replaces them with a continuous, low impact stream, so the warehouse is always close to real time."
+        },
+        {
+          "type": "paragraph",
+          "content": "The result is analytics that are minutes fresh instead of a day old, without the heavy nightly load on the production database."
+        },
+        {
+          "type": "paragraph",
+          "content": "The audit case is almost a free bonus. Because CDC already captures every change with before and after values, you get a full audit trail of who changed what and when, simply by keeping the change events."
+        },
+        {
+          "type": "paragraph",
+          "content": "Cache invalidation deserves a special mention, because it is famously hard to get right by hand. With CDC, the moment a row changes, an event fires, and a consumer evicts or updates exactly the affected cache entry, no guesswork and no stale reads lingering for a timeout."
+        },
+        {
+          "type": "paragraph",
+          "content": "For analytics, this shift from nightly batch to continuous CDC is often what people mean by streaming ETL or ELT. The warehouse is fed a live change stream rather than a once a day dump."
+        },
+        {
+          "type": "paragraph",
+          "content": "And because every use case reads the same change stream, adding a new one, say a fraud model that watches transactions, is just another consumer, with zero impact on the others."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is the quiet superpower of turning your database into an event stream: new capabilities attach to it without disturbing what already runs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Snapshots and Initial Load",
+          "text": "9. Snapshots and Initial Load"
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a chicken and egg problem when you start CDC on an existing database. The log only has recent changes, but the downstream system needs the current state of all the existing rows too."
+        },
+        {
+          "type": "paragraph",
+          "content": "CDC tools solve this with an initial snapshot. When a connector first starts, it reads the entire current contents of the tables, emits them as create events, and only then switches to tailing the log for new changes."
+        },
+        {
+          "type": "list",
+          "content": "[\"On first start, the connector snapshots all existing rows\",\"Each existing row is emitted as if it were newly created\",\"Once the snapshot is done, it switches to streaming live changes from the log\",\"The consumer ends up with the full current state, then stays in sync going forward\"]",
+          "items": [
+            "On first start, the connector snapshots all existing rows",
+            "Each existing row is emitted as if it were newly created",
+            "Once the snapshot is done, it switches to streaming live changes from the log",
+            "The consumer ends up with the full current state, then stays in sync going forward"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Snapshots must be handled carefully, because reading an entire large table can be heavy. Good tools do it incrementally and without locking, so the initial load does not disrupt the running application."
+        },
+        {
+          "type": "note",
+          "title": "The snapshot bridges the gap",
+          "content": "A snapshot gives a new consumer the existing data, and log streaming keeps it current after that. Together they mean a consumer built today can hold the complete, up to date picture."
+        },
+        {
+          "type": "paragraph",
+          "content": "The snapshot and the live stream have to be stitched together carefully so that a change happening during the snapshot is not lost or double applied. Good connectors handle this boundary for you, but it is a subtle part of why CDC tooling is non trivial to build well."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is a strong argument for using a mature tool like Debezium rather than writing your own log reader, since the edge cases around snapshots, restarts, and log positions are genuinely hard."
+        },
+        {
+          "type": "paragraph",
+          "content": "For very large tables, incremental snapshots let the connector chunk through the data while still streaming live changes, so you are not forced to choose between a complete initial load and staying current."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Ordering, Delivery, and Idempotency",
+          "text": "10. Ordering, Delivery, and Idempotency"
+        },
+        {
+          "type": "paragraph",
+          "content": "CDC is a streaming system, so it inherits the same guarantees and pitfalls as message queues and pub sub."
+        },
+        {
+          "type": "paragraph",
+          "content": "Delivery is usually at least once, so a change event can be delivered more than once, for example if the connector restarts and re reads part of the log. Consumers must therefore be idempotent, applying the same change twice with no ill effect."
+        },
+        {
+          "type": "paragraph",
+          "content": "Ordering matters a great deal for CDC, because the changes to a single row must be applied in order, or the downstream copy will be wrong. Systems preserve order per row or per key, usually by routing all changes for one primary key to the same partition."
+        },
+        {
+          "type": "list",
+          "content": "[\"At least once delivery, so consumers must be idempotent\",\"Order is preserved per row or key, which is what correctness needs\",\"Applying an update out of order could overwrite newer data with older\",\"Using the change events primary key for both routing and idempotency solves both problems\"]",
+          "items": [
+            "At least once delivery, so consumers must be idempotent",
+            "Order is preserved per row or key, which is what correctness needs",
+            "Applying an update out of order could overwrite newer data with older",
+            "Using the change events primary key for both routing and idempotency solves both problems"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Order per key is the crucial guarantee",
+          "content": "For CDC, changes to the same row must arrive in order, or you get corrupted state. Per key ordering, plus idempotent apply, is what keeps the downstream copy correct."
+        },
+        {
+          "type": "paragraph",
+          "content": "A clean way to make apply idempotent is to use the change as an upsert keyed by the primary key, so replaying the same update simply sets the row to the same value again."
+        },
+        {
+          "type": "paragraph",
+          "content": "For deletes, idempotency means a repeated delete of an already gone row is a harmless no operation, which most systems handle naturally."
+        },
+        {
+          "type": "paragraph",
+          "content": "Some pipelines add the log position or a version number to each event, so a consumer can ignore an event older than what it has already applied, protecting against out of order or replayed changes."
+        },
+        {
+          "type": "paragraph",
+          "content": "In short, the same three habits from the messaging chapters carry over: assume duplicates, preserve per key order, and make the apply idempotent."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Schema Changes and Evolution",
+          "text": "11. Schema Changes and Evolution"
+        },
+        {
+          "type": "paragraph",
+          "content": "Databases change shape over time. Columns are added, renamed, or dropped, and CDC has to cope, because a change to the schema changes the shape of the events too."
+        },
+        {
+          "type": "paragraph",
+          "content": "When a column is added, new events simply include it, and consumers that ignore unknown fields keep working. Trickier changes, like renaming or removing a column, can break consumers that expect the old shape, so they need coordination."
+        },
+        {
+          "type": "list",
+          "content": "[\"Additive changes, like a new column, are usually safe for consumers\",\"Renames and drops can break consumers expecting the old fields\",\"A schema registry helps by versioning and validating the event shape\",\"Consumers should be tolerant, ignoring fields they do not understand\"]",
+          "items": [
+            "Additive changes, like a new column, are usually safe for consumers",
+            "Renames and drops can break consumers expecting the old fields",
+            "A schema registry helps by versioning and validating the event shape",
+            "Consumers should be tolerant, ignoring fields they do not understand"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The practical approach is to treat the change event schema as a contract, evolve it in compatible ways, and use a schema registry to catch breaking changes before they reach consumers. This is the same discipline as versioning events in pub sub."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is also a data privacy angle. When a user is deleted for a regulation like GDPR, that delete flows through CDC to every downstream copy, which is exactly what you want, since the data must be removed everywhere, not just the primary database."
+        },
+        {
+          "type": "paragraph",
+          "content": "The flip side is that CDC spreads data widely, so you must account for every consumer when reasoning about where personal data ends up and how it gets erased."
+        },
+        {
+          "type": "paragraph",
+          "content": "Treating the change stream as sensitive data, with access control and encryption, is therefore part of doing CDC responsibly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. When to Use CDC",
+          "text": "12. When to Use CDC"
+        },
+        {
+          "type": "paragraph",
+          "content": "CDC is the right tool whenever data lives in one place but needs to be reflected in others, in near real time, without coupling the application to all of them."
+        },
+        {
+          "type": "list",
+          "content": "[\"Syncing a database to a search index, cache, or data warehouse\",\"Reliably publishing events from a service, using the outbox pattern\",\"Feeding real time analytics or streaming pipelines from operational data\",\"Migrating or replicating data between databases with minimal downtime\",\"Building an audit trail of every change to important data\"]",
+          "items": [
+            "Syncing a database to a search index, cache, or data warehouse",
+            "Reliably publishing events from a service, using the outbox pattern",
+            "Feeding real time analytics or streaming pipelines from operational data",
+            "Migrating or replicating data between databases with minimal downtime",
+            "Building an audit trail of every change to important data"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "It is the wrong tool when you do not actually need other systems to track the database, or when a simple direct call or a scheduled batch job is enough. CDC brings real infrastructure, a connector, a stream, and consumers, so it is worth it only when the synchronization problem is real."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Use CDC when a change in your database must ripple out to other systems reliably and quickly, without the application having to update each one itself."
+        },
+        {
+          "type": "paragraph",
+          "content": "A good signal that you want CDC is hearing yourself say the phrase keep X in sync with the database. That synchronization, done reliably and continuously, is precisely what CDC is for."
+        },
+        {
+          "type": "paragraph",
+          "content": "If instead you only need the current value on demand, a direct query is simpler, and if a daily refresh is fine, a batch job may be all you need. CDC earns its complexity when freshness and reliability both matter."
+        },
+        {
+          "type": "paragraph",
+          "content": "A useful last question is how fresh the copy must be. Seconds of lag is fine for search and analytics, and CDC delivers that comfortably, while true instant consistency is a different and much harder problem."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Common Challenges and Mistakes",
+          "text": "13. Common Challenges and Mistakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "CDC is powerful but it is real distributed infrastructure, and it has its share of sharp edges."
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming exactly once and skipping idempotency, so replays corrupt downstream data\",\"Ignoring ordering, letting changes to a row apply out of sequence\",\"Underestimating the initial snapshot, which can be heavy on a large table\",\"Forgetting schema evolution, so a column change silently breaks consumers\",\"Treating the log position carelessly, so a connector restart misses or repeats changes\",\"Coupling consumers directly to the physical table shape rather than a stable event contract\"]",
+          "items": [
+            "Assuming exactly once and skipping idempotency, so replays corrupt downstream data",
+            "Ignoring ordering, letting changes to a row apply out of sequence",
+            "Underestimating the initial snapshot, which can be heavy on a large table",
+            "Forgetting schema evolution, so a column change silently breaks consumers",
+            "Treating the log position carelessly, so a connector restart misses or repeats changes",
+            "Coupling consumers directly to the physical table shape rather than a stable event contract"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The recurring theme is that CDC exposes your database internals as a stream, which is enormously useful but also means downstream systems can become tied to how your tables are laid out. Publishing clean, versioned events, often via the outbox, keeps that coupling under control."
+        },
+        {
+          "type": "note",
+          "title": "Decouple from the raw schema",
+          "content": "Letting consumers depend on raw table columns makes every schema change dangerous. Emitting well defined events, rather than raw row images, keeps producers free to evolve their database."
+        },
+        {
+          "type": "paragraph",
+          "content": "Security is another real concern. Reading the transaction log is a privileged operation that exposes every change in the database, so the connector credentials must be tightly controlled and the change stream treated as sensitive."
+        },
+        {
+          "type": "paragraph",
+          "content": "Operationally, the things to watch are connector lag, the replication slot disk usage mentioned earlier, and the health of the downstream consumers, since a stuck consumer lets the backlog grow."
+        },
+        {
+          "type": "paragraph",
+          "content": "Get those few things right, decoupled events, idempotent consumers, ordering per key, and connector monitoring, and CDC becomes a quietly reliable backbone rather than a source of surprises."
+        },
+        {
+          "type": "paragraph",
+          "content": "Done poorly, though, it can silently corrupt downstream data, which is why the ordering and idempotency details are worth taking seriously rather than glossing over."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "14. HLD Interview: How to Talk About This",
+          "text": "14. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a design needs to keep several systems in sync with a database, or to publish events reliably, CDC is a strong, senior sounding answer."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Reject dual writes:</strong> I avoid writing to the database and other systems separately, because a partial failure leaves them inconsistent with no way to reconcile."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Read the log:</strong> I use log based CDC, tailing the write ahead log or binlog, because it captures every change including deletes with almost no load on the database."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Reach for the outbox:</strong> To publish events from a service reliably, I write an outbox row in the same transaction and let CDC publish it, which replaces the fragile dual write."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Handle the streaming reality:</strong> I make consumers idempotent, rely on per key ordering, plan for the initial snapshot, and version the event schema so downstream systems do not break on database changes."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mention the outbox by name:</strong> Bringing up the outbox pattern for reliable event publishing, and log based CDC over dual writes, signals that you understand how to keep data consistent across services, which is a senior level concern."
+        }
+      ]
+    }
+  ]
+}

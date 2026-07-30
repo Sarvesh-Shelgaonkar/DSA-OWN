@@ -1,0 +1,452 @@
+{
+  "title": "Retry Mechanisms",
+  "slug": "retry-mechanisms",
+  "content": [
+    {
+      "id": "retry-mechanisms",
+      "title": "Retry Mechanisms",
+      "blocks": [
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most failures in distributed systems are temporary. A payment gateway times out not because the gateway is broken but because it was briefly overloaded.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781595736756-403553537.png\" alt=\"Vehicle Parking Process Flow-2026-06-16-073103.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">A database connection drops not because the database is down but because a network hiccup lasted 200ms. Retrying those calls at the right time, with the right limits recovers from failures that would otherwise reach the user as errors.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "blockQuote",
+          "content": "<b>This lesson covers:</b> fixed delay, exponential backoff, jitter, retry predicates, idempotency, max attempts, dead-letter fallback, and the mistakes that turn a retry mechanism into an outage amplifier."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What is Retryable?",
+          "text": "1. What is Retryable?"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "A retry mechanism in Low-Level Design (LLD) is a fault-tolerance technique that automatically re-executes an operation when it fails due to a temporary or transient issue.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of immediately treating the failure as permanent, the system attempts the operation again based on a predefined retry policy.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b><u>The goal is to improve reliability and availability by handling short-lived failures such as network timeouts, temporary service outages, or intermittent communication errors.</u></b>"
+        },
+        {
+          "type": "paragraph",
+          "content": "A retry mechanism typically defines how many times an operation should be retried, how long the system should wait between attempts, and which types of errors are eligible for retry.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "More advanced implementations may use strategies such as exponential backoff and jitter to reduce system load and prevent large numbers of clients from retrying simultaneously."
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>For example,</b> if a service request to an external API fails because of a timeout, the system may wait for a short period and retry the request. If the API becomes available during a subsequent attempt, the operation succeeds without requiring user intervention.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "If all retry attempts fail, the system reports the operation as unsuccessful and may trigger additional error-handling mechanisms."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">",
+          "text": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">"
+        },
+        {
+          "type": "heading1",
+          "content": "2. What makes a failure retryable?",
+          "text": "2. What makes a failure retryable?"
+        },
+        {
+          "type": "paragraph",
+          "content": "Before writing a single retry loop, answer one question: is this failure transient? Transient failures are caused by temporary conditions network blips, overloaded upstreams, brief lock contention.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>Permanent failures</b> are caused by logic errors invalid input, missing records, authentication failures. Retrying a permanent failure wastes time and makes the error message arrive later than it should."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781598240824-560502356.png",
+          "alt": "image.png",
+          "width": 5244,
+          "height": 1360
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "Strategy 1: fixed delay retry",
+          "text": "Strategy 1: fixed delay retry"
+        },
+        {
+          "type": "paragraph",
+          "content": "The simplest retry strategy: wait a fixed amount of time between each attempt. Easy to reason about, easy to implement.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "The right choice when you know roughly how long the upstream needs to recover, and when the volume of retries is low enough that a stampede is not a concern."
+        },
+        {
+          "type": "code",
+          "content": "class RetryConfig {\n    int maxAttempts;\n    long delayMs;\n    Set<Class<? extends Exception>> retryOn;\n}\n\nclass FixedDelayRetry {\n\n    static <T> T execute(RetryConfig cfg, Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (Exception e) {\n                attempt++;\n                boolean retryable = cfg.retryOn.stream()\n                    .anyMatch(c -> c.isInstance(e));\n                if (!retryable || attempt >= cfg.maxAttempts) throw e;\n                log.warn(\"Attempt {} failed, retrying in {}ms\", attempt, cfg.delayMs, e);\n                Thread.sleep(cfg.delayMs);\n            }\n        }\n    }\n}\n\n// usage\nRetryConfig cfg = new RetryConfig();\ncfg.maxAttempts = 3;\ncfg.delayMs = 500;\ncfg.retryOn = Set.of(TimeoutException.class, ConnectException.class);\n\nString result = FixedDelayRetry.execute(cfg, () -> paymentGateway.charge(order));",
+          "code": "class RetryConfig {\n    int maxAttempts;\n    long delayMs;\n    Set<Class<? extends Exception>> retryOn;\n}\n\nclass FixedDelayRetry {\n\n    static <T> T execute(RetryConfig cfg, Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (Exception e) {\n                attempt++;\n                boolean retryable = cfg.retryOn.stream()\n                    .anyMatch(c -> c.isInstance(e));\n                if (!retryable || attempt >= cfg.maxAttempts) throw e;\n                log.warn(\"Attempt {} failed, retrying in {}ms\", attempt, cfg.delayMs, e);\n                Thread.sleep(cfg.delayMs);\n            }\n        }\n    }\n}\n\n// usage\nRetryConfig cfg = new RetryConfig();\ncfg.maxAttempts = 3;\ncfg.delayMs = 500;\ncfg.retryOn = Set.of(TimeoutException.class, ConnectException.class);\n\nString result = FixedDelayRetry.execute(cfg, () -> paymentGateway.charge(order));",
+          "codes": {
+            "javascript": "class RetryConfig {\n    int maxAttempts;\n    long delayMs;\n    Set<Class<? extends Exception>> retryOn;\n}\n\nclass FixedDelayRetry {\n\n    static <T> T execute(RetryConfig cfg, Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (Exception e) {\n                attempt++;\n                boolean retryable = cfg.retryOn.stream()\n                    .anyMatch(c -> c.isInstance(e));\n                if (!retryable || attempt >= cfg.maxAttempts) throw e;\n                log.warn(\"Attempt {} failed, retrying in {}ms\", attempt, cfg.delayMs, e);\n                Thread.sleep(cfg.delayMs);\n            }\n        }\n    }\n}\n\n// usage\nRetryConfig cfg = new RetryConfig();\ncfg.maxAttempts = 3;\ncfg.delayMs = 500;\ncfg.retryOn = Set.of(TimeoutException.class, ConnectException.class);\n\nString result = FixedDelayRetry.execute(cfg, () -> paymentGateway.charge(order));",
+            "python": "import time\n\n\nclass RetryConfig:\n    def __init__(self, max_attempts, delay_seconds, retry_on):\n        self.max_attempts = max_attempts\n        self.delay_seconds = delay_seconds\n        self.retry_on = retry_on\n\n\ndef fixed_delay_retry(cfg, action):\n    attempt = 0\n    while True:\n        try:\n            return action()\n        except Exception as e:\n            attempt += 1\n            retryable = isinstance(e, cfg.retry_on)\n            if not retryable or attempt >= cfg.max_attempts:\n                raise\n            print(f\"Attempt {attempt} failed, retrying in {cfg.delay_seconds}s: {e}\")\n            time.sleep(cfg.delay_seconds)\n\n\ncall_count = 0\n\n\ndef flaky_charge():\n    global call_count\n    call_count += 1\n    if call_count < 3:\n        raise TimeoutError(\"gateway timed out\")\n    return \"charge-success\"\n\n\nif __name__ == \"__main__\":\n    cfg = RetryConfig(max_attempts=3, delay_seconds=0.1, retry_on=(TimeoutError,))\n    result = fixed_delay_retry(cfg, flaky_charge)\n    print(f\"Result: {result}\")",
+            "java": "import java.util.*;\nimport java.util.concurrent.Callable;\n\nclass RetryConfig {\n    int maxAttempts;\n    long delayMs;\n    Set<Class<? extends Exception>> retryOn;\n}\n\nclass FixedDelayRetry {\n\n    static <T> T execute(RetryConfig cfg, Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (Exception e) {\n                attempt++;\n                boolean retryable = cfg.retryOn.stream()\n                    .anyMatch(c -> c.isInstance(e));\n                if (!retryable || attempt >= cfg.maxAttempts) throw e;\n                System.out.println(\"Attempt \" + attempt + \" failed, retrying in \" + cfg.delayMs + \"ms: \" + e.getMessage());\n                Thread.sleep(cfg.delayMs);\n            }\n        }\n    }\n}\n\npublic class Main {\n    static int callCount = 0;\n\n    static String flakyCharge() throws Exception {\n        callCount++;\n        if (callCount < 3) throw new java.util.concurrent.TimeoutException(\"gateway timed out\");\n        return \"charge-success\";\n    }\n\n    public static void main(String[] args) throws Exception {\n        RetryConfig cfg = new RetryConfig();\n        cfg.maxAttempts = 3;\n        cfg.delayMs = 100;\n        cfg.retryOn = Set.of(java.util.concurrent.TimeoutException.class);\n\n        String result = FixedDelayRetry.execute(cfg, Main::flakyCharge);\n        System.out.println(\"Result: \" + result);\n    }\n}",
+            "cpp": "#include <bits/stdc++.h>\nusing namespace std;\n\nstruct RetryConfig {\n    int maxAttempts;\n    int delayMs;\n};\n\ntemplate <typename Func>\nauto fixedDelayRetry(const RetryConfig& cfg, Func action) -> decltype(action()) {\n    int attempt = 0;\n    while (true) {\n        try {\n            return action();\n        } catch (const runtime_error& e) {\n            attempt++;\n            if (attempt >= cfg.maxAttempts) throw;\n            cout << \"Attempt \" << attempt << \" failed, retrying in \" << cfg.delayMs << \"ms: \" << e.what() << endl;\n            this_thread::sleep_for(chrono::milliseconds(cfg.delayMs));\n        }\n    }\n}\n\nint callCount = 0;\n\nstring flakyCharge() {\n    callCount++;\n    if (callCount < 3) throw runtime_error(\"gateway timed out\");\n    return \"charge-success\";\n}\n\nint main() {\n    RetryConfig cfg{3, 100};\n    string result = fixedDelayRetry(cfg, flakyCharge);\n    cout << \"Result: \" << result << endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "Strategy 2: exponential backoff",
+          "text": "Strategy 2: exponential backoff"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of waiting the same amount each time, the delay doubles on every attempt. This gives the upstream increasingly more time to recover, and dramatically reduces the load a fleet of clients puts on an already-struggling server early retries are cheap, later ones are rare."
+        },
+        {
+          "type": "paragraph",
+          "content": "The formula:&nbsp;<code>delay = baseDelay × 2^attempt</code>. A base of 200ms with three retries gives waits of 200ms, 400ms, 800ms. A cap prevents the delay from growing unboundedly."
+        },
+        {
+          "type": "code",
+          "content": "class ExponentialBackoff {\n    static <T> T execute(int maxAttempts, long baseMs, long capMs,\n                          Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (TransientException e) {\n                if (++attempt >= maxAttempts) throw e;\n                long delay = Math.min(baseMs * (1L << attempt), capMs);\n                log.warn(\"Attempt {} failed, backing off {}ms\", attempt, delay, e);\n                Thread.sleep(delay);\n            }\n        }\n    }\n}\n\n// attempt 1 → wait 400ms, attempt 2 → 800ms, attempt 3 → 1600ms (capped at 10s)\nString r = ExponentialBackoff.execute(5, 200, 10_000,\n                                       () -> gateway.charge(order));",
+          "code": "class ExponentialBackoff {\n    static <T> T execute(int maxAttempts, long baseMs, long capMs,\n                          Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (TransientException e) {\n                if (++attempt >= maxAttempts) throw e;\n                long delay = Math.min(baseMs * (1L << attempt), capMs);\n                log.warn(\"Attempt {} failed, backing off {}ms\", attempt, delay, e);\n                Thread.sleep(delay);\n            }\n        }\n    }\n}\n\n// attempt 1 → wait 400ms, attempt 2 → 800ms, attempt 3 → 1600ms (capped at 10s)\nString r = ExponentialBackoff.execute(5, 200, 10_000,\n                                       () -> gateway.charge(order));",
+          "codes": {
+            "javascript": "class ExponentialBackoff {\n    static <T> T execute(int maxAttempts, long baseMs, long capMs,\n                          Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (TransientException e) {\n                if (++attempt >= maxAttempts) throw e;\n                long delay = Math.min(baseMs * (1L << attempt), capMs);\n                log.warn(\"Attempt {} failed, backing off {}ms\", attempt, delay, e);\n                Thread.sleep(delay);\n            }\n        }\n    }\n}\n\n// attempt 1 → wait 400ms, attempt 2 → 800ms, attempt 3 → 1600ms (capped at 10s)\nString r = ExponentialBackoff.execute(5, 200, 10_000,\n                                       () -> gateway.charge(order));",
+            "python": "import time\n\n\nclass TransientError(Exception):\n    pass\n\n\ndef exponential_backoff(max_attempts, base_seconds, cap_seconds, action):\n    attempt = 0\n    while True:\n        try:\n            return action()\n        except TransientError as e:\n            attempt += 1\n            if attempt >= max_attempts:\n                raise\n            delay = min(base_seconds * (2 ** attempt), cap_seconds)\n            print(f\"Attempt {attempt} failed, backing off {delay}s: {e}\")\n            time.sleep(delay)\n\n\ncall_count = 0\n\n\ndef flaky_charge():\n    global call_count\n    call_count += 1\n    if call_count < 4:\n        raise TransientError(\"gateway busy\")\n    return \"charge-success\"\n\n\nif __name__ == \"__main__\":\n    # attempt 1 -> wait 0.4s, attempt 2 -> 0.8s, attempt 3 -> 1.6s (capped at 10s)\n    result = exponential_backoff(5, 0.2, 10.0, flaky_charge)\n    print(f\"Result: {result}\")",
+            "java": "import java.util.concurrent.Callable;\n\nclass TransientException extends Exception {\n    TransientException(String msg) { super(msg); }\n}\n\nclass ExponentialBackoff {\n    static <T> T execute(int maxAttempts, long baseMs, long capMs,\n                          Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (TransientException e) {\n                if (++attempt >= maxAttempts) throw e;\n                long delay = Math.min(baseMs * (1L << attempt), capMs);\n                System.out.println(\"Attempt \" + attempt + \" failed, backing off \" + delay + \"ms: \" + e.getMessage());\n                Thread.sleep(delay);\n            }\n        }\n    }\n}\n\npublic class Main {\n    static int callCount = 0;\n\n    static String flakyCharge() throws TransientException {\n        callCount++;\n        if (callCount < 4) throw new TransientException(\"gateway busy\");\n        return \"charge-success\";\n    }\n\n    public static void main(String[] args) throws Exception {\n        // attempt 1 -> wait 400ms, attempt 2 -> 800ms, attempt 3 -> 1600ms (capped at 10s)\n        String r = ExponentialBackoff.execute(5, 200, 10_000, Main::flakyCharge);\n        System.out.println(\"Result: \" + r);\n    }\n}",
+            "cpp": "#include <bits/stdc++.h>\nusing namespace std;\n\nstruct TransientException : public runtime_error {\n    TransientException(const string& msg) : runtime_error(msg) {}\n};\n\ntemplate <typename Func>\nauto exponentialBackoff(int maxAttempts, long baseMs, long capMs, Func action) -> decltype(action()) {\n    int attempt = 0;\n    while (true) {\n        try {\n            return action();\n        } catch (const TransientException& e) {\n            if (++attempt >= maxAttempts) throw;\n            long delay = min(baseMs * (1L << attempt), capMs);\n            cout << \"Attempt \" << attempt << \" failed, backing off \" << delay << \"ms: \" << e.what() << endl;\n            this_thread::sleep_for(chrono::milliseconds(delay));\n        }\n    }\n}\n\nint callCount = 0;\n\nstring flakyCharge() {\n    callCount++;\n    if (callCount < 4) throw TransientException(\"gateway busy\");\n    return \"charge-success\";\n}\n\nint main() {\n    // attempt 1 -> wait 400ms, attempt 2 -> 800ms, attempt 3 -> 1600ms (capped at 10s)\n    string r = exponentialBackoff(5, 200, 10000, flakyCharge);\n    cout << \"Result: \" << r << endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "Strategy 3: exponential backoff with jitter",
+          "text": "Strategy 3: exponential backoff with jitter"
+        },
+        {
+          "type": "paragraph",
+          "content": "Exponential backoff is almost but not quite enough. If hundreds of clients all fail at the same moment and all back off by the same computed delay, they all retry at the same moment too.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "This \"<b>thundering herd</b>\" hits the recovering server with a spike that causes it to fail again. Jitter adds randomness to the delay, spreading retries across a time window instead of synchronising them."
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>The standard formula:</b>&nbsp;<code>delay = random(0, min(cap, base × 2^attempt))</code>. Full jitter is the most effective approach for reducing server load during recovery."
+        },
+        {
+          "type": "code",
+          "content": "import java.util.concurrent.ThreadLocalRandom;\n\nclass BackoffWithJitter {\n    static <T> T execute(int maxAttempts, long baseMs, long capMs,\n                          Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (TransientException e) {\n                if (++attempt >= maxAttempts) throw e;\n                long ceiling = Math.min(baseMs * (1L << attempt), capMs);\n                long delay = ThreadLocalRandom.current().nextLong(0, ceiling);\n                log.warn(\"Backing off {}ms (jitter)\", delay, e);\n                Thread.sleep(delay);\n            }\n        }\n    }\n}",
+          "code": "import java.util.concurrent.ThreadLocalRandom;\n\nclass BackoffWithJitter {\n    static <T> T execute(int maxAttempts, long baseMs, long capMs,\n                          Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (TransientException e) {\n                if (++attempt >= maxAttempts) throw e;\n                long ceiling = Math.min(baseMs * (1L << attempt), capMs);\n                long delay = ThreadLocalRandom.current().nextLong(0, ceiling);\n                log.warn(\"Backing off {}ms (jitter)\", delay, e);\n                Thread.sleep(delay);\n            }\n        }\n    }\n}",
+          "codes": {
+            "javascript": "import java.util.concurrent.ThreadLocalRandom;\n\nclass BackoffWithJitter {\n    static <T> T execute(int maxAttempts, long baseMs, long capMs,\n                          Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (TransientException e) {\n                if (++attempt >= maxAttempts) throw e;\n                long ceiling = Math.min(baseMs * (1L << attempt), capMs);\n                long delay = ThreadLocalRandom.current().nextLong(0, ceiling);\n                log.warn(\"Backing off {}ms (jitter)\", delay, e);\n                Thread.sleep(delay);\n            }\n        }\n    }\n}",
+            "python": "import time\nimport random\n\n\nclass TransientError(Exception):\n    pass\n\n\ndef backoff_with_jitter(max_attempts, base_seconds, cap_seconds, action):\n    attempt = 0\n    while True:\n        try:\n            return action()\n        except TransientError as e:\n            attempt += 1\n            if attempt >= max_attempts:\n                raise\n            ceiling = min(base_seconds * (2 ** attempt), cap_seconds)\n            delay = random.uniform(0, ceiling)\n            print(f\"Backing off {delay:.2f}s (jitter): {e}\")\n            time.sleep(delay)\n\n\ncall_count = 0\n\n\ndef flaky_charge():\n    global call_count\n    call_count += 1\n    if call_count < 3:\n        raise TransientError(\"gateway busy\")\n    return \"charge-success\"\n\n\nif __name__ == \"__main__\":\n    result = backoff_with_jitter(5, 0.2, 10.0, flaky_charge)\n    print(f\"Result: {result}\")",
+            "java": "import java.util.concurrent.ThreadLocalRandom;\n\nclass TransientException extends Exception {\n    TransientException(String msg) { super(msg); }\n}\n\nclass BackoffWithJitter {\n    static <T> T execute(int maxAttempts, long baseMs, long capMs, java.util.concurrent.Callable<T> action) throws Exception {\n        int attempt = 0;\n        while (true) {\n            try {\n                return action.call();\n            } catch (TransientException e) {\n                if (++attempt >= maxAttempts) throw e;\n                long ceiling = Math.min(baseMs * (1L << attempt), capMs);\n                long delay = ThreadLocalRandom.current().nextLong(0, ceiling);\n                System.out.println(\"Backing off \" + delay + \"ms (jitter): \" + e.getMessage());\n                Thread.sleep(delay);\n            }\n        }\n    }\n}\n\npublic class Main {\n    static int callCount = 0;\n\n    static String flakyCharge() throws TransientException {\n        callCount++;\n        if (callCount < 3) throw new TransientException(\"gateway busy\");\n        return \"charge-success\";\n    }\n\n    public static void main(String[] args) throws Exception {\n        String result = BackoffWithJitter.execute(5, 200, 10_000, Main::flakyCharge);\n        System.out.println(\"Result: \" + result);\n    }\n}",
+            "cpp": "#include <bits/stdc++.h>\nusing namespace std;\n\nstruct TransientException : public runtime_error {\n    TransientException(const string& msg) : runtime_error(msg) {}\n};\n\ntemplate <typename Func>\nauto backoffWithJitter(int maxAttempts, long baseMs, long capMs, Func action) -> decltype(action()) {\n    int attempt = 0;\n    random_device rd;\n    mt19937 gen(rd());\n    while (true) {\n        try {\n            return action();\n        } catch (const TransientException& e) {\n            if (++attempt >= maxAttempts) throw;\n            long ceiling = min(baseMs * (1L << attempt), capMs);\n            uniform_int_distribution<long> dist(0, ceiling);\n            long delay = dist(gen);\n            cout << \"Backing off \" << delay << \"ms (jitter): \" << e.what() << endl;\n            this_thread::sleep_for(chrono::milliseconds(delay));\n        }\n    }\n}\n\nint callCount = 0;\n\nstring flakyCharge() {\n    callCount++;\n    if (callCount < 3) throw TransientException(\"gateway busy\");\n    return \"charge-success\";\n}\n\nint main() {\n    string result = backoffWithJitter(5, 200, 10000, flakyCharge);\n    cout << \"Result: \" << result << endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": ""
+        },
+        {
+          "type": "heading1",
+          "content": "3. Idempotency: &nbsp;the prerequisite for safe retries",
+          "text": "3. Idempotency: &nbsp;the prerequisite for safe retries"
+        },
+        {
+          "type": "paragraph",
+          "content": "A retry sends the same request more than once. If the first attempt partially succeeded before failing a payment was charged but the response never arrived a naive retry charges the user twice.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781595737367-296845728.png\" alt=\"Vehicle Parking Process Flow-2026-06-16-074120.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">Retrying is only safe when the operation is idempotent: calling it multiple times with the same inputs produces exactly the same outcome as calling it once.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "code",
+          "content": "// Idempotency key: a stable, unique token for each logical operation\nclass PaymentRequest {\n    String idempotencyKey;   // e.g. UUID generated before first attempt\n    String accountId;\n    double amount;\n}\n\n// Server side: first call executes, subsequent calls with same key return cached result\n\nclass PaymentService {\n    Map<String, PaymentResult> processed = new ConcurrentHashMap<>();\n\n    PaymentResult charge(PaymentRequest req) {\n        return processed.computeIfAbsent(req.idempotencyKey, k -> {\n            return doCharge(req);   // only executed once per key\n        });\n    }\n}\n\n// Client: generate key once, reuse on every retry\n\nString key = UUID.randomUUID().toString();\nfor (int i = 0; i < 3; i++) {\n    try {\n        return service.charge(new PaymentRequest(key, accountId, amount));\n    } catch (TransientException e) { Thread.sleep(500); }\n}",
+          "code": "// Idempotency key: a stable, unique token for each logical operation\nclass PaymentRequest {\n    String idempotencyKey;   // e.g. UUID generated before first attempt\n    String accountId;\n    double amount;\n}\n\n// Server side: first call executes, subsequent calls with same key return cached result\n\nclass PaymentService {\n    Map<String, PaymentResult> processed = new ConcurrentHashMap<>();\n\n    PaymentResult charge(PaymentRequest req) {\n        return processed.computeIfAbsent(req.idempotencyKey, k -> {\n            return doCharge(req);   // only executed once per key\n        });\n    }\n}\n\n// Client: generate key once, reuse on every retry\n\nString key = UUID.randomUUID().toString();\nfor (int i = 0; i < 3; i++) {\n    try {\n        return service.charge(new PaymentRequest(key, accountId, amount));\n    } catch (TransientException e) { Thread.sleep(500); }\n}",
+          "codes": {
+            "javascript": "// Idempotency key: a stable, unique token for each logical operation\nclass PaymentRequest {\n    String idempotencyKey;   // e.g. UUID generated before first attempt\n    String accountId;\n    double amount;\n}\n\n// Server side: first call executes, subsequent calls with same key return cached result\n\nclass PaymentService {\n    Map<String, PaymentResult> processed = new ConcurrentHashMap<>();\n\n    PaymentResult charge(PaymentRequest req) {\n        return processed.computeIfAbsent(req.idempotencyKey, k -> {\n            return doCharge(req);   // only executed once per key\n        });\n    }\n}\n\n// Client: generate key once, reuse on every retry\n\nString key = UUID.randomUUID().toString();\nfor (int i = 0; i < 3; i++) {\n    try {\n        return service.charge(new PaymentRequest(key, accountId, amount));\n    } catch (TransientException e) { Thread.sleep(500); }\n}",
+            "python": "import uuid\n\n\n# Idempotency key: a stable, unique token for each logical operation\nclass PaymentRequest:\n    def __init__(self, idempotency_key, account_id, amount):\n        self.idempotency_key = idempotency_key\n        self.account_id = account_id\n        self.amount = amount\n\n\nclass PaymentResult:\n    def __init__(self, status):\n        self.status = status\n\n\n# Server side: first call executes, subsequent calls with same key return cached result\nclass PaymentService:\n    def __init__(self):\n        self.processed = {}\n        self.execution_count = 0\n\n    def charge(self, req):\n        if req.idempotency_key not in self.processed:\n            self.execution_count += 1\n            self.processed[req.idempotency_key] = PaymentResult(f\"charged {req.account_id} ${req.amount}\")\n        return self.processed[req.idempotency_key]\n\n\nif __name__ == \"__main__\":\n    service = PaymentService()\n\n    # Client: generate key once, reuse on every retry\n    key = str(uuid.uuid4())\n    result = None\n    for _ in range(3):\n        result = service.charge(PaymentRequest(key, \"acc-1\", 100.0))\n\n    print(f\"Result: {result.status}\")\n    print(f\"Actual charges executed: {service.execution_count} (only once despite 3 calls)\")",
+            "java": "import java.util.*;\nimport java.util.concurrent.*;\n\n// Idempotency key: a stable, unique token for each logical operation\nclass PaymentRequest {\n    String idempotencyKey;\n    String accountId;\n    double amount;\n\n    PaymentRequest(String idempotencyKey, String accountId, double amount) {\n        this.idempotencyKey = idempotencyKey;\n        this.accountId = accountId;\n        this.amount = amount;\n    }\n}\n\nclass PaymentResult {\n    String status;\n    PaymentResult(String status) { this.status = status; }\n}\n\n// Server side: first call executes, subsequent calls with same key return cached result\nclass PaymentService {\n    Map<String, PaymentResult> processed = new ConcurrentHashMap<>();\n    int executionCount = 0;\n\n    PaymentResult charge(PaymentRequest req) {\n        return processed.computeIfAbsent(req.idempotencyKey, k -> {\n            executionCount++;\n            return new PaymentResult(\"charged \" + req.accountId + \" $\" + req.amount);\n        });\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) throws Exception {\n        PaymentService service = new PaymentService();\n\n        // Client: generate key once, reuse on every retry\n        String key = UUID.randomUUID().toString();\n        PaymentResult result = null;\n        for (int i = 0; i < 3; i++) {\n            result = service.charge(new PaymentRequest(key, \"acc-1\", 100.0));\n        }\n\n        System.out.println(\"Result: \" + result.status);\n        System.out.println(\"Actual charges executed: \" + service.executionCount + \" (only once despite 3 calls)\");\n    }\n}",
+            "cpp": "#include <bits/stdc++.h>\nusing namespace std;\n\n// Idempotency key: a stable, unique token for each logical operation\nstruct PaymentRequest {\n    string idempotencyKey;\n    string accountId;\n    double amount;\n};\n\nstruct PaymentResult {\n    string status;\n};\n\n// Server side: first call executes, subsequent calls with same key return cached result\nclass PaymentService {\npublic:\n    unordered_map<string, PaymentResult> processed;\n    int executionCount = 0;\n\n    PaymentResult charge(const PaymentRequest& req) {\n        auto it = processed.find(req.idempotencyKey);\n        if (it == processed.end()) {\n            executionCount++;\n            PaymentResult result{\"charged \" + req.accountId + \" $\" + to_string(req.amount)};\n            processed[req.idempotencyKey] = result;\n            return result;\n        }\n        return it->second;\n    }\n};\n\nint main() {\n    PaymentService service;\n\n    // Client: generate key once, reuse on every retry (a fixed key simulates a real UUID here)\n    string key = \"idem-key-123\";\n    PaymentResult result;\n    for (int i = 0; i < 3; i++) {\n        result = service.charge({key, \"acc-1\", 100.0});\n    }\n\n    cout << \"Result: \" << result.status << endl;\n    cout << \"Actual charges executed: \" << service.executionCount << \" (only once despite 3 calls)\" << endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Dead-letter fallback",
+          "text": "4. Dead-letter fallback"
+        },
+        {
+          "type": "paragraph",
+          "content": "When all retry attempts are exhausted, the failure is no longer transient or at least it has exceeded what the system is willing to wait for.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781595737524-452769085.png\" alt=\"image.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">The response at this point is to route the failed operation to a dead-letter queue or a fallback handler, rather than silently dropping it or crashing.&nbsp;</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Dead-lettered operations can be replayed manually, alerted on, or used to trigger circuit breakers."
+        },
+        {
+          "type": "code",
+          "content": "class RetryWithDLQ {\n    private final DeadLetterQueue dlq;\n\n    <T> Optional<T> execute(Callable<T> action, PaymentRequest req) {\n        try {\n            return Optional.of(BackoffWithJitter.execute(5, 200, 10_000, action));\n        } catch (TransientException e) {\n            log.error(\"All retries exhausted for key={}\", req.idempotencyKey, e);\n            dlq.send(new FailedOperation(req, e, Instant.now()));\n            alerting.trigger(\"payment-retry-exhausted\", req.accountId);\n            return Optional.empty();\n        }\n    }\n}\n\n// DLQ consumer — runs separately, replays failed operations\n\nclass DLQConsumer {\n    void processFailed(FailedOperation op) {\n        // human review, manual replay, or compensating transaction\n        log.info(\"Replaying failed payment: key={}\", op.request.idempotencyKey);\n        service.charge(op.request);\n    }\n}",
+          "code": "class RetryWithDLQ {\n    private final DeadLetterQueue dlq;\n\n    <T> Optional<T> execute(Callable<T> action, PaymentRequest req) {\n        try {\n            return Optional.of(BackoffWithJitter.execute(5, 200, 10_000, action));\n        } catch (TransientException e) {\n            log.error(\"All retries exhausted for key={}\", req.idempotencyKey, e);\n            dlq.send(new FailedOperation(req, e, Instant.now()));\n            alerting.trigger(\"payment-retry-exhausted\", req.accountId);\n            return Optional.empty();\n        }\n    }\n}\n\n// DLQ consumer — runs separately, replays failed operations\n\nclass DLQConsumer {\n    void processFailed(FailedOperation op) {\n        // human review, manual replay, or compensating transaction\n        log.info(\"Replaying failed payment: key={}\", op.request.idempotencyKey);\n        service.charge(op.request);\n    }\n}",
+          "codes": {
+            "javascript": "class RetryWithDLQ {\n    private final DeadLetterQueue dlq;\n\n    <T> Optional<T> execute(Callable<T> action, PaymentRequest req) {\n        try {\n            return Optional.of(BackoffWithJitter.execute(5, 200, 10_000, action));\n        } catch (TransientException e) {\n            log.error(\"All retries exhausted for key={}\", req.idempotencyKey, e);\n            dlq.send(new FailedOperation(req, e, Instant.now()));\n            alerting.trigger(\"payment-retry-exhausted\", req.accountId);\n            return Optional.empty();\n        }\n    }\n}\n\n// DLQ consumer — runs separately, replays failed operations\n\nclass DLQConsumer {\n    void processFailed(FailedOperation op) {\n        // human review, manual replay, or compensating transaction\n        log.info(\"Replaying failed payment: key={}\", op.request.idempotencyKey);\n        service.charge(op.request);\n    }\n}",
+            "python": "class PaymentRequest:\n    def __init__(self, idempotency_key, account_id):\n        self.idempotency_key = idempotency_key\n        self.account_id = account_id\n\n\nclass FailedOperation:\n    def __init__(self, request, error):\n        self.request = request\n        self.error = error\n\n\nclass DeadLetterQueue:\n    def __init__(self):\n        self.items = []\n\n    def send(self, op):\n        self.items.append(op)\n\n\nclass RetryWithDLQ:\n    def __init__(self, dlq):\n        self.dlq = dlq\n\n    def execute(self, action, req, max_attempts=3):\n        attempt = 0\n        while attempt < max_attempts:\n            try:\n                return action()\n            except Exception as e:\n                attempt += 1\n                if attempt >= max_attempts:\n                    print(f\"All retries exhausted for key={req.idempotency_key}\")\n                    self.dlq.send(FailedOperation(req, e))\n                    print(f\"Alert triggered: payment-retry-exhausted for {req.account_id}\")\n                    return None\n        return None\n\n\n# DLQ consumer, runs separately, replays failed operations\nclass DLQConsumer:\n    def process_failed(self, op):\n        # human review, manual replay, or compensating transaction\n        print(f\"Replaying failed payment: key={op.request.idempotency_key}\")\n\n\nif __name__ == \"__main__\":\n    dlq = DeadLetterQueue()\n    retrier = RetryWithDLQ(dlq)\n    req = PaymentRequest(\"key-1\", \"acc-1\")\n\n    def always_fails():\n        raise RuntimeError(\"gateway permanently down\")\n\n    result = retrier.execute(always_fails, req)\n    print(f\"Result present: {result is not None}\")\n\n    consumer = DLQConsumer()\n    for op in dlq.items:\n        consumer.process_failed(op)",
+            "java": "import java.util.*;\nimport java.util.concurrent.Callable;\n\nclass PaymentRequest {\n    String idempotencyKey;\n    String accountId;\n    PaymentRequest(String idempotencyKey, String accountId) {\n        this.idempotencyKey = idempotencyKey;\n        this.accountId = accountId;\n    }\n}\n\nclass FailedOperation {\n    PaymentRequest request;\n    Exception error;\n    FailedOperation(PaymentRequest request, Exception error) {\n        this.request = request;\n        this.error = error;\n    }\n}\n\nclass DeadLetterQueue {\n    List<FailedOperation> items = new ArrayList<>();\n    void send(FailedOperation op) { items.add(op); }\n}\n\nclass RetryWithDLQ {\n    private final DeadLetterQueue dlq;\n\n    RetryWithDLQ(DeadLetterQueue dlq) { this.dlq = dlq; }\n\n    <T> Optional<T> execute(Callable<T> action, PaymentRequest req) {\n        int attempt = 0;\n        int maxAttempts = 3;\n        while (attempt < maxAttempts) {\n            try {\n                return Optional.of(action.call());\n            } catch (Exception e) {\n                attempt++;\n                if (attempt >= maxAttempts) {\n                    System.out.println(\"All retries exhausted for key=\" + req.idempotencyKey);\n                    dlq.send(new FailedOperation(req, e));\n                    System.out.println(\"Alert triggered: payment-retry-exhausted for \" + req.accountId);\n                    return Optional.empty();\n                }\n            }\n        }\n        return Optional.empty();\n    }\n}\n\n// DLQ consumer, runs separately, replays failed operations\nclass DLQConsumer {\n    void processFailed(FailedOperation op) {\n        // human review, manual replay, or compensating transaction\n        System.out.println(\"Replaying failed payment: key=\" + op.request.idempotencyKey);\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        DeadLetterQueue dlq = new DeadLetterQueue();\n        RetryWithDLQ retrier = new RetryWithDLQ(dlq);\n        PaymentRequest req = new PaymentRequest(\"key-1\", \"acc-1\");\n\n        Optional<String> result = retrier.execute(() -> {\n            throw new RuntimeException(\"gateway permanently down\");\n        }, req);\n\n        System.out.println(\"Result present: \" + result.isPresent());\n\n        DLQConsumer consumer = new DLQConsumer();\n        for (FailedOperation op : dlq.items) {\n            consumer.processFailed(op);\n        }\n    }\n}",
+            "cpp": "#include <bits/stdc++.h>\nusing namespace std;\n\nstruct PaymentRequest {\n    string idempotencyKey;\n    string accountId;\n};\n\nstruct FailedOperation {\n    PaymentRequest request;\n    string error;\n};\n\nclass DeadLetterQueue {\npublic:\n    vector<FailedOperation> items;\n    void send(const FailedOperation& op) { items.push_back(op); }\n};\n\nclass RetryWithDLQ {\n    DeadLetterQueue& dlq;\npublic:\n    RetryWithDLQ(DeadLetterQueue& dlq) : dlq(dlq) {}\n\n    template <typename Func>\n    optional<string> execute(Func action, const PaymentRequest& req, int maxAttempts = 3) {\n        int attempt = 0;\n        while (attempt < maxAttempts) {\n            try {\n                return action();\n            } catch (const exception& e) {\n                attempt++;\n                if (attempt >= maxAttempts) {\n                    cout << \"All retries exhausted for key=\" << req.idempotencyKey << endl;\n                    dlq.send({req, e.what()});\n                    cout << \"Alert triggered: payment-retry-exhausted for \" << req.accountId << endl;\n                    return nullopt;\n                }\n            }\n        }\n        return nullopt;\n    }\n};\n\n// DLQ consumer, runs separately, replays failed operations\nclass DLQConsumer {\npublic:\n    void processFailed(const FailedOperation& op) {\n        // human review, manual replay, or compensating transaction\n        cout << \"Replaying failed payment: key=\" << op.request.idempotencyKey << endl;\n    }\n};\n\nint main() {\n    DeadLetterQueue dlq;\n    RetryWithDLQ retrier(dlq);\n    PaymentRequest req{\"key-1\", \"acc-1\"};\n\n    auto result = retrier.execute([]() -> string {\n        throw runtime_error(\"gateway permanently down\");\n    }, req);\n\n    cout << \"Result present: \" << (result.has_value() ? \"true\" : \"false\") << endl;\n\n    DLQConsumer consumer;\n    for (auto& op : dlq.items) {\n        consumer.processFailed(op);\n    }\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">",
+          "text": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Design rules",
+          "text": "5. Design rules"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong style=\\\"letter-spacing: -0.003em;\\\">Always define a retry predicate.&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Never catch</span><code style=\\\"letter-spacing: -0.003em;\\\">Exception</code><span style=\\\"letter-spacing: -0.003em;\\\">broadly and retry everything. Explicitly enumerate which exception types are transient. Permanent failures should propagate immediately.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Always set a max attempts cap.&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">An uncapped retry loop can run forever under certain failure modes, holding threads or coroutines hostage. Three to five attempts covers the vast majority of transient failures.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Use jitter in high-concurrency systems.&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Fixed and pure exponential backoff cause synchronized retry storms when many clients fail together. Add randomness proportional to the computed ceiling.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Verify idempotency before retrying writes.&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Reads are safe to retry unconditionally. Writes need either server-side idempotency keys or idempotent operation semantics (e.g. PUT instead of POST).</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Never retry inside a database transaction.&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">A transaction that retries an inner call holds locks for the full retry duration, causing cascading lock contention. Retry at the level above the transaction boundary.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Never swallow the final exception.&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">When retries are exhausted, the exception must go somewhere a DLQ, an alert, a logged error. Catching and returning null silently hides failures that need human attention.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Respect&nbsp;<code>Retry-After</code>&nbsp;headers.&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">When an upstream returns HTTP 429 with a</span><code style=\\\"letter-spacing: -0.003em;\\\">Retry-After</code><span style=\\\"letter-spacing: -0.003em;\\\">header, use that value as the delay instead of your computed backoff. Ignoring it makes you an abusive client.</span><br>\"]",
+          "items": [
+            "<strong style=\"letter-spacing: -0.003em;\">Always define a retry predicate.&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Never catch</span><code style=\"letter-spacing: -0.003em;\">Exception</code><span style=\"letter-spacing: -0.003em;\">broadly and retry everything. Explicitly enumerate which exception types are transient. Permanent failures should propagate immediately.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Always set a max attempts cap.&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">An uncapped retry loop can run forever under certain failure modes, holding threads or coroutines hostage. Three to five attempts covers the vast majority of transient failures.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Use jitter in high-concurrency systems.&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Fixed and pure exponential backoff cause synchronized retry storms when many clients fail together. Add randomness proportional to the computed ceiling.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Verify idempotency before retrying writes.&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Reads are safe to retry unconditionally. Writes need either server-side idempotency keys or idempotent operation semantics (e.g. PUT instead of POST).</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Never retry inside a database transaction.&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">A transaction that retries an inner call holds locks for the full retry duration, causing cascading lock contention. Retry at the level above the transaction boundary.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Never swallow the final exception.&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">When retries are exhausted, the exception must go somewhere a DLQ, an alert, a logged error. Catching and returning null silently hides failures that need human attention.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Respect&nbsp;<code>Retry-After</code>&nbsp;headers.&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">When an upstream returns HTTP 429 with a</span><code style=\"letter-spacing: -0.003em;\">Retry-After</code><span style=\"letter-spacing: -0.003em;\">header, use that value as the delay instead of your computed backoff. Ignoring it makes you an abusive client.</span><br>"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Common mistakes",
+          "text": "6. Common mistakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 1: retrying 400 Bad Request</strong>"
+        },
+        {
+          "type": "paragraph",
+          "content": "A 400 means the server understood the request and rejected it because the input was wrong. Retrying the identical request produces the identical rejection, forever. Always check the status code or exception type before deciding to retry."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 2: no jitter in a fleet</strong>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Thirty services all time out at second 5.000 and all retry at second 5.500. The overloaded server gets hit with thirty simultaneous retries a thundering herd. Jitter is not optional in any system where multiple clients can fail at the same time."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 3: retrying inside a transaction</strong>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "The transaction holds a row-level lock from attempt 1. Attempt 2 waits behind a fresh connection. Attempt 3 makes it three waiters. By the time any of them succeed the transaction timeout has fired. Retry at the service layer, not inside the repository layer."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 4: generating a new idempotency key per retry</strong>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "The whole point of the key is that it is stable across attempts. Generating a new UUID on each retry sends three separate payments and charges the user three times. Generate the key once, before the first attempt, and pass it through every retry."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 5: no cap on exponential delay</strong>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Without a cap, attempt 20 of an exponential backoff with base 200ms computes a delay of 200ms × 2²⁰ = 209 seconds.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "The operation is effectively dead at that point but the retry loop keeps running. Always set a sensible cap typically 10–30 seconds for interactive flows, up to a few minutes for background jobs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Quick reference",
+          "text": "7. Quick reference"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong style=\\\"letter-spacing: -0.003em;\\\">Fixed delay&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Same wait every time. Simple, predictable. Right for low-volume flows with known recovery time.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Exponential backoff&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Delay doubles each attempt. Reduces load on struggling upstream. Always set a cap.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Jitter&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Randomises the delay within the computed ceiling. Prevents thundering herds in concurrent systems.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Retry predicate&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">The explicit list of exception types or status codes that are safe to retry. Everything else fails immediately.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Idempotency key&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">A stable token generated before the first attempt and reused on every retry. Prevents duplicate side effects.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Dead-letter queue&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Where operations go when all retries are exhausted. Enables manual replay, alerting, and circuit breaking.</span>\"]",
+          "items": [
+            "<strong style=\"letter-spacing: -0.003em;\">Fixed delay&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Same wait every time. Simple, predictable. Right for low-volume flows with known recovery time.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Exponential backoff&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Delay doubles each attempt. Reduces load on struggling upstream. Always set a cap.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Jitter&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Randomises the delay within the computed ceiling. Prevents thundering herds in concurrent systems.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Retry predicate&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">The explicit list of exception types or status codes that are safe to retry. Everything else fails immediately.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Idempotency key&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">A stable token generated before the first attempt and reused on every retry. Prevents duplicate side effects.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Dead-letter queue&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Where operations go when all retries are exhausted. Enables manual replay, alerting, and circuit breaking.</span>"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,244 @@
+{
+  "title": "User Threads vs Kernel Threads",
+  "slug": "user-threads-vs-kernel-threads",
+  "content": [
+    {
+      "id": "user-threads-vs-kernel-threads",
+      "title": "User Threads vs Kernel Threads",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "The word thread means two very different things depending on who is doing the counting. Ask the kernel how many threads a process has, and it may confidently say one, while the process itself is juggling twenty. Ask a thread library the same question and you get the real number. The gap between those two answers is exactly what this chapter is about: the difference between a thread the kernel manages and a thread that only a user space library knows exists."
+        },
+        {
+          "type": "paragraph",
+          "content": "This chapter explains what user level threads and kernel level threads actually are, why the distinction matters so much for blocking calls and multi core parallelism, the classic mapping models that connect the two worlds, and why almost every operating system you use today settled on one particular model."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Two Different Meanings of the Word Thread",
+          "text": "1. Two Different Meanings of the Word Thread"
+        },
+        {
+          "type": "paragraph",
+          "content": "A thread is a single sequence of instructions that can be scheduled and run. Every process has at least one thread, and many processes create several so that different parts of the program can make progress independently, such as one thread handling a network request while another updates the screen. The question this chapter answers is not what a thread does, but who is responsible for creating it, keeping track of it, and deciding when it gets to run."
+        },
+        {
+          "type": "note",
+          "title": "The core distinction",
+          "content": "A user level thread is a thread that a library running inside your own process manages. A kernel level thread is a thread that the operating system kernel itself creates and manages. The kernel can only schedule what it knows about."
+        },
+        {
+          "type": "paragraph",
+          "content": "That single sentence, the kernel can only schedule what it knows about, explains almost every tradeoff in this chapter. If the kernel does not know a thread exists, it cannot put that thread on a processor core, and it cannot rescue the rest of the process if that thread gets stuck."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. User Level Threads",
+          "text": "2. User Level Threads"
+        },
+        {
+          "type": "paragraph",
+          "content": "A user level thread is created, scheduled, and destroyed entirely by a thread library that runs inside user space, meaning it runs as ordinary application code with no special kernel privileges. The kernel is never told that this library is juggling several threads. As far as the kernel can see, there is exactly one process running, using one kernel visible execution context, and behaving like any other single threaded program."
+        },
+        {
+          "type": "heading3",
+          "content": "How the library pulls this off",
+          "text": "How the library pulls this off"
+        },
+        {
+          "type": "paragraph",
+          "content": "The thread library keeps its own data structures, typically one small block per thread that stores its saved registers, its stack pointer, and its current state, such as ready, running, or waiting. When the library decides thread A should pause and thread B should run, it performs what is called a user level context switch: it saves thread A registers into A block, loads thread B registers from B block, and jumps to where B left off. This entire operation happens with plain function calls and memory writes, so it never has to ask the kernel for permission or trigger a switch into kernel mode."
+        },
+        {
+          "type": "list",
+          "content": "[\"The kernel sees one process, one schedulable unit, nothing more.\",\"All thread creation, scheduling, and switching logic lives in a library linked into the application.\",\"Context switches between user threads never cross into kernel mode, so they involve no kernel data structures at all.\",\"The library can implement any scheduling policy it wants, since it owns the decision entirely.\"]",
+          "items": [
+            "The kernel sees one process, one schedulable unit, nothing more.",
+            "All thread creation, scheduling, and switching logic lives in a library linked into the application.",
+            "Context switches between user threads never cross into kernel mode, so they involve no kernel data structures at all.",
+            "The library can implement any scheduling policy it wants, since it owns the decision entirely."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Why this used to matter so much",
+          "content": "Decades ago, a kernel level context switch was measured in thousands of processor cycles because it involved a mode switch, updating kernel tables, and flushing caches. A user level switch could be dozens of cycles. That gap is why early systems leaned heavily on user level threads for anything performance sensitive."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Kernel Level Threads",
+          "text": "3. Kernel Level Threads"
+        },
+        {
+          "type": "paragraph",
+          "content": "A kernel level thread is a thread the kernel itself creates through a system call, tracks in its own internal tables, and directly schedules onto a processor core. Unlike a user level thread, the kernel is fully aware this thread exists as an independent unit of execution, separate from any of its sibling threads in the same process."
+        },
+        {
+          "type": "heading3",
+          "content": "What the kernel actually keeps track of",
+          "text": "What the kernel actually keeps track of"
+        },
+        {
+          "type": "paragraph",
+          "content": "For every kernel level thread, the kernel maintains a thread control block, an internal structure holding the saved processor registers, the scheduling state, the priority, and which process the thread belongs to. Because this bookkeeping lives inside the kernel, only the kernel can create, switch, or destroy these threads, and doing so always requires crossing from user mode into kernel mode through a system call or a hardware interrupt such as the timer that ends a time slice."
+        },
+        {
+          "type": "list",
+          "content": "[\"Every kernel level thread is independently visible to and schedulable by the kernel scheduler.\",\"Creating or destroying one always requires a system call, so it costs more than a user level operation.\",\"The kernel can put each one on any available processor core, at any time, without asking the application.\",\"If one kernel level thread blocks, the kernel simply picks a different runnable thread, whether from the same process or another one.\"]",
+          "items": [
+            "Every kernel level thread is independently visible to and schedulable by the kernel scheduler.",
+            "Creating or destroying one always requires a system call, so it costs more than a user level operation.",
+            "The kernel can put each one on any available processor core, at any time, without asking the application.",
+            "If one kernel level thread blocks, the kernel simply picks a different runnable thread, whether from the same process or another one."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The Fundamental Tradeoff",
+          "text": "4. The Fundamental Tradeoff"
+        },
+        {
+          "type": "paragraph",
+          "content": "Everything about these two approaches traces back to one fact: user threads are invisible to the kernel and kernel threads are not. That single fact drives differences in speed, blocking behavior, and the ability to actually run in parallel."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Property\",\"User Level Threads\",\"Kernel Level Threads\"],\"rows\":[[\"Creation and switching\",\"Very fast, pure user space bookkeeping, no kernel involvement\",\"Slower, requires a system call and kernel level bookkeeping\"],[\"Kernel awareness\",\"None, the kernel sees only the one process\",\"Full, each thread has its own kernel thread control block\"],[\"Blocking behavior\",\"If one user thread makes a blocking system call, the entire process blocks, since the kernel has no idea other user threads exist and could run instead\",\"If one kernel thread blocks, its siblings are unaffected, since the kernel can simply schedule another one\"],[\"True parallelism\",\"Cannot use multiple processor cores at once, the kernel schedules the whole process as a single unit\",\"Yes, separate kernel threads of the same process can run on separate cores at the same time\"]]}"
+        },
+        {
+          "type": "blockQuote",
+          "content": "The kernel cannot rescue a process from a thread it does not know about. That one limitation is the reason pure user level threading never became the default model for general purpose operating systems."
+        },
+        {
+          "type": "paragraph",
+          "content": "The blocking problem deserves a concrete picture. Suppose a process has three user level threads, and one of them calls a blocking read on a slow network socket. The library wanted to switch to one of the other two threads while the first one waits, but it cannot, because the blocking system call is handled entirely inside the kernel, and the kernel only sees the single process. The kernel suspends the whole process, and the two other threads that were perfectly ready to run are stuck waiting alongside the one that actually blocked."
+        },
+        {
+          "type": "note",
+          "title": "Why creation and switching are so cheap for user threads",
+          "content": "A user level switch never touches kernel tables, never changes processor privilege level, and never triggers a hardware trap. It is closer in cost to calling a function than to what most people picture as a context switch."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Mapping Models: Connecting User Threads to Kernel Threads",
+          "text": "5. Mapping Models: Connecting User Threads to Kernel Threads"
+        },
+        {
+          "type": "paragraph",
+          "content": "Since applications create user level threads and the kernel creates kernel level threads, some model has to describe how the two connect. Three models exist, and they differ only in the ratio between user threads and the kernel threads they ultimately run on."
+        },
+        {
+          "type": "heading3",
+          "content": "Many to one",
+          "text": "Many to one"
+        },
+        {
+          "type": "paragraph",
+          "content": "Many user level threads map onto a single kernel thread. The user space library multiplexes all of its threads onto the one kernel visible execution context it has been given. This is the purest form of user level threading, and it inherits both its biggest strength, extremely cheap switching, and its biggest weakness, one blocking call freezes everything and there is never any real parallelism across cores."
+        },
+        {
+          "type": "heading3",
+          "content": "One to one",
+          "text": "One to one"
+        },
+        {
+          "type": "paragraph",
+          "content": "Each user level thread maps to its own dedicated kernel thread. Creating a new user thread means creating a new kernel thread to go with it. This is more expensive per thread, since every creation and every switch involves the kernel, but it removes the blocking problem entirely and unlocks genuine parallel execution across multiple processor cores, because the kernel can place each of those kernel threads on a different core."
+        },
+        {
+          "type": "heading3",
+          "content": "Many to many",
+          "text": "Many to many"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is a middle ground, where a pool of user level threads, possibly a large number of them, is multiplexed across a smaller pool of kernel threads, and that pool can grow or shrink at runtime. It tries to combine cheap thread creation with the ability to still get some parallelism, since the kernel level pool can have more than one thread. In practice this model is complex to implement correctly and has mostly fallen out of favor compared to simply using one to one and trusting the kernel scheduler."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408415709-777489256.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408415709-777489256.png",
+          "alt": "Many to many",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408415709-777489256.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Why the One to One Model Won",
+          "text": "6. Why the One to One Model Won"
+        },
+        {
+          "type": "paragraph",
+          "content": "Modern operating systems such as Linux, Windows, and macOS all use the one to one model for their native threads. The reasoning is straightforward once you see the tradeoff laid out. Multi core processors are now the default even on phones, and any threading model that cannot spread work across cores is leaving most of the machine idle. The blocking problem of the many to one model is also unacceptable for general purpose software, where you cannot guarantee that a programmer will never make a blocking call on one of many threads."
+        },
+        {
+          "type": "list",
+          "content": "[\"Multi core hardware is universal now, so true parallelism is no longer optional, it is expected.\",\"A single blocking call freezing an entire multi threaded process is not an acceptable failure mode for general purpose applications.\",\"Kernel level context switches, while more expensive than user level ones, became fast enough on modern hardware that the cost difference stopped being the deciding factor.\",\"A simpler model with clear kernel visibility is easier to reason about, debug, and schedule fairly against threads from other processes.\"]",
+          "items": [
+            "Multi core hardware is universal now, so true parallelism is no longer optional, it is expected.",
+            "A single blocking call freezing an entire multi threaded process is not an acceptable failure mode for general purpose applications.",
+            "Kernel level context switches, while more expensive than user level ones, became fast enough on modern hardware that the cost difference stopped being the deciding factor.",
+            "A simpler model with clear kernel visibility is easier to reason about, debug, and schedule fairly against threads from other processes."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "The cost gap narrowed",
+          "content": "Kernel level context switches are still more expensive than user level ones in absolute terms, but modern processors and modern kernels have made that gap small enough that it rarely matters outside of extremely specialized, latency obsessed software."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Common Misconceptions",
+          "text": "7. Common Misconceptions"
+        },
+        {
+          "type": "list",
+          "content": "[\"User threads are not fake or lesser threads, they are a legitimate technique, they are simply invisible to the kernel scheduler.\",\"Having many kernel threads does not automatically mean your program runs faster, it only means the kernel is able to run them in parallel if there is genuine independent work and enough cores.\",\"The many to one model is not obsolete because it is slow, it is avoided because of the blocking problem and the lack of parallelism, not because user level switching itself is bad.\",\"A single threaded process still has exactly one kernel thread, threading is about adding more schedulable units, not a prerequisite for the kernel to be involved at all.\"]",
+          "items": [
+            "User threads are not fake or lesser threads, they are a legitimate technique, they are simply invisible to the kernel scheduler.",
+            "Having many kernel threads does not automatically mean your program runs faster, it only means the kernel is able to run them in parallel if there is genuine independent work and enough cores.",
+            "The many to one model is not obsolete because it is slow, it is avoided because of the blocking problem and the lack of parallelism, not because user level switching itself is bad.",
+            "A single threaded process still has exactly one kernel thread, threading is about adding more schedulable units, not a prerequisite for the kernel to be involved at all."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. The Interview Angle",
+          "text": "8. The Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "When this topic comes up in an interview, the strongest answer is not a definition, it is the blocking example. Explain that a user level thread is managed by a library the kernel cannot see, so if that thread issues a blocking system call, the kernel suspends the entire process because it has no visibility into the other threads waiting to run. Then explain that a kernel level thread avoids this because the kernel tracks it directly and can always schedule a sibling thread instead. Tie it back to why virtually every mainstream operating system today defaults to the one to one model: multi core parallelism and safety from one thread stalling everything else were judged more valuable than the raw speed advantage of pure user level switching. If asked what would change your answer, mention the many to many model as evidence that the field explored a middle ground before the industry converged on one to one as the pragmatic default."
+        }
+      ]
+    }
+  ]
+}

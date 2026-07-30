@@ -1,0 +1,553 @@
+{
+  "slug": "leader-election",
+  "title": "Leader Election",
+  "content": [
+    {
+      "id": "leader-election",
+      "title": "Leader Election",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Picture five people editing the same shared document at the same time. If everyone can hit save whenever they want, edits get overwritten, paragraphs vanish, and nobody can tell which version is the real one."
+        },
+        {
+          "type": "paragraph",
+          "content": "Now picture the same five people agreeing that only one of them, say Priya, is allowed to actually save changes to the master copy. Everyone else sends her their edits, and she is the one who decides the final order they get applied in."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is the entire idea behind leader election in one sentence. A group of nodes that are otherwise identical picks exactly one of them to be Priya, the node in charge of the decisions that would cause chaos if two nodes made them at the same time."
+        },
+        {
+          "type": "paragraph",
+          "content": "Leader election is the process a cluster uses to agree on a single coordinator, without a human in the loop and without any node being special to begin with."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Leader election is how a group of equivalent nodes agrees on exactly one of them to coordinate work, so that two nodes never make conflicting decisions at the same time."
+        },
+        {
+          "type": "paragraph",
+          "content": "You will not hand roll this algorithm at your day job very often. But almost every distributed system you touch, your database cluster, your message queue, your container orchestrator, is quietly running some version of it under the hood. Understanding it well is what separates a candidate who can only recite Raft trivia from one who actually understands why the trivia exists."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Why a group of equal nodes needs exactly one leader",
+          "text": "1. Why a group of equal nodes needs exactly one leader"
+        },
+        {
+          "type": "paragraph",
+          "content": "Distributed systems love redundancy. You run three, five, or seven copies of the same service so that if one machine dies, the others keep the lights on. That part is easy to justify."
+        },
+        {
+          "type": "paragraph",
+          "content": "The hard part is that some operations cannot safely be done by more than one node at once. Writing to a database, assigning a job to a worker, deciding the order events happened in, all of these break if two nodes try to do them independently and disagree with each other."
+        },
+        {
+          "type": "list",
+          "content": "[\"Serializing writes, so two nodes cannot both append conflicting entries to the same log at the same time.\",\"Coordinating work, so a batch of jobs gets split up once by one node instead of every node grabbing the same jobs.\",\"Avoiding conflicting decisions, so the cluster has one source of truth for things like who owns a lock or which value actually won.\"]",
+          "items": [
+            "Serializing writes, so two nodes cannot both append conflicting entries to the same log at the same time.",
+            "Coordinating work, so a batch of jobs gets split up once by one node instead of every node grabbing the same jobs.",
+            "Avoiding conflicting decisions, so the cluster has one source of truth for things like who owns a lock or which value actually won."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Give every node in the cluster equal say over these decisions and you get race conditions, duplicate work, and data that quietly diverges between replicas. Give exactly one node the final say and all of that disappears, as long as everyone else agrees on who that one node is."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287280443-918441590.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287280443-918441590.png",
+          "alt": "A leader node sending heartbeats to three follower nodes in a healthy cluster",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287280443-918441590.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "That last part, everyone agreeing on who the leader is, sounds obvious until you remember that nodes cannot read each others minds. All they have is messages sent over an unreliable network, and messages can be delayed, dropped, or arrive out of order. Leader election is the protocol that turns that mess into one agreed upon leader anyway."
+        },
+        {
+          "type": "note",
+          "title": "Leader is not the same as owner",
+          "content": "A leader in this sense does not own the data and is not more important than the other nodes in terms of hardware or role. It is a temporary responsibility, held by whichever node the cluster currently trusts to coordinate. Any node can become leader, and the current leader can lose that status the moment it goes quiet."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287282209-35529750.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287282209-35529750.png",
+          "alt": "A decision check for whether an operation actually needs a single coordinator or can stay independent across replicas",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287282209-35529750.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Not every distributed system needs this machinery. A fleet of stateless web servers answering independent read requests does not need a leader at all, they can happily act in parallel forever. Reach for leader election only when the operation itself would break if two nodes did it at once."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The general shape of a leader election algorithm",
+          "text": "2. The general shape of a leader election algorithm"
+        },
+        {
+          "type": "paragraph",
+          "content": "Almost every leader election algorithm, no matter how different the details, follows the same three beat rhythm. First, the cluster has a leader and everyone knows it. Second, something goes wrong and the leader stops being reachable. Third, the surviving nodes run a protocol to agree on a replacement."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Detecting the leader is gone",
+          "text": "2.1 Detecting the leader is gone"
+        },
+        {
+          "type": "paragraph",
+          "content": "The leader proves it is alive by sending regular heartbeats, small pings that say nothing more than I am still here, to the other nodes. Followers do not question a leader that keeps heartbeating on schedule."
+        },
+        {
+          "type": "paragraph",
+          "content": "The moment a follower stops hearing heartbeats for longer than some timeout window, it assumes the leader is gone. It does not wait for a graceful goodbye message, because a crashed process cannot send one. Silence past a deadline is the only signal a distributed system ever gets to work with."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287284266-133960456.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287284266-133960456.png",
+          "alt": "A leader that has crashed while followers wait past their heartbeat timeout before starting an election",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287284266-133960456.png"
+        },
+        {
+          "type": "note",
+          "title": "Silence is ambiguous",
+          "content": "A missed heartbeat could mean the leader crashed, or it could mean the network is just slow, or it could mean the leader is fine but the follower itself is the one that is struggling. Every leader election design has to live with this ambiguity, it can never fully tell apart a dead leader from a slow network."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Running the election protocol",
+          "text": "2.2 Running the election protocol"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once a node decides the leader is gone, it does not simply crown itself. It runs an election protocol with the other reachable nodes so the cluster ends up with one agreed winner instead of several nodes all assuming they are now in charge."
+        },
+        {
+          "type": "list",
+          "content": "[\"A trigger, usually a missed heartbeat past a timeout, that tells a node to start caring about who the leader is.\",\"A candidacy step, where one or more nodes propose themselves as the new leader.\",\"A resolution rule, some way to pick a single winner when more than one node wants the job, often based on node id, term number, or a majority vote.\",\"An announcement, so the winning node tells everyone else it is now the leader and resumes sending heartbeats.\"]",
+          "items": [
+            "A trigger, usually a missed heartbeat past a timeout, that tells a node to start caring about who the leader is.",
+            "A candidacy step, where one or more nodes propose themselves as the new leader.",
+            "A resolution rule, some way to pick a single winner when more than one node wants the job, often based on node id, term number, or a majority vote.",
+            "An announcement, so the winning node tells everyone else it is now the leader and resumes sending heartbeats."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "content": "The rest of this lesson is really just different answers to that resolution rule question. The Bully algorithm answers it with the highest node id. Ring answers it by passing a message around a circle. Raft answers it with a randomized timer and a majority vote. Same shape, different tie breaker."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Bully algorithm",
+          "text": "3. The Bully algorithm"
+        },
+        {
+          "type": "paragraph",
+          "content": "Imagine an office where the most senior person in the room always takes charge, no vote needed, no discussion. If someone senior walks in later, they simply take over. That bluntness is exactly where the Bully algorithm gets its name."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every node in a Bully cluster has a fixed, unique id known to everyone, often just its server number. When a node notices the leader is gone, it does not ask politely, it sends an election message to every node with a higher id than itself."
+        },
+        {
+          "type": "list",
+          "content": "[\"If no higher id node responds, the node declares itself leader and tells everyone.\",\"If a higher id node does respond, that node takes over the election and repeats the same process against ids higher than itself.\",\"This keeps escalating until the single highest id node that is still alive ends up as leader, because nothing outranks it.\"]",
+          "items": [
+            "If no higher id node responds, the node declares itself leader and tells everyone.",
+            "If a higher id node does respond, that node takes over the election and repeats the same process against ids higher than itself.",
+            "This keeps escalating until the single highest id node that is still alive ends up as leader, because nothing outranks it."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287286426-473375597.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287286426-473375597.png",
+          "alt": "Lower id nodes sending election messages that escalate up to the highest id node, which then announces itself as leader",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287286426-473375597.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The appeal of Bully is how simple it is to reason about. There is never any ambiguity about who should win, it is always whichever alive node has the biggest number. No voting, no counting, just compare ids."
+        },
+        {
+          "type": "note",
+          "title": "The catch with Bully",
+          "content": "Bully assumes ids never change and that message delivery, while it can be slow, eventually gets there. It also generates a burst of election messages every time a low id node notices a failure before a higher id node does, since the escalation has to climb the whole ladder. It is elegant conceptually but rarely used at internet scale precisely because of that message overhead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The Ring algorithm",
+          "text": "4. The Ring algorithm"
+        },
+        {
+          "type": "paragraph",
+          "content": "Now imagine the same office, except instead of shouting across the room, everyone is sitting in a circle and can only pass notes to the person on their left. That constraint, only ever talking to your immediate neighbor, is the whole idea behind the Ring algorithm."
+        },
+        {
+          "type": "paragraph",
+          "content": "Nodes are arranged logically into a ring, each one aware only of the next node in the circle. When a node notices the leader is missing, it starts an election message containing its own id and passes it to its neighbor."
+        },
+        {
+          "type": "list",
+          "content": "[\"Each node that receives the election message compares the id inside it to its own id, and keeps the larger of the two before passing it along.\",\"The message travels all the way around the ring, picking up the largest id it has seen so far as it goes.\",\"Once the message makes a full lap and returns to the node that started it, that node knows the largest id in the cluster and announces it as the new leader in a second lap around the ring.\"]",
+          "items": [
+            "Each node that receives the election message compares the id inside it to its own id, and keeps the larger of the two before passing it along.",
+            "The message travels all the way around the ring, picking up the largest id it has seen so far as it goes.",
+            "Once the message makes a full lap and returns to the node that started it, that node knows the largest id in the cluster and announces it as the new leader in a second lap around the ring."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287288339-148556291.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287288339-148556291.png",
+          "alt": "An election token carrying the highest id seen so far as it travels around a ring of nodes, ending with the highest id node becoming coordinator",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287288339-148556291.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Ring trades Bully raw bluntness for a fixed, predictable message pattern. Every node only ever talks to its one neighbor, so there is no burst of simultaneous messages flying in every direction. The tradeoff is latency, the message has to travel the whole ring, sometimes twice, before a winner is confirmed, which is slow if the ring is large."
+        },
+        {
+          "type": "note",
+          "title": "Rings do not love failure",
+          "content": "The entire scheme depends on every node correctly knowing who its neighbor is. If a node in the ring itself has failed, the ring has to detect the broken link and reroute around it before the election message can keep moving, which adds real complexity on top of the basic idea."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. How Raft folds leader election into consensus",
+          "text": "5. How Raft folds leader election into consensus"
+        },
+        {
+          "type": "paragraph",
+          "content": "Bully and Ring are useful for building intuition, but production systems overwhelmingly reach for something like Raft instead. Raft was designed from the ground up to be a consensus protocol, and leader election is simply one piece of it rather than a separate bolted on algorithm."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every node in Raft is in one of three states at any moment, follower, candidate, or leader. Time in Raft is divided into terms, an increasing counter that acts like a logical clock, every election bumps the term number up by one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Randomized election timeouts avoid split votes",
+          "text": "5.1 Randomized election timeouts avoid split votes"
+        },
+        {
+          "type": "paragraph",
+          "content": "A follower that stops hearing heartbeats waits for its own election timeout before doing anything, and that timeout is picked randomly within a range, say a value somewhere between one hundred fifty and three hundred milliseconds, chosen independently by every node."
+        },
+        {
+          "type": "paragraph",
+          "content": "That randomness is the clever part. If every node used the exact same fixed timeout, they would all become candidates at once the instant the leader disappeared, every one of them would vote for itself, and the vote would split evenly with no majority winner. Randomizing the timeout means one node almost always times out slightly before the others, becomes a candidate first, and usually collects a majority before anyone else even starts an election."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287290486-85834538.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287290486-85834538.png",
+          "alt": "Four followers with different randomized election timeouts, where the shortest timeout wins the race and becomes candidate first",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287290486-85834538.png"
+        },
+        {
+          "type": "blockQuote",
+          "content": "A term in Raft is a monotonically increasing counter attached to every leader and every vote, used to detect stale leaders and to break ties between competing elections."
+        },
+        {
+          "type": "paragraph",
+          "content": "When a follower times out, it increments the term, votes for itself, and sends a RequestVote message to every other node asking for their vote in that new term. Any node that has not already voted in that term, and whose own log is not more up to date than the candidates, grants its vote."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287292708-781336186.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287292708-781336186.png",
+          "alt": "A Raft candidate requesting votes from three followers and winning a majority to become leader for a new term",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287292708-781336186.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The moment a candidate collects votes from a majority of the cluster, it becomes leader for that term immediately, no further announcement round needed, the vote replies already told it. It starts sending heartbeats right away, which resets everyone elses election timers and keeps the cluster calm until the next failure."
+        },
+        {
+          "type": "code",
+          "content": "on election timeout at follower:\n    currentTerm += 1\n    state = candidate\n    votedFor = self\n    votes = 1\n    send RequestVote(currentTerm, self.id, self.lastLogIndex) to all peers\n\non receiving RequestVote(term, candidateId, lastLogIndex):\n    if term < currentTerm:\n        reply vote granted false\n    else if votedFor is null or votedFor == candidateId:\n        if candidate log is at least as up to date as mine:\n            votedFor = candidateId\n            reply vote granted true\n\non candidate receiving vote granted:\n    votes += 1\n    if votes > clusterSize / 2:\n        state = leader\n        start sending heartbeats",
+          "code": {
+            "language": "pseudocode",
+            "content": "on election timeout at follower:\n    currentTerm += 1\n    state = candidate\n    votedFor = self\n    votes = 1\n    send RequestVote(currentTerm, self.id, self.lastLogIndex) to all peers\n\non receiving RequestVote(term, candidateId, lastLogIndex):\n    if term < currentTerm:\n        reply vote granted false\n    else if votedFor is null or votedFor == candidateId:\n        if candidate log is at least as up to date as mine:\n            votedFor = candidateId\n            reply vote granted true\n\non candidate receiving vote granted:\n    votes += 1\n    if votes > clusterSize / 2:\n        state = leader\n        start sending heartbeats"
+          },
+          "codes": {
+            "pseudocode": "on election timeout at follower:\n    currentTerm += 1\n    state = candidate\n    votedFor = self\n    votes = 1\n    send RequestVote(currentTerm, self.id, self.lastLogIndex) to all peers\n\non receiving RequestVote(term, candidateId, lastLogIndex):\n    if term < currentTerm:\n        reply vote granted false\n    else if votedFor is null or votedFor == candidateId:\n        if candidate log is at least as up to date as mine:\n            votedFor = candidateId\n            reply vote granted true\n\non candidate receiving vote granted:\n    votes += 1\n    if votes > clusterSize / 2:\n        state = leader\n        start sending heartbeats"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Terms make stale leaders harmless",
+          "content": "If a node that used to be leader wakes up from a long pause or a network hiccup and still thinks it is in charge, the first heartbeat it sends will carry its old, lower term number. Every other node compares terms, sees the new leader has a higher one, and simply ignores the stale leader. No special case code needed, the term counter handles it automatically."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. The split brain problem",
+          "text": "6. The split brain problem"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is the nightmare scenario every leader election design is really trying to avoid. A network partition splits the cluster into two groups that can no longer talk to each other. The old leader is stuck on one side, still happily sending heartbeats to whoever it can still reach, completely unaware anything is wrong."
+        },
+        {
+          "type": "paragraph",
+          "content": "Meanwhile, the nodes on the other side of the partition cannot hear the old leader anymore, so they correctly conclude it is gone and elect a new one among themselves. Now you have two nodes, each fully convinced it is the one true leader, each accepting writes, each making decisions."
+        },
+        {
+          "type": "example-box",
+          "title": "Two leaders, one disaster",
+          "text": "A five node payments cluster splits three and two across a network partition. The old leader sits with the two node side and keeps accepting payment writes. The three node side elects a fresh leader and also starts accepting writes. Both leaders are technically doing their job correctly, and that is exactly the problem, the same account can now get two different, conflicting balances written on either side of the partition."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287294622-54155566.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287294622-54155566.png",
+          "alt": "Two leaders operating independently on either side of a network partition, each unaware the other exists",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287294622-54155566.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is called split brain, and it is not a bug in any single node, it is what naturally happens when a leader election design lets a node become leader without checking whether enough of the cluster agrees."
+        },
+        {
+          "type": "note",
+          "title": "Split brain is silent until it is not",
+          "content": "Nothing crashes, nothing throws an error. Both sides of a split brain keep working perfectly fine on their own. The damage only becomes visible later, when the partition heals and the two histories have to be reconciled, and by then conflicting writes may already be impossible to merge cleanly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Quorum based election prevents split brain",
+          "text": "7. Quorum based election prevents split brain"
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix is almost embarrassingly simple once you see it. Do not let a node become leader just because it thinks the old leader is gone. Require it to prove that a majority of the whole cluster agrees, before it is allowed to call itself leader."
+        },
+        {
+          "type": "paragraph",
+          "content": "A majority, or quorum, out of five nodes is three. Out of seven nodes it is four. The key property is that any two majorities out of the same cluster must overlap in at least one node, which means it is mathematically impossible for two different groups to both reach a majority at the same time."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287297110-515536460.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287297110-515536460.png",
+          "alt": "Three reachable nodes forming a majority quorum and voting a new leader into place while two nodes remain unreachable",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287297110-515536460.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Run the split brain scenario again with this rule in place. The two node side of the partition can never gather three votes, three is more than two, full stop. It simply cannot elect a leader, no matter how long it waits. The three node side can gather three votes and does elect a leader safely. You end up with at most one leader across the whole cluster, ever."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A quorum is the smallest set of nodes that guarantees overlap with every other possible majority in the cluster, which is what makes it impossible for two disjoint groups to both elect a leader at once."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Mathematically prevents split brain as long as a true majority exists\",\"A minority partition cannot make progress at all, even for reads that would have been safe\"],[\"Works the same regardless of which specific algorithm picks the winner within the majority\",\"Needs an odd cluster size in most designs to always have a clear majority\"],[\"Degrades gracefully, losing a minority of nodes just pauses that side rather than corrupting data\",\"Adds a round trip of voting messages to every election compared to a naive first responder wins scheme\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is exactly why Raft requires votes from a strict majority rather than just the first node to respond, and why systems like Zookeeper and etcd are almost always deployed with an odd number of nodes, three or five, never an even number that could split cleanly down the middle with no majority possible on either side."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Bully versus Ring versus Raft",
+          "text": "8. Bully versus Ring versus Raft"
+        },
+        {
+          "type": "paragraph",
+          "content": "All three algorithms solve the same problem, but they make very different tradeoffs, and knowing the tradeoffs matters more than memorizing the steps."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Algorithm\",\"How the winner is picked\",\"Where it tends to be used\"],\"rows\":[[\"Bully\",\"Highest surviving node id wins outright, no vote required\",\"Teaching tool, small controlled clusters, rarely at internet scale\"],[\"Ring\",\"Largest id survives a full lap around a logical ring of neighbors\",\"Systems with a natural ring topology, less common in modern practice\"],[\"Raft\",\"Randomized timeout plus a majority vote among reachable nodes\",\"etcd, Consul, CockroachDB, most modern strongly consistent systems\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Bully and Ring both assume the network mostly behaves and mostly focus on picking a winner quickly. Neither one has a built in notion of quorum, so neither one is safe against split brain on its own, a partitioned node can still crown itself leader using either scheme."
+        },
+        {
+          "type": "paragraph",
+          "content": "Raft bakes the quorum requirement directly into the vote, which is why it dominates in practice. It costs a bit more in messages per election, but that cost buys you a correctness guarantee the older algorithms simply do not offer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Real systems that use leader election",
+          "text": "9. Real systems that use leader election"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is not an academic exercise. Some of the most widely deployed infrastructure software you already rely on is running a leader election protocol under the hood right now."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 Zookeeper and ephemeral nodes",
+          "text": "9.1 Zookeeper and ephemeral nodes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Zookeeper uses a mechanism called ephemeral nodes. Every candidate creates a sequential, ephemeral znode under a shared path. The client holding the znode with the lowest sequence number is the leader. Ephemeral means the znode disappears automatically the instant that client disconnects, which is what triggers the next lowest znode to become leader, no manual cleanup needed."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287299275-369001962.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287299275-369001962.png",
+          "alt": "Three clients holding sequential ephemeral znodes under a shared Zookeeper path, with the lowest sequence number acting as leader",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287299275-369001962.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 Kubernetes lease based election",
+          "text": "9.2 Kubernetes lease based election"
+        },
+        {
+          "type": "paragraph",
+          "content": "Kubernetes controllers that need exactly one active instance, like the scheduler or the controller manager, use a lease object stored in the API server. Whichever instance currently holds the lease is the leader, and it has to keep renewing that lease before it expires. If the leader pod dies or stalls, the lease expires, and another replica grabs it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287301392-846290472.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287301392-846290472.png",
+          "alt": "One controller pod holding and renewing a Kubernetes lease while two standby pods watch for it to expire",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287301392-846290472.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.3 Raft based systems, etcd and friends",
+          "text": "9.3 Raft based systems, etcd and friends"
+        },
+        {
+          "type": "paragraph",
+          "content": "etcd, the key value store behind Kubernetes own cluster state, runs Raft internally to elect its own leader among its storage nodes. Consul and CockroachDB lean on the same Raft machinery. It is a small irony that Kubernetes uses a simple lease for its own leader election while relying on etcd underneath, which is itself doing a full Raft election, to store that lease reliably."
+        },
+        {
+          "type": "note",
+          "title": "Same idea, different flavor",
+          "content": "Ephemeral znodes, leases, and Raft term based voting are three different mechanisms wearing the same clothes. Each one answers the same question, who is allowed to act as leader right now, and each one relies on some form of automatic expiry or majority agreement so a dead leader cannot linger forever."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Worked example, a five node cluster loses its leader",
+          "text": "10. Worked example, a five node cluster loses its leader"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say you are running a five node Raft cluster, nodes A through E, with A currently serving as leader for term 7. A is sending heartbeats every fifty milliseconds and everyone is happy."
+        },
+        {
+          "type": "example-box",
+          "title": "Walking through the failure",
+          "text": "Node A loses power. B, C, D, and E each have their own randomized election timeout, and D happens to have the shortest one this round. When D stops hearing heartbeats for longer than its timeout, it increments its term to 8, votes for itself, and sends RequestVote messages to B, C, and E. B and C both grant their votes since they have not voted in term 8 yet and D log is at least as current as theirs. The moment D collects votes from itself plus B and C, that is three out of five, a majority, and D becomes leader for term 8 without needing E vote at all. D immediately starts sending heartbeats. E, which was slightly slower to time out, receives one of D heartbeats before its own timeout fires, sees the higher term number, and falls back in line as a follower."
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice what did not happen. Nobody needed to wait for A to come back or send a graceful shutdown message. Nobody needed all five nodes to agree, only three out of five. If A rejoins the cluster later, it will see heartbeats carrying term 8, recognize its own term 7 is stale, and quietly demote itself back to follower."
+        },
+        {
+          "type": "list",
+          "content": "[\"Detection took roughly one election timeout window, typically well under a second in most real deployments.\",\"Only a majority, three nodes, needed to participate, the cluster tolerated E being slow without any issue.\",\"The old leader rejoining safely demoted itself using nothing more than a term number comparison.\"]",
+          "items": [
+            "Detection took roughly one election timeout window, typically well under a second in most real deployments.",
+            "Only a majority, three nodes, needed to participate, the cluster tolerated E being slow without any issue.",
+            "The old leader rejoining safely demoted itself using nothing more than a term number comparison."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Leader election in system design interviews",
+          "text": "11. Leader election in system design interviews"
+        },
+        {
+          "type": "paragraph",
+          "content": "Leader election tends to show up whenever an interview question involves multiple replicas of something and the interviewer asks what happens when one of them fails. Job schedulers, distributed locks, database replication, all of them eventually need this answer."
+        },
+        {
+          "type": "paragraph",
+          "content": "The pattern interviewers are actually listening for is whether you understand the failure modes, not whether you can whiteboard the full Raft state machine from memory."
+        },
+        {
+          "type": "list",
+          "content": "[\"Explain why you need exactly one coordinator instead of letting every replica act independently.\",\"Mention how failure gets detected, missed heartbeats past a timeout, not some instant, perfect signal.\",\"Name split brain explicitly, and explain why a naive first responder wins approach is unsafe.\",\"Bring up quorum, and explain why an odd cluster size avoids ties.\",\"Reference a real system, Raft, Zookeeper, or a Kubernetes lease, to show this is not just theory to you.\"]",
+          "items": [
+            "Explain why you need exactly one coordinator instead of letting every replica act independently.",
+            "Mention how failure gets detected, missed heartbeats past a timeout, not some instant, perfect signal.",
+            "Name split brain explicitly, and explain why a naive first responder wins approach is unsafe.",
+            "Bring up quorum, and explain why an odd cluster size avoids ties.",
+            "Reference a real system, Raft, Zookeeper, or a Kubernetes lease, to show this is not just theory to you."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "note",
+          "title": "A good closing line",
+          "content": "If you can say something like, we need a majority to agree before a new leader is trusted, otherwise a network partition could give us two leaders writing conflicting data, you have already covered the part of this topic interviewers actually care about."
+        },
+        {
+          "type": "paragraph",
+          "content": "You do not need to reimplement Raft in an interview. You need to show that you know why a leader is needed, how the cluster notices one is missing, and why quorum is the thing standing between a clean failover and a split brain incident."
+        }
+      ]
+    }
+  ]
+}

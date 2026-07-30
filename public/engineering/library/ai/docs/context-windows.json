@@ -1,0 +1,528 @@
+{
+  "slug": "context-windows",
+  "title": "Context Windows",
+  "content": [
+    {
+      "id": "context-windows",
+      "title": "Context Windows",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Every model you talk to through MCP has a limit on how much text it can actually look at in one go. Not a soft limit, not a suggestion, a hard boundary measured in tokens, past which older material simply has nowhere left to sit."
+        },
+        {
+          "type": "paragraph",
+          "text": "Understanding that boundary, called the context window, is the first thing you need before any of the later lessons in this module make sense, because propagation, persistence, compression, and every other topic here exists only because that window is finite."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What a Context Window Actually Is",
+          "id": "ctxwin-what-it-is"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147110607-890425266.png",
+          "alt": "A context window holds everything the model can see at once",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147110607-890425266.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A context window is the total amount of text a model can attend to at once when producing its next response. Picture a desk with a fixed amount of surface area. You can spread out a system prompt, a stack of tool descriptions, a resource you just read, and the last ten messages of a conversation, but the desk does not grow to fit more paper. Once it is full, something has to come off before anything new goes on."
+        },
+        {
+          "type": "paragraph",
+          "text": "In an MCP powered application, the model never sees the protocol machinery directly, the JSON-RPC messages, the handshake, the transport. What it sees is a single assembled block of text, built by the host, that includes instructions, available tools, and whatever content resources and tool calls have produced so far. All of that assembled text has to fit inside the context window, every single time the model is asked to respond."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a rough mental model, not literal code the model runs\nassembled_context = (\n    system_instructions\n    + tool_definitions\n    + resource_contents\n    + conversation_history\n)\nassert token_count(assembled_context) <= model.context_window_limit"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Tokens, Not Characters or Words",
+          "id": "ctxwin-tokens-not-words"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147112885-329950745.png",
+          "alt": "A context window is measured in tokens rather than characters or words",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147112885-329950745.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Context window limits are always expressed in tokens, not characters and not words. A token is a chunk of text a model was trained to treat as one unit, sometimes a whole common word, sometimes just a few letters, sometimes a single punctuation mark. English prose averages roughly three to four characters per token, but that ratio shifts a lot for code, JSON, and non English text, both of which tend to use more tokens per character."
+        },
+        {
+          "type": "paragraph",
+          "text": "This matters practically because a developer who estimates budget in characters or words will consistently guess wrong, usually by underestimating. A one thousand character block of JSON, dense with quotes, braces, and short keys, can easily cost more tokens than a one thousand character paragraph of plain prose."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def rough_token_estimate(text: str) -> int:\n    # a crude heuristic only, real tokenizers are model specific\n    return max(1, len(text) // 4)\n\nprint(rough_token_estimate(\"Please summarize the attached document.\"))\nprint(rough_token_estimate('{\"tool\": \"search\", \"params\": {\"query\": \"refund policy\"}}'))\n"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Always measure with the real tokenizer",
+          "content": "Rough estimates are fine for a mental model, but any production budgeting logic should call the actual tokenizer library for the model in use, since the character to token ratio varies enough to matter at the margins."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Context Windows Are Fixed, Not Elastic",
+          "id": "ctxwin-fixed-not-elastic"
+        },
+        {
+          "type": "paragraph",
+          "text": "A given model has one context window size, set at training and serving time, and that number does not flex based on how important your content is. It is not a soft budget that stretches under pressure, it is closer to the maximum weight a lift can carry, cross it and the request simply cannot be served as written."
+        },
+        {
+          "type": "paragraph",
+          "text": "Different models and different versions of the same model family offer very different window sizes, from a few thousand tokens on older or smaller models, to hundreds of thousands on newer, larger ones. It is tempting to treat a generous window as effectively unlimited and stop thinking about budget altogether, but every one of these numbers is still finite, and an MCP session that pulls in enough tool schemas, resources, and history can still reach it."
+        },
+        {
+          "type": "paragraph",
+          "text": "There is no way to temporarily borrow more space mid conversation, once the limit is reached, something has to be trimmed, summarized, or left out entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. What Goes Into the Window in an MCP Session",
+          "id": "ctxwin-what-goes-in"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147114479-779783301.png",
+          "alt": "System prompt, tool definitions, resource content, and history all share the window",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147114479-779783301.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "In an MCP powered host, the context window is not filled by one thing, it is filled by several layers stacked on top of each other, each contributed by a different part of the system. Understanding these layers is what makes budgeting possible later in this lesson."
+        },
+        {
+          "type": "list",
+          "items": [
+            "The system or host level instructions that shape how the model should behave",
+            "The tool definitions advertised by every connected MCP server, sent on effectively every request",
+            "The content of any resources that have been read into the conversation",
+            "The results returned by every tool call made so far",
+            "The full back and forth of the conversation itself, every prior user and model turn"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "layers = {\n    \"system_instructions\": system_prompt,\n    \"tool_schemas\": [t.schema for t in all_available_tools],\n    \"resource_contents\": [r.content for r in resources_read_so_far],\n    \"tool_results\": [call.result for call in tool_calls_made],\n    \"conversation_turns\": message_history,\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. System Prompt and Instructions Take a Slice First",
+          "id": "ctxwin-system-prompt-slice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Before a single tool result or resource has entered the picture, the system prompt and any host level instructions have already claimed part of the window. This slice is usually the smallest of the layers, but it is also the least negotiable, since it typically defines the model persona, safety rules, and how tools should be used, none of which can be trimmed without changing the model behavior itself."
+        },
+        {
+          "type": "paragraph",
+          "text": "Because this slice is paid on every single request for the lifetime of the session, a bloated system prompt is a recurring tax, not a one time cost. Keeping it lean is one of the cheapest wins available when a session is running tight on space."
+        },
+        {
+          "type": "paragraph",
+          "text": "This slice is usually small and fixed, but it is still real, unavailable space, worth accounting for rather than assuming the entire window is free for tools and conversation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Tool Definitions and Schemas Take a Slice Too",
+          "id": "ctxwin-tool-schemas-slice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every tool a connected MCP server exposes contributes its name, description, and parameter schema to the context, and this happens on essentially every request, whether or not that particular tool ends up being called. A host connected to several servers, each offering a handful of tools, can end up sending a surprisingly large stack of schema text before the model has done anything at all."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def estimate_tool_overhead(tools):\n    total = 0\n    for tool in tools:\n        total += rough_token_estimate(tool.name)\n        total += rough_token_estimate(tool.description)\n        total += rough_token_estimate(json.dumps(tool.parameters_schema))\n    return total\n\n# ten tools with modestly sized schemas can easily add up to several\n# thousand tokens before any actual work has happened\n"
+          }
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Connected tools\",\"Rough schema overhead\"],\"rows\":[[\"3 small tools\",\"A few hundred tokens\"],[\"15 tools across two servers\",\"A few thousand tokens\"],[\"50+ tools across many servers\",\"Can rival the size of a long conversation\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Resource Content Competes for the Same Space",
+          "id": "ctxwin-resource-content-competes"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a tool call reads an MCP resource, whatever content that resource returns becomes part of the context the model sees on the next turn. A short configuration file costs almost nothing. An entire log file, a large document, or a full database export dumped in as one resource read can consume a meaningful fraction of the whole window in a single step."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is exactly why resource reads deserve the same scrutiny as tool schemas and conversation history, they are not free just because they came from a server instead of a person typing. A resource that returns ten thousand tokens of raw content leaves that much less room for everything else the session still needs."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "resource_content = await client.read_resource(\"file:///var/log/app.log\")\nprint(rough_token_estimate(resource_content.text))\n# a multi megabyte log file can trivially exceed the entire context window\n# on its own, long before any conversation history is even considered\n"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Tool Results Add Up Turn After Turn",
+          "id": "ctxwin-tool-results-add-up"
+        },
+        {
+          "type": "paragraph",
+          "text": "Unlike a resource read, which usually happens once for a given piece of content, tool calls tend to repeat many times over the course of an agentic session. Every one of those calls returns a result, and unless something actively removes old ones, each result stays in the conversation, stacking on top of the ones before it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "running_total = 0\nfor call in tool_calls_made_this_session:\n    running_total += rough_token_estimate(call.result)\n    print(f\"after {call.tool_name}: {running_total} tokens of results so far\")\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A session that calls a search tool a dozen times, each returning a page of results, can quietly accumulate a large body of tool output that nobody ever explicitly decided to keep in full."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Conversation History Keeps Growing",
+          "id": "ctxwin-conversation-history-grows"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147116291-23606013.png",
+          "alt": "Turn one, turn two, and turn three each add more to the history",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147116291-23606013.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "On top of tool schemas, resource content, and tool results sits the plain back and forth of the conversation itself, every user message and every model reply. Nothing about this history shrinks on its own. Left alone, it grows monotonically for as long as the session stays open, which is precisely the concern that later lessons on context persistence, compression, and long running sessions in this module exist to address."
+        },
+        {
+          "type": "paragraph",
+          "text": "For a short, focused exchange this growth is rarely a problem. For an agent that runs for dozens of turns chasing a complex task, history alone can eventually rival or exceed every other layer combined."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a rough per turn token budget check\nused = system_tokens + tools_tokens + history_tokens\nremaining = context_limit - used\nprint(remaining)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. What Happens When You Exceed the Window",
+          "id": "ctxwin-what-happens-when-exceeded"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147117840-918748518.png",
+          "alt": "Exceeding the window forces older content to be dropped or truncated",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147117840-918748518.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "When assembled context would exceed the model context window limit, one of two things happens, depending entirely on how the host is built. Either the request is rejected outright with an error the host has to handle, or the host silently drops or truncates older content before ever sending the request, so the model never even knows something was removed."
+        },
+        {
+          "type": "note",
+          "title": "Silent truncation is the dangerous case",
+          "content": "A host that quietly drops the oldest messages to make room can end up removing the very system instructions or early context that gave the conversation its shape, and the model has no way to signal that anything is missing, it simply behaves as if that content never existed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Reading the Numbers: How Big Is a Context Window",
+          "id": "ctxwin-reading-the-numbers"
+        },
+        {
+          "type": "paragraph",
+          "text": "Published context window sizes vary enormously across models and providers, from a few thousand tokens on older or smaller models up to hundreds of thousands, or more, on newer large context models. It is worth checking the specific number for whatever model a host is configured to use, rather than assuming a figure from memory, since these numbers change frequently as providers ship new versions."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Rough category\",\"What it typically supports well\"],\"rows\":[[\"Small window\",\"A short conversation with a handful of small tool schemas\"],[\"Medium window\",\"A longer agentic session with several tools and a few resource reads\"],[\"Large window\",\"Many tools, sizable resources, and extended history, still not unlimited\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Budgeting Context Deliberately",
+          "id": "ctxwin-budgeting-deliberately"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147119651-448255971.png",
+          "alt": "A deliberate budget allocates a slice of the window to each category",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147119651-448255971.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because the window is finite and shared across so many layers, a well built MCP host treats context as a budget to be allocated, not a bottomless resource to be filled until something breaks. That means deciding, ahead of time, roughly how much space each layer is allowed to consume, and enforcing that allocation rather than discovering the limit by hitting an error."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "CONTEXT_BUDGET_TOKENS = 32000\n\nbudget = {\n    \"system_instructions\": 500,\n    \"tool_schemas\": 3000,\n    \"resource_contents\": 12000,\n    \"tool_results\": 8000,\n    \"conversation_history\": 6000,\n    \"headroom_for_response\": 2500,\n}\nassert sum(budget.values()) <= CONTEXT_BUDGET_TOKENS\n"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. A Simple Budget in Practice",
+          "id": "ctxwin-budget-in-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "A simple, workable budget just needs rough numbers for each category, system prompt, tool schemas, resource content, history, rather than perfect precision."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "13.1 Enforcing a Budget at Runtime",
+          "id": "ctxwin-budget-enforcing"
+        },
+        {
+          "type": "paragraph",
+          "text": "A budget only helps if something checks it as the session runs, not just at design time. A practical pattern is to track running token counts per layer and refuse, or actively compress, once any layer approaches its allotted share, rather than waiting for the whole assembled context to blow past the model limit."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def check_budget(layer_name: str, current_tokens: int, budget: dict):\n    limit = budget[layer_name]\n    if current_tokens > limit:\n        return False, f\"{layer_name} over budget: {current_tokens} > {limit}\"\n    return True, \"ok\"\n\nok, message = check_budget(\"resource_contents\", 15000, budget)\nif not ok:\n    print(\"need to trim or summarize before continuing:\", message)\n"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Symptoms of a Context Budget Problem",
+          "id": "ctxwin-symptoms"
+        },
+        {
+          "type": "paragraph",
+          "text": "A session running low on context space rarely announces the problem directly, it shows up instead as a change in model behavior that can look, at first, like an unrelated bug."
+        },
+        {
+          "type": "list",
+          "items": [
+            "The model appears to forget instructions that were given earlier in the same session",
+            "The model ignores or contradicts a tool result that was clearly returned a few turns ago",
+            "Responses get noticeably shorter or less thorough as a long session continues",
+            "A request that worked fine early in a session starts failing outright later on",
+            "The host throws a context length or token limit error that surfaces deep inside otherwise unrelated code"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Trade-offs: More Context vs Focused Context",
+          "id": "ctxwin-tradeoffs"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147126170-55696439.png",
+          "alt": "More context is traded off against focused context",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147126170-55696439.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is tempting to treat a bigger context window as a strictly better situation, and in one sense it is, more room means fewer hard choices. But stuffing a window with everything available is not free even when it technically fits, more tokens usually means higher cost and higher latency per request, and some evidence suggests models pay less attention to content buried in the middle of a very long context than to content near the beginning or end."
+        },
+        {
+          "type": "paragraph",
+          "text": "The skill this module is really building toward is not simply fitting more in, it is choosing what belongs in the window at all. A focused context with only the resources and results that matter for the current step tends to produce better answers than a maximal one stuffed with everything that happened to be available."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Tooling and Signals: Token Counts and Usage Reporting",
+          "id": "ctxwin-tooling-signals"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most model providers return a usage field alongside a response, reporting exactly how many tokens the prompt consumed and how many the reply consumed. A well built host logs and monitors this number over the life of a session, rather than waiting to be surprised by an error once the limit is finally hit."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "response = await model_client.send(assembled_context)\nprint(\"prompt tokens used:\", response.usage.prompt_tokens)\nprint(\"completion tokens used:\", response.usage.completion_tokens)\nif response.usage.prompt_tokens > CONTEXT_BUDGET_TOKENS * 0.85:\n    print(\"warning: session is approaching its context budget\")\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Most model providers return a token usage count alongside every response, tracking this number over a long session is the simplest way to notice a context budget problem before it causes a hard failure."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. How Context Windows Interact With Cost",
+          "id": "ctxwin-interacts-with-cost"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most hosted models charge per token, for both what goes in and what comes back out, which means a context window problem is rarely only a correctness problem, it is also a billing problem. A session that repeatedly stuffs full resource contents and every prior tool result into every single request pays for all of that text again and again, on every turn, whether or not it is still relevant."
+        },
+        {
+          "type": "paragraph",
+          "text": "This gives budgeting a second, very practical justification beyond simply avoiding errors, tighter, well chosen context tends to cost meaningfully less over the life of a long running session than a careless one that keeps everything by default."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "ctxwin-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a coding assistant, built as an MCP host, connected to a filesystem server and a search server. A developer asks it to find and fix a bug across a project. The system prompt and eleven tool schemas cost about two thousand tokens before anything else happens. The assistant reads three files as resources, together costing nine thousand tokens, then runs a search tool four times, each result costing roughly six hundred tokens."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "budget_used = {\n    \"system_and_tools\": 2000,\n    \"resource_reads\": 9000,\n    \"search_results\": 4 * 600,\n}\nprint(sum(budget_used.values()), \"tokens used before the model writes a single line of code\")\n# 13400 tokens spent purely on setup and investigation\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "By the time the model is ready to propose a fix, roughly thirteen thousand four hundred tokens are already committed, leaving whatever remains of the window for the actual conversation and the response itself. If the host had instead read entire directories of files as resources rather than the three actually relevant ones, that same budget could have been exhausted before the investigation even finished."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "ctxwin-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Estimating context usage in characters or words instead of using the real tokenizer for the model in use.",
+            "Treating a large published context window as effectively unlimited and skipping budgeting altogether.",
+            "Reading entire large resources into context when only a small relevant slice was actually needed.",
+            "Letting every tool result from a long agentic loop accumulate in full, with nothing ever trimmed or summarized.",
+            "Allowing a host to silently truncate old context on overflow instead of surfacing a clear signal that something was dropped.",
+            "Forgetting that connected but unused tools still cost schema tokens on every single request."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "ctxwin-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take a hypothetical MCP host connected to four tools with schemas you write yourself, plus three resources of your choosing, plus a ten turn conversation history. Using the rough token estimate helper from this lesson, calculate the total context usage layer by layer, then design a budget dictionary that would have kept the session under a twenty thousand token limit, deciding which layer you would trim first if the total came in over budget."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def total_context_usage(tool_schemas, resources, history):\n    # TODO: sum rough_token_estimate() across every item in each layer\n    # TODO: return a dict broken down by layer, plus a grand total\n    pass\n"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "ctxwin-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A context window is a fixed, finite amount of space, measured in tokens, that every layer of an MCP session, system instructions, tool schemas, resource content, tool results, and conversation history, all have to share. Treating that space as a budget to be allocated and monitored, rather than a limit you only discover by hitting an error, is the foundation every other technique in this module builds on."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson looks at context propagation, tracing exactly how a piece of content, like a resource a server returns, actually travels through a client and into a host before it ever reaches the model as part of that shared window."
+        }
+      ]
+    }
+  ]
+}

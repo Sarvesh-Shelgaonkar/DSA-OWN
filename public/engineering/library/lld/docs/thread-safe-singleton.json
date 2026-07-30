@@ -1,0 +1,595 @@
+{
+  "slug": "thread-safe-singleton",
+  "title": "Thread-Safe Singleton",
+  "content": [
+    {
+      "id": "thread-safe-singleton",
+      "title": "Thread-Safe Singleton",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Singleton looks like the easiest pattern in the entire catalog. One class, one static instance, one method to fetch it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Then you add a second thread and the whole thing quietly falls apart. Two threads can both check the instance, both see nothing there, and both go ahead and build their own copy."
+        },
+        {
+          "type": "paragraph",
+          "content": "Now you have two loggers, two config objects, or two connection pools that were supposed to be exactly one. The bug does not show up on your laptop. It shows up in production, under load, at the worst possible time."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson walks through why the classic lazy Singleton breaks under concurrency, the fixes that actually work, the ones that only look like they work, and which approach to reach for by default."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "blockQuote",
+          "content": "A race condition in Singleton creation happens when two threads both read the instance field as null before either one has finished writing to it, so both threads create and both believe they hold the only copy."
+        },
+        {
+          "type": "paragraph",
+          "content": "Nothing here needs exotic hardware or a huge cluster to reproduce. A single machine with more than one CPU core, running ordinary application code under real traffic, is enough."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is what makes this such a common interview question and such a common production incident. The fix is small, but skipping it is easy to miss in review."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Race Condition In Lazy Initialization",
+          "text": "1. The Race Condition In Lazy Initialization"
+        },
+        {
+          "type": "paragraph",
+          "content": "The classic lazy Singleton delays creating the object until someone actually asks for it. That is fine in a single threaded program."
+        },
+        {
+          "type": "paragraph",
+          "content": "The moment two threads can call getInstance at the same time, the check and the create step stop being one atomic operation."
+        },
+        {
+          "type": "paragraph",
+          "content": "Lazy initialization exists for a good reason, to avoid paying for an object nobody ends up needing. The problem is not laziness itself, it is doing the check and the create without any coordination between threads."
+        },
+        {
+          "type": "heading3",
+          "content": "Step by step, how it breaks",
+          "text": "Step by step, how it breaks"
+        },
+        {
+          "type": "list",
+          "content": "[\"Thread A calls getInstance and reads instance as null.\",\"Before Thread A finishes building the object, the scheduler switches to Thread B.\",\"Thread B calls getInstance and also reads instance as null, because Thread A has not written anything yet.\",\"Both threads now proceed to build a new object.\",\"Whichever thread writes last wins the field, but both objects were fully constructed, and any work the first object did before being overwritten is silently lost.\"]",
+          "items": [
+            "Thread A calls getInstance and reads instance as null.",
+            "Before Thread A finishes building the object, the scheduler switches to Thread B.",
+            "Thread B calls getInstance and also reads instance as null, because Thread A has not written anything yet.",
+            "Both threads now proceed to build a new object.",
+            "Whichever thread writes last wins the field, but both objects were fully constructed, and any work the first object did before being overwritten is silently lost."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "code",
+          "content": "public class Logger {\n\n    private static Logger instance;\n\n    private Logger() {\n        // pretend this opens a file handle\n    }\n\n    public static Logger getInstance() {\n        if (instance == null) {           // both threads can pass this check\n            instance = new Logger();      // both threads can reach this line\n        }\n        return instance;\n    }\n}\n\n// Thread A and Thread B both call Logger.getInstance() at almost\n// the same moment. Both can read instance as null before either\n// write completes, so two Logger objects get created.",
+          "code": {
+            "language": "java",
+            "content": "public class Logger {\n\n    private static Logger instance;\n\n    private Logger() {\n        // pretend this opens a file handle\n    }\n\n    public static Logger getInstance() {\n        if (instance == null) {           // both threads can pass this check\n            instance = new Logger();      // both threads can reach this line\n        }\n        return instance;\n    }\n}\n\n// Thread A and Thread B both call Logger.getInstance() at almost\n// the same moment. Both can read instance as null before either\n// write completes, so two Logger objects get created."
+          },
+          "codes": {
+            "java": "class Logger {\n\n    private static Logger instance;\n\n    private Logger() {\n        // pretend this opens a file handle\n    }\n\n    public static Logger getInstance() {\n        if (instance == null) {           // both threads can pass this check\n            instance = new Logger();      // both threads can reach this line\n        }\n        return instance;\n    }\n}\n\n// Thread A and Thread B both call Logger.getInstance() at almost\n// the same moment. Both can read instance as null before either\n// write completes, so two Logger objects get created.\n\npublic class Main {\n    public static void main(String[] args) throws InterruptedException {\n        int threadCount = 8;\n        Logger[] results = new Logger[threadCount];\n        Thread[] threads = new Thread[threadCount];\n\n        for (int i = 0; i < threadCount; i++) {\n            final int idx = i;\n            threads[i] = new Thread(() -> results[idx] = Logger.getInstance());\n        }\n        for (Thread t : threads) t.start();\n        for (Thread t : threads) t.join();\n\n        long distinctInstances = java.util.Arrays.stream(results).distinct().count();\n        System.out.println(\"Distinct Logger instances created: \" + distinctInstances);\n        System.out.println(\"(On a real JVM under load this can be more than 1, \" +\n                \"which is the whole point of this example.)\");\n    }\n}",
+            "javascript": "// JavaScript is single threaded per event loop, so this exact\n// interleaving does not happen the same way it does in Java.\n// The conceptual equivalent shows up with async work: if\n// getInstance does something asynchronous before assigning the\n// field, two concurrent callers can both start building the\n// object before either finishes.\nclass Logger {\n  static instance = null;\n\n  static async getInstance() {\n    if (Logger.instance === null) {\n      const built = await Logger.create(); // await yields control here\n      Logger.instance = built;             // a second caller can slip in above\n    }\n    return Logger.instance;\n  }\n\n  static async create() {\n    return new Logger();\n  }\n}",
+            "python": "import threading\n\nclass Logger:\n    _instance = None\n\n    def __init__(self):\n        pass  # pretend this opens a file handle\n\n    @classmethod\n    def get_instance(cls):\n        if cls._instance is None:      # both threads can pass this check\n            cls._instance = Logger()   # both threads can reach this line\n        return cls._instance\n\n# Two threads calling Logger.get_instance() at nearly the same\n# time can both see _instance as None before either assignment\n# happens, due to the GIL switching between bytecode instructions\n# at exactly the wrong moment. The result is the same as Java:\n# two separate Logger objects, one of them silently discarded.\n\nif __name__ == \"__main__\":\n    results = [None] * 8\n    threads = []\n\n    def worker(idx):\n        results[idx] = Logger.get_instance()\n\n    for i in range(8):\n        t = threading.Thread(target=worker, args=(i,))\n        threads.append(t)\n\n    for t in threads:\n        t.start()\n    for t in threads:\n        t.join()\n\n    distinct_instances = len(set(id(r) for r in results))\n    print(f\"Distinct Logger instances created: {distinct_instances}\")\n    print(\"(Under real concurrent load this can be more than 1, \"\n          \"which is the whole point of this example.)\")",
+            "cpp": "#include <iostream>\n#include <thread>\n#include <vector>\n#include <set>\n\nclass Logger {\nprivate:\n    static Logger* instance;\n\n    Logger() {\n        // pretend this opens a file handle\n    }\n\npublic:\n    static Logger* getInstance() {\n        if (instance == nullptr) {          // both threads can pass this check\n            instance = new Logger();        // both threads can reach this line\n        }\n        return instance;\n    }\n};\n\nLogger* Logger::instance = nullptr;\n\n// Thread A and Thread B both call Logger::getInstance() at almost\n// the same moment. Both can read instance as nullptr before either\n// write completes, so two Logger objects can get created.\n\nint main() {\n    const int threadCount = 8;\n    std::vector<Logger*> results(threadCount, nullptr);\n    std::vector<std::thread> threads;\n\n    for (int i = 0; i < threadCount; i++) {\n        threads.emplace_back([&results, i]() {\n            results[i] = Logger::getInstance();\n        });\n    }\n    for (auto& t : threads) t.join();\n\n    std::set<Logger*> distinct(results.begin(), results.end());\n    std::cout << \"Distinct Logger instances created: \" << distinct.size() << std::endl;\n    std::cout << \"(On real concurrent hardware this can be more than 1, \"\n              << \"which is the whole point of this example.)\" << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Why this is worse than a normal bug",
+          "content": "The two objects usually behave identically for a while, so the code passes every test that runs on one thread. The failure only appears under real concurrent load, which is exactly when nobody wants to be debugging it."
+        },
+        {
+          "type": "heading3",
+          "content": "What actually breaks downstream",
+          "text": "What actually breaks downstream"
+        },
+        {
+          "type": "list",
+          "content": "[\"A connection pool Singleton created twice means two separate pools quietly splitting your traffic, each with its own connection limit.\",\"A cache Singleton created twice means writes to one copy are invisible to reads from the other copy, producing stale or inconsistent data.\",\"A configuration Singleton created twice can mean half your application reads settings loaded before a config reload, and half reads settings loaded after.\"]",
+          "items": [
+            "A connection pool Singleton created twice means two separate pools quietly splitting your traffic, each with its own connection limit.",
+            "A cache Singleton created twice means writes to one copy are invisible to reads from the other copy, producing stale or inconsistent data.",
+            "A configuration Singleton created twice can mean half your application reads settings loaded before a config reload, and half reads settings loaded after."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Naive Fix, Synchronizing The Whole Method",
+          "text": "2. The Naive Fix, Synchronizing The Whole Method"
+        },
+        {
+          "type": "paragraph",
+          "content": "The instinctive fix is to slap a lock around the entire method. In Java that means marking getInstance as synchronized."
+        },
+        {
+          "type": "paragraph",
+          "content": "This does solve the race condition completely. Only one thread can be inside the method at any moment, so the null check and the object creation become effectively atomic."
+        },
+        {
+          "type": "heading3",
+          "content": "Why it actually works",
+          "text": "Why it actually works"
+        },
+        {
+          "type": "list",
+          "content": "[\"Every call to getInstance must first acquire the same lock.\",\"Only one thread can hold that lock at a time, all other callers wait.\",\"By the time a waiting thread gets the lock, the first thread has already finished creating the instance, so the null check now correctly returns false for everyone after the first call.\"]",
+          "items": [
+            "Every call to getInstance must first acquire the same lock.",
+            "Only one thread can hold that lock at a time, all other callers wait.",
+            "By the time a waiting thread gets the lock, the first thread has already finished creating the instance, so the null check now correctly returns false for everyone after the first call."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "heading3",
+          "content": "Why it is still the wrong fix",
+          "text": "Why it is still the wrong fix"
+        },
+        {
+          "type": "paragraph",
+          "content": "The instance only needs protecting during the one time it gets created. After that first call, every future call is just reading a field that never changes again."
+        },
+        {
+          "type": "paragraph",
+          "content": "A synchronized method forces every single call, forever, to acquire and release a lock, even the millionth call happening long after the object was built. Under heavy concurrent traffic that lock becomes a bottleneck that serializes work that did not need to be serialized."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499322368-673396176.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499322368-673396176.png",
+          "alt": "Three separate calls to getInstance all queueing on the same shared lock, one at a time, even long after the instance already exists"
+        },
+        {
+          "type": "code",
+          "content": "public class Logger {\n\n    private static Logger instance;\n\n    private Logger() {}\n\n    // synchronized here means only one thread can be inside this\n    // method at a time, on every single call, not just the first\n    public static synchronized Logger getInstance() {\n        if (instance == null) {\n            instance = new Logger();\n        }\n        return instance;\n    }\n}\n\n// Correct, but every caller pays the cost of acquiring a lock,\n// even long after instance has been set and will never change.",
+          "code": {
+            "language": "java",
+            "content": "public class Logger {\n\n    private static Logger instance;\n\n    private Logger() {}\n\n    // synchronized here means only one thread can be inside this\n    // method at a time, on every single call, not just the first\n    public static synchronized Logger getInstance() {\n        if (instance == null) {\n            instance = new Logger();\n        }\n        return instance;\n    }\n}\n\n// Correct, but every caller pays the cost of acquiring a lock,\n// even long after instance has been set and will never change."
+          },
+          "codes": {
+            "java": "class Logger {\n\n    private static Logger instance;\n\n    private Logger() {}\n\n    // synchronized here means only one thread can be inside this\n    // method at a time, on every single call, not just the first\n    public static synchronized Logger getInstance() {\n        if (instance == null) {\n            instance = new Logger();\n        }\n        return instance;\n    }\n}\n\n// Correct, but every caller pays the cost of acquiring a lock,\n// even long after instance has been set and will never change.\n\npublic class Main {\n    public static void main(String[] args) throws InterruptedException {\n        int threadCount = 8;\n        Logger[] results = new Logger[threadCount];\n        Thread[] threads = new Thread[threadCount];\n\n        for (int i = 0; i < threadCount; i++) {\n            final int idx = i;\n            threads[i] = new Thread(() -> results[idx] = Logger.getInstance());\n        }\n        for (Thread t : threads) t.start();\n        for (Thread t : threads) t.join();\n\n        boolean allSame = java.util.Arrays.stream(results).distinct().count() == 1;\n        System.out.println(\"All threads received the same instance: \" + allSame);\n    }\n}",
+            "javascript": "// The equivalent overcorrection in JavaScript is wrapping every\n// access in a mutex-style lock even after the value is already\n// settled. Shown here with a simple async lock to mirror the idea.\nclass Logger {\n  static instance = null;\n  static lock = Promise.resolve();\n\n  static async getInstance() {\n    // every single call chains onto the lock, forever, even\n    // though only the very first call actually needs to wait\n    const result = await (Logger.lock = Logger.lock.then(async () => {\n      if (Logger.instance === null) {\n        Logger.instance = new Logger();\n      }\n      return Logger.instance;\n    }));\n    return result;\n  }\n}",
+            "python": "import threading\n\nclass Logger:\n    _instance = None\n    _lock = threading.Lock()\n\n    def __init__(self):\n        pass\n\n    @classmethod\n    def get_instance(cls):\n        # every call acquires the lock, even the ten thousandth\n        # call long after _instance was already set\n        with cls._lock:\n            if cls._instance is None:\n                cls._instance = Logger()\n            return cls._instance\n\nif __name__ == \"__main__\":\n    results = [None] * 8\n    threads = []\n\n    def worker(idx):\n        results[idx] = Logger.get_instance()\n\n    for i in range(8):\n        t = threading.Thread(target=worker, args=(i,))\n        threads.append(t)\n    for t in threads:\n        t.start()\n    for t in threads:\n        t.join()\n\n    all_same = len(set(id(r) for r in results)) == 1\n    print(f\"All threads received the same instance: {all_same}\")",
+            "cpp": "#include <iostream>\n#include <thread>\n#include <vector>\n#include <mutex>\n#include <set>\n\nclass Logger {\nprivate:\n    static Logger* instance;\n    static std::mutex mtx;\n\n    Logger() {}\n\npublic:\n    // the mutex here means only one thread can be inside this\n    // function at a time, on every single call, not just the first\n    static Logger* getInstance() {\n        std::lock_guard<std::mutex> lock(mtx);\n        if (instance == nullptr) {\n            instance = new Logger();\n        }\n        return instance;\n    }\n};\n\nLogger* Logger::instance = nullptr;\nstd::mutex Logger::mtx;\n\n// Correct, but every caller pays the cost of acquiring a lock,\n// even long after instance has been set and will never change.\n\nint main() {\n    const int threadCount = 8;\n    std::vector<Logger*> results(threadCount, nullptr);\n    std::vector<std::thread> threads;\n\n    for (int i = 0; i < threadCount; i++) {\n        threads.emplace_back([&results, i]() {\n            results[i] = Logger::getInstance();\n        });\n    }\n    for (auto& t : threads) t.join();\n\n    std::set<Logger*> distinct(results.begin(), results.end());\n    std::cout << \"All threads received the same instance: \" << (distinct.size() == 1) << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "example-box",
+          "title": "The cost in numbers",
+          "text": "Picture a getInstance call that happens ten million times a second across a busy service. With a synchronized method, every one of those ten million calls competes for the same lock, even though the object was created on call number one and never changes again. That is ten million unnecessary lock acquisitions for a field that is effectively read only after startup."
+        },
+        {
+          "type": "heading3",
+          "content": "A tempting but wrong shortcut",
+          "text": "A tempting but wrong shortcut"
+        },
+        {
+          "type": "paragraph",
+          "content": "Some developers try to reduce the cost by only synchronizing the null check, not the whole method, hoping to shrink the critical section."
+        },
+        {
+          "type": "paragraph",
+          "content": "That does not work. If the check and the creation are not protected by the same lock together, the two threads can still both pass the check before either one finishes creating the object, and the original race condition comes right back."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Double Checked Locking",
+          "text": "3. Double Checked Locking"
+        },
+        {
+          "type": "paragraph",
+          "content": "Double checked locking keeps the lock, but shrinks what it protects and adds a second check so the lock is only ever paid for once."
+        },
+        {
+          "type": "paragraph",
+          "content": "The name comes from checking the null condition twice, once before locking and once after."
+        },
+        {
+          "type": "heading3",
+          "content": "The two checks and why each one exists",
+          "text": "The two checks and why each one exists"
+        },
+        {
+          "type": "list",
+          "content": "[\"First check, outside the lock. If the instance already exists, which is true for the overwhelming majority of calls, return it immediately without ever touching the lock.\",\"Lock only happens if the first check found instance still null, meaning we might be in the middle of creating it.\",\"Second check, inside the lock. Another thread may have already created the instance while we were waiting for the lock, so we check again before creating a second time.\",\"Only if the second check also finds null do we actually build the object.\"]",
+          "items": [
+            "First check, outside the lock. If the instance already exists, which is true for the overwhelming majority of calls, return it immediately without ever touching the lock.",
+            "Lock only happens if the first check found instance still null, meaning we might be in the middle of creating it.",
+            "Second check, inside the lock. Another thread may have already created the instance while we were waiting for the lock, so we check again before creating a second time.",
+            "Only if the second check also finds null do we actually build the object."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "code",
+          "content": "public class Logger {\n\n    private static volatile Logger instance;\n\n    private Logger() {}\n\n    public static Logger getInstance() {\n        if (instance == null) {                 // first check, no locking\n            synchronized (Logger.class) {\n                if (instance == null) {         // second check, inside the lock\n                    instance = new Logger();\n                }\n            }\n        }\n        return instance;\n    }\n}\n\n// After the first successful creation, every later call sees a\n// non null instance on the first check and returns immediately,\n// no lock ever acquired.",
+          "code": {
+            "language": "java",
+            "content": "public class Logger {\n\n    private static volatile Logger instance;\n\n    private Logger() {}\n\n    public static Logger getInstance() {\n        if (instance == null) {                 // first check, no locking\n            synchronized (Logger.class) {\n                if (instance == null) {         // second check, inside the lock\n                    instance = new Logger();\n                }\n            }\n        }\n        return instance;\n    }\n}\n\n// After the first successful creation, every later call sees a\n// non null instance on the first check and returns immediately,\n// no lock ever acquired."
+          },
+          "codes": {
+            "java": "class Logger {\n\n    private static volatile Logger instance;\n\n    private Logger() {}\n\n    public static Logger getInstance() {\n        if (instance == null) {                 // first check, no locking\n            synchronized (Logger.class) {\n                if (instance == null) {         // second check, inside the lock\n                    instance = new Logger();\n                }\n            }\n        }\n        return instance;\n    }\n}\n\n// After the first successful creation, every later call sees a\n// non null instance on the first check and returns immediately,\n// no lock ever acquired.\n\npublic class Main {\n    public static void main(String[] args) throws InterruptedException {\n        int threadCount = 8;\n        Logger[] results = new Logger[threadCount];\n        Thread[] threads = new Thread[threadCount];\n\n        for (int i = 0; i < threadCount; i++) {\n            final int idx = i;\n            threads[i] = new Thread(() -> results[idx] = Logger.getInstance());\n        }\n        for (Thread t : threads) t.start();\n        for (Thread t : threads) t.join();\n\n        boolean allSame = java.util.Arrays.stream(results).distinct().count() == 1;\n        System.out.println(\"All threads received the same instance: \" + allSame);\n    }\n}",
+            "javascript": "// JavaScript rarely needs this pattern because module level\n// singletons already get exactly one initialization, guaranteed\n// by the module loader. The conceptual double check shows up when\n// initialization is asynchronous and you want to avoid duplicate\n// in-flight work.\nclass Logger {\n  static instance = null;\n  static creating = null;\n\n  static async getInstance() {\n    if (Logger.instance !== null) return Logger.instance; // first check\n\n    if (Logger.creating === null) {                        // guard the create step\n      Logger.creating = (async () => new Logger())();\n    }\n    Logger.instance = await Logger.creating;                // second check equivalent\n    return Logger.instance;\n  }\n}",
+            "python": "import threading\n\nclass Logger:\n    _instance = None\n    _lock = threading.Lock()\n\n    def __init__(self):\n        pass\n\n    @classmethod\n    def get_instance(cls):\n        if cls._instance is None:          # first check, no locking\n            with cls._lock:\n                if cls._instance is None:  # second check, inside the lock\n                    cls._instance = Logger()\n        return cls._instance\n\n# CPython's GIL makes this pattern less critical than in Java, but\n# the shape, check, lock, check again, create, is the same idea and\n# works correctly across thread implementations.\n\nif __name__ == \"__main__\":\n    results = [None] * 8\n    threads = []\n\n    def worker(idx):\n        results[idx] = Logger.get_instance()\n\n    for i in range(8):\n        t = threading.Thread(target=worker, args=(i,))\n        threads.append(t)\n    for t in threads:\n        t.start()\n    for t in threads:\n        t.join()\n\n    all_same = len(set(id(r) for r in results)) == 1\n    print(f\"All threads received the same instance: {all_same}\")",
+            "cpp": "#include <iostream>\n#include <thread>\n#include <vector>\n#include <mutex>\n#include <atomic>\n#include <set>\n\nclass Logger {\nprivate:\n    static std::atomic<Logger*> instance;\n    static std::mutex mtx;\n\n    Logger() {}\n\npublic:\n    static Logger* getInstance() {\n        Logger* result = instance.load(std::memory_order_acquire);\n        if (result == nullptr) {                       // first check, no locking\n            std::lock_guard<std::mutex> lock(mtx);\n            result = instance.load(std::memory_order_relaxed);\n            if (result == nullptr) {                   // second check, inside the lock\n                result = new Logger();\n                instance.store(result, std::memory_order_release);\n            }\n        }\n        return result;\n    }\n};\n\nstd::atomic<Logger*> Logger::instance{nullptr};\nstd::mutex Logger::mtx;\n\n// After the first successful creation, every later call sees a\n// non null instance on the first check and returns immediately,\n// no lock ever acquired.\n\nint main() {\n    const int threadCount = 8;\n    std::vector<Logger*> results(threadCount, nullptr);\n    std::vector<std::thread> threads;\n\n    for (int i = 0; i < threadCount; i++) {\n        threads.emplace_back([&results, i]() {\n            results[i] = Logger::getInstance();\n        });\n    }\n    for (auto& t : threads) t.join();\n\n    std::set<Logger*> distinct(results.begin(), results.end());\n    std::cout << \"All threads received the same instance: \" << (distinct.size() == 1) << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494602222-608939424.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494602222-608939424.png",
+          "alt": "Two threads racing to check and create a Singleton instance at the same time, resulting in two separate objects"
+        },
+        {
+          "type": "heading3",
+          "content": "Why the lock name matters",
+          "text": "Why the lock name matters"
+        },
+        {
+          "type": "paragraph",
+          "content": "The synchronized block locks on Logger.class, a single object shared by every thread in the JVM for that class. If two different pieces of code locked on two different objects, the lock would provide no real protection at all, since the threads would never actually contend with each other."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Why Volatile Is Not Optional Here",
+          "text": "4. Why Volatile Is Not Optional Here"
+        },
+        {
+          "type": "paragraph",
+          "content": "Double checked locking has a famous history of being subtly broken, and the missing piece was always the volatile keyword."
+        },
+        {
+          "type": "paragraph",
+          "content": "Without volatile, the compiler and the processor are allowed to reorder the steps inside new Logger for performance reasons, as long as the reordering looks harmless to a single thread."
+        },
+        {
+          "type": "heading3",
+          "content": "The reordering problem in detail",
+          "text": "The reordering problem in detail"
+        },
+        {
+          "type": "paragraph",
+          "content": "Creating an object is really three separate steps under the hood."
+        },
+        {
+          "type": "list",
+          "content": "[\"Allocate memory for the new object.\",\"Run the constructor to initialize its fields.\",\"Point the instance variable at that memory.\"]",
+          "items": [
+            "Allocate memory for the new object.",
+            "Run the constructor to initialize its fields.",
+            "Point the instance variable at that memory."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "content": "A compiler is free to reorder steps two and three, because from the point of view of the thread doing the creating, the end result looks identical either way."
+        },
+        {
+          "type": "paragraph",
+          "content": "The danger is a second thread reading instance in between. If step three has happened but step two has not, that second thread sees instance as non null and returns it immediately, skipping the lock entirely, even though the object it just received is only partially constructed."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499324563-35900188.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499324563-35900188.png",
+          "alt": "Allocating memory and publishing the reference before the constructor finishes, letting a second thread read a half constructed object"
+        },
+        {
+          "type": "note",
+          "title": "What volatile actually guarantees",
+          "content": "Marking the field volatile stops the compiler and processor from reordering the write to that field relative to the writes that happened before it. It also guarantees that once one thread writes to a volatile field, every other thread that later reads it sees that write, along with everything that happened before it. Together those two guarantees are exactly what double checked locking needs to be safe."
+        },
+        {
+          "type": "code",
+          "content": "public class Logger {\n\n    // without volatile, a second thread could observe a\n    // half constructed Logger through this field\n    private static volatile Logger instance;\n\n    private Logger() {}\n\n    public static Logger getInstance() {\n        if (instance == null) {\n            synchronized (Logger.class) {\n                if (instance == null) {\n                    instance = new Logger();  // safe publish, thanks to volatile\n                }\n            }\n        }\n        return instance;\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "public class Logger {\n\n    // without volatile, a second thread could observe a\n    // half constructed Logger through this field\n    private static volatile Logger instance;\n\n    private Logger() {}\n\n    public static Logger getInstance() {\n        if (instance == null) {\n            synchronized (Logger.class) {\n                if (instance == null) {\n                    instance = new Logger();  // safe publish, thanks to volatile\n                }\n            }\n        }\n        return instance;\n    }\n}"
+          },
+          "codes": {
+            "java": "class Logger {\n\n    // without volatile, a second thread could observe a\n    // half constructed Logger through this field\n    private static volatile Logger instance;\n\n    private final String startedAt;\n\n    private Logger() {\n        startedAt = \"logger-ready\";\n    }\n\n    public static Logger getInstance() {\n        if (instance == null) {\n            synchronized (Logger.class) {\n                if (instance == null) {\n                    instance = new Logger();  // safe publish, thanks to volatile\n                }\n            }\n        }\n        return instance;\n    }\n\n    public String getStartedAt() {\n        return startedAt;\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) throws InterruptedException {\n        int threadCount = 8;\n        String[] results = new String[threadCount];\n        Thread[] threads = new Thread[threadCount];\n\n        for (int i = 0; i < threadCount; i++) {\n            final int idx = i;\n            threads[i] = new Thread(() -> results[idx] = Logger.getInstance().getStartedAt());\n        }\n        for (Thread t : threads) t.start();\n        for (Thread t : threads) t.join();\n\n        boolean allFullyConstructed = java.util.Arrays.stream(results)\n                .allMatch(s -> s.equals(\"logger-ready\"));\n        System.out.println(\"Every thread observed a fully constructed Logger: \" + allFullyConstructed);\n    }\n}",
+            "javascript": "// JavaScript engines do not expose the same kind of instruction\n// reordering to application code, and the single threaded event\n// loop means an object reference is either fully assigned or not\n// assigned at all from another callback's point of view. There is\n// no direct volatile equivalent needed for this specific hazard.\nclass Logger {\n  static instance = null; // assignment here is always seen whole\n}",
+            "python": "import threading\n\n# CPython protects references with the GIL, so a partially\n# constructed object cannot be observed through a normal attribute\n# assignment the way it can in Java without volatile. Other Python\n# implementations without a GIL would need an explicit memory\n# barrier or a lock around both the check and the assignment.\nclass Logger:\n    _instance = None\n    _lock = threading.Lock()\n\n    def __init__(self):\n        self.started_at = \"logger-ready\"\n\n    @classmethod\n    def get_instance(cls):\n        if cls._instance is None:\n            with cls._lock:\n                if cls._instance is None:\n                    cls._instance = Logger()  # safe publish under the lock\n        return cls._instance\n\n\nif __name__ == \"__main__\":\n    results = [None] * 8\n    threads = []\n\n    def worker(idx):\n        results[idx] = Logger.get_instance().started_at\n\n    for i in range(8):\n        t = threading.Thread(target=worker, args=(i,))\n        threads.append(t)\n    for t in threads:\n        t.start()\n    for t in threads:\n        t.join()\n\n    all_fully_constructed = all(r == \"logger-ready\" for r in results)\n    print(f\"Every thread observed a fully constructed Logger: {all_fully_constructed}\")",
+            "cpp": "#include <iostream>\n#include <thread>\n#include <vector>\n#include <mutex>\n#include <atomic>\n#include <string>\n\nclass Logger {\nprivate:\n    // without an atomic/acquire-release pair, a second thread could\n    // observe a half constructed Logger through this pointer\n    static std::atomic<Logger*> instance;\n    static std::mutex mtx;\n\n    std::string startedAt;\n\n    Logger() : startedAt(\"logger-ready\") {}\n\npublic:\n    static Logger* getInstance() {\n        Logger* result = instance.load(std::memory_order_acquire);\n        if (result == nullptr) {\n            std::lock_guard<std::mutex> lock(mtx);\n            result = instance.load(std::memory_order_relaxed);\n            if (result == nullptr) {\n                result = new Logger();\n                instance.store(result, std::memory_order_release); // safe publish\n            }\n        }\n        return result;\n    }\n\n    const std::string& getStartedAt() const { return startedAt; }\n};\n\nstd::atomic<Logger*> Logger::instance{nullptr};\nstd::mutex Logger::mtx;\n\nint main() {\n    const int threadCount = 8;\n    std::vector<std::string> results(threadCount);\n    std::vector<std::thread> threads;\n\n    for (int i = 0; i < threadCount; i++) {\n        threads.emplace_back([&results, i]() {\n            results[i] = Logger::getInstance()->getStartedAt();\n        });\n    }\n    for (auto& t : threads) t.join();\n\n    bool allFullyConstructed = true;\n    for (auto& r : results) {\n        if (r != \"logger-ready\") allFullyConstructed = false;\n    }\n    std::cout << \"Every thread observed a fully constructed Logger: \" << allFullyConstructed << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "heading3",
+          "content": "The historical name for this bug",
+          "text": "The historical name for this bug"
+        },
+        {
+          "type": "paragraph",
+          "content": "This exact failure mode is documented widely enough to have its own name, the double checked locking problem, discussed at length in early 2000s Java literature before the memory model was fixed in Java 5."
+        },
+        {
+          "type": "paragraph",
+          "content": "Before Java 5, volatile did not even provide the guarantees described above, which meant double checked locking was broken in Java no matter what you did. That history is why some older codebases still avoid the pattern entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Eager Initialization",
+          "text": "5. Eager Initialization"
+        },
+        {
+          "type": "paragraph",
+          "content": "The simplest fix for the whole problem is to stop being lazy about it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Create the instance the moment the class is loaded, before any thread could possibly race to create it. The class loader handles the one-time-only guarantee for you."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a real cost too, since the object gets built even if nothing ever calls getInstance during that run."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is often the very first fix engineers reach for once they understand why the lazy version is broken."
+        },
+        {
+          "type": "heading3",
+          "content": "Why this sidesteps the race entirely",
+          "text": "Why this sidesteps the race entirely"
+        },
+        {
+          "type": "list",
+          "content": "[\"The class loading mechanism itself guarantees that a class is initialized exactly once, even under concurrent access from multiple threads.\",\"By the time any thread calls getInstance, the instance field is already set, there is no null window to race inside.\",\"No lock, no volatile, no double checking, needed anywhere.\"]",
+          "items": [
+            "The class loading mechanism itself guarantees that a class is initialized exactly once, even under concurrent access from multiple threads.",
+            "By the time any thread calls getInstance, the instance field is already set, there is no null window to race inside.",
+            "No lock, no volatile, no double checking, needed anywhere."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "code",
+          "content": "public class Logger {\n\n    // created as soon as the class is loaded, before any thread\n    // could possibly call getInstance\n    private static final Logger instance = new Logger();\n\n    private Logger() {}\n\n    public static Logger getInstance() {\n        return instance; // just a read, always safe, always ready\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "public class Logger {\n\n    // created as soon as the class is loaded, before any thread\n    // could possibly call getInstance\n    private static final Logger instance = new Logger();\n\n    private Logger() {}\n\n    public static Logger getInstance() {\n        return instance; // just a read, always safe, always ready\n    }\n}"
+          },
+          "codes": {
+            "java": "class Logger {\n\n    // created as soon as the class is loaded, before any thread\n    // could possibly call getInstance\n    private static final Logger instance = new Logger();\n\n    private Logger() {}\n\n    public static Logger getInstance() {\n        return instance; // just a read, always safe, always ready\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        Logger first = Logger.getInstance();\n        Logger second = Logger.getInstance();\n        System.out.println(\"Same instance both times: \" + (first == second));\n    }\n}",
+            "javascript": "// A module level constant is the eager equivalent in JavaScript.\n// Module evaluation happens once, before any importer can observe\n// a partially built value.\nclass Logger {\n  constructor() {\n    // real setup would go here\n  }\n}\n\nconst instance = new Logger(); // built once, at module load time\n\nmodule.exports = { getInstance: () => instance };",
+            "python": "class Logger:\n    def __init__(self):\n        pass  # real setup would go here\n\n# built once, at module import time, before any thread could\n# reach for it\n_instance = Logger()\n\ndef get_instance():\n    return _instance\n\nif __name__ == \"__main__\":\n    first = get_instance()\n    second = get_instance()\n    print(f\"Same instance both times: {first is second}\")",
+            "cpp": "#include <iostream>\n\nclass Logger {\nprivate:\n    Logger() {} // real setup would go here\n\npublic:\n    // created as soon as the program starts, before any thread\n    // could possibly call getInstance\n    static Logger* instance;\n\n    static Logger* getInstance() {\n        return instance; // just a read, always safe, always ready\n    }\n};\n\nLogger* Logger::instance = new Logger();\n\nint main() {\n    Logger* first = Logger::getInstance();\n    Logger* second = Logger::getInstance();\n    std::cout << \"Same instance both times: \" << (first == second) << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Nothing here is exotic, it is just choosing to do the work earlier instead of later."
+        },
+        {
+          "type": "heading3",
+          "content": "The tradeoff",
+          "text": "The tradeoff"
+        },
+        {
+          "type": "paragraph",
+          "content": "Eager initialization creates the object whether or not it ever gets used. If construction is expensive, for example opening a real database connection, and some code paths never touch the Singleton at all, that work is wasted."
+        },
+        {
+          "type": "paragraph",
+          "content": "For a cheap object, this tradeoff is almost never worth worrying about, and eager initialization is usually the least risky choice available."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is also the easiest version to read at a glance, which counts for a lot when someone else has to maintain this code later."
+        },
+        {
+          "type": "paragraph",
+          "content": "Most real Java codebases end up preferring this holder trick, or the enum version covered next, over the classic double checked lock."
+        },
+        {
+          "type": "heading3",
+          "content": "A middle ground worth knowing",
+          "text": "A middle ground worth knowing"
+        },
+        {
+          "type": "paragraph",
+          "content": "Java offers a lazy option that keeps the simplicity of eager initialization, using a private static holder class."
+        },
+        {
+          "type": "paragraph",
+          "content": "The trick relies on the fact that a nested class is not loaded, and therefore the instance inside it is not created, until something actually references that nested class for the first time. That gives you lazy creation with the same thread safety guarantee as eager initialization, and no explicit locking anywhere."
+        },
+        {
+          "type": "code",
+          "content": "public class Logger {\n\n    private Logger() {}\n\n    private static class Holder {\n        static final Logger INSTANCE = new Logger();\n    }\n\n    public static Logger getInstance() {\n        return Holder.INSTANCE; // Holder loads, and INSTANCE is\n                                 // created, only on first access\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "public class Logger {\n\n    private Logger() {}\n\n    private static class Holder {\n        static final Logger INSTANCE = new Logger();\n    }\n\n    public static Logger getInstance() {\n        return Holder.INSTANCE; // Holder loads, and INSTANCE is\n                                 // created, only on first access\n    }\n}"
+          },
+          "codes": {
+            "java": "class Logger {\n\n    private Logger() {}\n\n    private static class Holder {\n        static final Logger INSTANCE = new Logger();\n    }\n\n    public static Logger getInstance() {\n        return Holder.INSTANCE; // Holder loads, and INSTANCE is\n                                 // created, only on first access\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        Logger first = Logger.getInstance();\n        Logger second = Logger.getInstance();\n        System.out.println(\"Same instance both times: \" + (first == second));\n    }\n}",
+            "python": "class Logger:\n    def __init__(self):\n        pass\n\n\nclass _Holder:\n    # _Holder.instance is only created the first time this class\n    # attribute is accessed, the closest Python analogy to Java's\n    # lazy static holder class loading\n    instance = None\n\n\ndef get_instance():\n    if _Holder.instance is None:\n        _Holder.instance = Logger()\n    return _Holder.instance\n\n\nif __name__ == \"__main__\":\n    first = get_instance()\n    second = get_instance()\n    print(f\"Same instance both times: {first is second}\")",
+            "cpp": "#include <iostream>\n\nclass Logger {\nprivate:\n    Logger() {}\n\npublic:\n    static Logger& getInstance() {\n        // the C++11 standard guarantees this static local is\n        // constructed exactly once, the first time control passes\n        // through this line, even under concurrent calls, with no\n        // explicit lock needed anywhere in this code\n        static Logger instance;\n        return instance;\n    }\n};\n\nint main() {\n    Logger& first = Logger::getInstance();\n    Logger& second = Logger::getInstance();\n    std::cout << \"Same instance both times: \" << (&first == &second) << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. The Enum Based Singleton",
+          "text": "6. The Enum Based Singleton"
+        },
+        {
+          "type": "paragraph",
+          "content": "Java has one more option that is specific to the language, using an enum with a single value."
+        },
+        {
+          "type": "paragraph",
+          "content": "The Java language specification guarantees that enum constants are created exactly once, and that creation is inherently thread safe, handled by the JVM itself."
+        },
+        {
+          "type": "heading3",
+          "content": "What you get for free",
+          "text": "What you get for free"
+        },
+        {
+          "type": "list",
+          "content": "[\"Thread safety, guaranteed by the JVM, no locks or volatile needed anywhere in your code.\",\"Serialization safety, enums cannot be re-created through deserialization the way a normal class can, so you cannot accidentally end up with a second instance after saving and loading state.\",\"Reflection resistance, the usual trick of calling a private constructor through reflection to create a second instance does not work on enums.\"]",
+          "items": [
+            "Thread safety, guaranteed by the JVM, no locks or volatile needed anywhere in your code.",
+            "Serialization safety, enums cannot be re-created through deserialization the way a normal class can, so you cannot accidentally end up with a second instance after saving and loading state.",
+            "Reflection resistance, the usual trick of calling a private constructor through reflection to create a second instance does not work on enums."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499326514-485160214.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499326514-485160214.png",
+          "alt": "A single enum Singleton instance providing thread safety, serialization safety, and reflection resistance all from the JVM"
+        },
+        {
+          "type": "code",
+          "content": "public enum Logger {\n    INSTANCE;\n\n    public void log(String message) {\n        System.out.println(message);\n    }\n}\n\n// usage\nLogger.INSTANCE.log(\"application started\");\n\n// the JVM guarantees INSTANCE is created exactly once, safely,\n// even under concurrent class loading from multiple threads",
+          "code": {
+            "language": "java",
+            "content": "public enum Logger {\n    INSTANCE;\n\n    public void log(String message) {\n        System.out.println(message);\n    }\n}\n\n// usage\nLogger.INSTANCE.log(\"application started\");\n\n// the JVM guarantees INSTANCE is created exactly once, safely,\n// even under concurrent class loading from multiple threads"
+          },
+          "codes": {
+            "java": "enum Logger {\n    INSTANCE;\n\n    public void log(String message) {\n        System.out.println(message);\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        // the JVM guarantees INSTANCE is created exactly once, safely,\n        // even under concurrent class loading from multiple threads\n        Logger.INSTANCE.log(\"application started\");\n    }\n}",
+            "javascript": "// JavaScript has no enum construct, but a frozen object literal\n// exported from a module captures the same spirit, one value,\n// created once, never reassignable.\nconst Logger = Object.freeze({\n  log(message) {\n    console.log(message);\n  },\n});\n\nmodule.exports = Logger;",
+            "python": "from enum import Enum\n\nclass Logger(Enum):\n    INSTANCE = \"logger\"\n\n    def log(self, message):\n        print(message)\n\n\nif __name__ == \"__main__\":\n    # Python enum members are created once when the module is first\n    # imported, and the import system serializes concurrent imports,\n    # so this is safe under threads the same way the Java version is\n    Logger.INSTANCE.log(\"application started\")",
+            "cpp": "#include <iostream>\n#include <string>\n\n// C++ has no direct equivalent of a Java enum singleton (enums in\n// C++ cannot carry methods), so the closest idiomatic match is a\n// class whose copy and move operations are explicitly deleted, and\n// whose single instance is a static value, not a pointer, so there\n// is no separate heap allocation step for anything to race on\nclass Logger {\npublic:\n    static Logger& instance() {\n        static Logger INSTANCE;\n        return INSTANCE;\n    }\n\n    void log(const std::string& message) {\n        std::cout << message << std::endl;\n    }\n\n    Logger(const Logger&) = delete;\n    Logger& operator=(const Logger&) = delete;\n\nprivate:\n    Logger() = default;\n};\n\nint main() {\n    // guaranteed to be constructed exactly once, safely, even\n    // under concurrent first access, and impossible to copy\n    Logger::instance().log(\"application started\");\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Why this feels underused",
+          "content": "Many developers do not think of enum as a Singleton tool because it looks like it belongs to a completely different job. Effective Java famously argues this is the best approach available in Java for a simple Singleton, precisely because the language itself closes every loophole that the class based versions have to guard against manually."
+        },
+        {
+          "type": "heading3",
+          "content": "When enum is not a fit",
+          "text": "When enum is not a fit"
+        },
+        {
+          "type": "paragraph",
+          "content": "An enum based Singleton cannot extend another class, since every enum already implicitly extends Enum. If your Singleton needs to inherit behavior from an existing base class, this approach will not compile."
+        },
+        {
+          "type": "paragraph",
+          "content": "For the common case of a simple Singleton with no inheritance requirement, this limitation rarely matters in practice."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Comparing All The Approaches",
+          "text": "7. Comparing All The Approaches"
+        },
+        {
+          "type": "paragraph",
+          "content": "With five approaches on the table, a side by side comparison makes the tradeoffs concrete instead of abstract."
+        },
+        {
+          "type": "paragraph",
+          "content": "Each approach trades away something different. Laying them side by side makes the right default much easier to see."
+        },
+        {
+          "type": "paragraph",
+          "content": "None of these are wrong in every situation. The right choice depends on how expensive the object is to build, whether the language gives you enum, and how much you value simplicity over squeezing out the last bit of laziness."
+        },
+        {
+          "type": "paragraph",
+          "content": "Read the table below as a decision aid, not a ranking. The best choice for a tiny logger and the best choice for an expensive database connection manager can be two different rows."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Thread safe\",\"Lazy\",\"Ongoing lock cost\",\"Notes\"],\"rows\":[[\"Naive lazy, no locking\",\"No\",\"Yes\",\"None\",\"Broken under concurrency, can create duplicates\"],[\"Synchronized method\",\"Yes\",\"Yes\",\"Every call\",\"Correct but slow under heavy concurrent load\"],[\"Double checked locking\",\"Yes, with volatile\",\"Yes\",\"Only during first creation\",\"Fast after warmup, needs volatile to be correct\"],[\"Eager initialization\",\"Yes\",\"No\",\"None\",\"Simplest correct option, pays creation cost upfront\"],[\"Static holder class\",\"Yes\",\"Yes\",\"None\",\"Java only, lazy without any explicit locking code\"],[\"Enum based\",\"Yes\",\"No\",\"None\",\"Java only, also gets serialization and reflection safety\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494604037-767833874.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494604037-767833874.png",
+          "alt": "Double checked locking closing the race, one thread acquires the lock and safely publishes the instance while the other waits and then reads the finished object"
+        },
+        {
+          "type": "pros-cons",
+          "content": "{\"pros\":[\"Eager initialization is trivial to write and impossible to get wrong.\",\"Enum based gives thread safety plus serialization and reflection protection for free in Java.\",\"Double checked locking gives you lazy creation with near zero cost after the first call.\"],\"cons\":[\"Eager initialization wastes work if the object is expensive and rarely used.\",\"Enum based only exists in Java, not portable to other languages.\",\"Double checked locking is easy to get subtly wrong if volatile is forgotten.\"]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Which One Should You Actually Reach For",
+          "text": "8. Which One Should You Actually Reach For"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the object is cheap to create, reach for eager initialization first. It is the smallest amount of code, and there is no race condition to reason about because there is no window where the instance is missing."
+        },
+        {
+          "type": "paragraph",
+          "content": "If you need lazy creation without hand rolling any locking, the static holder class approach gives you that for free in Java, and deserves to be far better known than it is."
+        },
+        {
+          "type": "paragraph",
+          "content": "If you are in Java specifically and do not need lazy creation, the enum based Singleton is arguably the cleanest option available, since the language closes every backdoor for you."
+        },
+        {
+          "type": "paragraph",
+          "content": "Reach for double checked locking only when creation is genuinely expensive and you actually need to defer it until first use. Just do not forget volatile, since that single keyword is the difference between a pattern that is famous for working and one that is famous for being broken."
+        },
+        {
+          "type": "paragraph",
+          "content": "Avoid the plain synchronized method in anything performance sensitive. It is correct, but it pays a lock on every call forever, long after that lock stopped doing any useful work."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499329273-981374568.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499329273-981374568.png",
+          "alt": "Decision flow for picking a Singleton approach based on whether the object is cheap to build and whether lazy creation is required"
+        },
+        {
+          "type": "paragraph",
+          "content": "And whichever version you pick, this is one of those rare corners of software where the simplest looking code is the one most likely to be silently wrong. Take the extra minute to reason through what happens when two threads arrive at the same line at the same time."
+        },
+        {
+          "type": "paragraph",
+          "content": "A quick mental test that helps, imagine two threads pausing at literally the exact same instruction, then ask what each one sees."
+        },
+        {
+          "type": "paragraph",
+          "content": "If the answer depends on timing you cannot control, the code is not actually thread safe yet, no matter how it reads."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,494 @@
+{
+  "slug": "streaming-engines",
+  "title": "Streaming Engines",
+  "content": [
+    {
+      "id": "streaming-engines",
+      "title": "Streaming Engines",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Think about a card swipe machine at a busy store counter. It does not wait for the end of the day to add up sales. Every single swipe gets processed the moment it happens, the running total updates instantly, and by closing time the number is already sitting there, correct, with nothing left to calculate."
+        },
+        {
+          "type": "paragraph",
+          "content": "A streaming engine is that same idea, applied to data instead of rupees. Kafka, or whatever event stream you are using, is just the pipe that events flow through. The streaming engine is the thing sitting on top of that pipe, actually doing the work: counting, joining, aggregating, reacting, continuously, one event at a time, without ever waiting for a batch job to kick off at midnight."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396330981-241647145.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396330981-241647145.png",
+          "alt": "A streaming engine sitting on top of an event stream, consuming events and producing continuous output"
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson covers what these engines actually do under the hood, the windowing concepts that make continuous aggregation possible, the messy reality of event time versus processing time, and how the three engines you will actually meet in interviews and in production, Flink, Kafka Streams, and Spark Streaming, differ from each other."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Kafka, or any event stream, is really just a durable, ordered log of events. It is excellent at storing and delivering events reliably, but it does not compute anything. Nobody asks Kafka \"what is the average order value in the last 5 minutes.\" You ask a streaming engine that question, because the engine is the piece that actually reads the log and does something with it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 What A Streaming Engine Actually Is",
+          "text": "1.1 What A Streaming Engine Actually Is"
+        },
+        {
+          "type": "paragraph",
+          "content": "A streaming engine is a processing framework that sits downstream of an event stream, reads events continuously as they arrive, and runs your business logic on them in real time. That logic could be as simple as filtering out bad records, or as involved as joining two streams together and maintaining a running aggregate across millions of keys."
+        },
+        {
+          "type": "list",
+          "content": "[\"Apache Flink, a dedicated cluster that runs true event by event streaming.\",\"Kafka Streams, a lightweight library you embed directly inside your own application.\",\"Spark Streaming, originally built around tiny batches, now also supporting more continuous processing.\"]",
+          "items": [
+            "Apache Flink, a dedicated cluster that runs true event by event streaming.",
+            "Kafka Streams, a lightweight library you embed directly inside your own application.",
+            "Spark Streaming, originally built around tiny batches, now also supporting more continuous processing."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.2 Why You Need One On Top Of Kafka",
+          "text": "1.2 Why You Need One On Top Of Kafka"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say you run an e commerce site and Kafka holds a topic of page view events. On its own, Kafka will happily deliver you those events in order, forever. But it will not tell you how many people viewed a product in the last 5 minutes, it will not tell you if a user session just went idle, and it will not join a page view with the corresponding purchase event to compute a conversion rate. That is exactly the job description of a streaming engine."
+        },
+        {
+          "type": "note",
+          "title": "A useful mental model",
+          "content": "Kafka is the conveyor belt. The streaming engine is the worker standing at the belt doing something useful with every item that passes by, and remembering what happened with earlier items when it needs to."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. What A Streaming Engine Actually Does",
+          "text": "2. What A Streaming Engine Actually Does"
+        },
+        {
+          "type": "paragraph",
+          "content": "Strip away the marketing and every streaming engine does the same four things, in a loop, forever: consume the next event, run your transformation or aggregation logic on it, update whatever state that logic needs to remember, and produce a result. The loop never stops, there is no beginning of batch or end of batch, just a continuous stream of events flowing through."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396330981-492738793.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396330981-492738793.png",
+          "alt": "A streaming engine consuming events, transforming or aggregating them, updating state, and emitting a result, in a continuous loop"
+        },
+        {
+          "type": "paragraph",
+          "content": "The part that trips people up the most is state. A stateless transformation, like uppercasing a string or filtering out nulls, needs nothing remembered between events. But the moment you want a count, a sum, an average, or a join, the engine has to keep some memory around across events, a running count per URL, a running total per user, an open half of a join waiting for its match. That memory is called state, and every real streaming engine ships a way to store it durably so a crash does not wipe it out."
+        },
+        {
+          "type": "code",
+          "content": "// Conceptual shape of what a streaming engine does per event\n// (not a specific engine's API, just the mental model)\n\nstate = loadOrInitState(event.key)\nresult = applyLogic(event, state)\nstate = updateState(state, event)\nsaveState(event.key, state)\nemit(result)",
+          "code": {
+            "language": "javascript",
+            "content": "// Conceptual shape of what a streaming engine does per event\n// (not a specific engine's API, just the mental model)\n\nstate = loadOrInitState(event.key)\nresult = applyLogic(event, state)\nstate = updateState(state, event)\nsaveState(event.key, state)\nemit(result)"
+          },
+          "codes": {
+            "javascript": "// Conceptual shape of what a streaming engine does per event\n// (not a specific engine's API, just the mental model)\n\nstate = loadOrInitState(event.key)\nresult = applyLogic(event, state)\nstate = updateState(state, event)\nsaveState(event.key, state)\nemit(result)"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Stateless versus stateful",
+          "content": "Filtering and mapping are stateless, one event in, one event out, nothing remembered. Counting, summing, and windowing are stateful, the engine must hold onto something between events. Stateful processing is where streaming gets genuinely interesting, and genuinely hard."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Windowing",
+          "text": "3. Windowing"
+        },
+        {
+          "type": "paragraph",
+          "content": "An unbounded stream never ends, so \"give me the total count\" is a meaningless question, the answer would just keep growing forever. What you actually want is almost always scoped to a chunk of time: how many page views in the last 5 minutes, how many failed logins in the last hour. Windowing is how a streaming engine carves an infinite stream into finite, answerable chunks."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Tumbling Windows",
+          "text": "3.1 Tumbling Windows"
+        },
+        {
+          "type": "paragraph",
+          "content": "A tumbling window is a fixed size, non overlapping bucket of time. Think 5 minute buckets: 10:00 to 10:05, then 10:05 to 10:10, then 10:10 to 10:15. Every event belongs to exactly one bucket, no bucket overlaps another, and each bucket closes and reports its result before the next one starts filling up."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396330982-429508588.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396330982-429508588.png",
+          "alt": "Tumbling windows shown as three fixed, non overlapping five minute time buckets in sequence"
+        },
+        {
+          "type": "paragraph",
+          "content": "Tumbling windows are the simplest to reason about and the most common choice when you just want a clean per interval number, like requests per minute or sales per hour."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Sliding Windows",
+          "text": "3.2 Sliding Windows"
+        },
+        {
+          "type": "paragraph",
+          "content": "A sliding window is also fixed size, but it overlaps with its neighbors and updates far more often. A 5 minute window that slides every 1 minute means a new window opens every minute, each one covering the previous 5 minutes. The same event can belong to several overlapping windows at once."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396330982-270433466.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396330982-270433466.png",
+          "alt": "Sliding windows shown as overlapping five minute windows that each shift forward by one minute"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sliding windows are what you want when you need a smoother, more frequently updating metric, like a moving average, rather than a number that only refreshes every 5 minutes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.3 Session Windows",
+          "text": "3.3 Session Windows"
+        },
+        {
+          "type": "paragraph",
+          "content": "A session window has no fixed size at all. Instead it groups events by activity, and closes only after a gap of inactivity longer than some threshold. A user clicking around your app for 3 minutes, then going quiet for 20 minutes, then clicking again, produces two separate session windows, split exactly where the inactivity gap sat."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396330982-956625564.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396330982-956625564.png",
+          "alt": "Session windows grouping a burst of clicks, closing after a gap of inactivity, then opening a new session on renewed activity"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Window type\",\"Size\",\"Overlap\",\"Good for\"],\"rows\":[[\"Tumbling\",\"Fixed\",\"None\",\"Clean per interval counts\"],[\"Sliding\",\"Fixed\",\"Overlapping\",\"Smooth, frequently updating metrics\"],[\"Session\",\"Variable\",\"None, gap based\",\"User activity or session analytics\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Windows always need a key",
+          "content": "In practice you almost never window the whole stream, you window per key, for example per URL or per user ID. \"5 minute tumbling window of page views, grouped by URL\" is the normal shape of a real windowed aggregation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Event Time Versus Processing Time",
+          "text": "4. Event Time Versus Processing Time"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the single trickiest idea in stream processing, and the one interviewers love to poke at, because it is where the neat picture of windowing above quietly falls apart."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Two Different Clocks",
+          "text": "4.1 Two Different Clocks"
+        },
+        {
+          "type": "paragraph",
+          "content": "Event time is when something actually happened in the real world, the timestamp stamped on the event itself, like the moment a user clicked a page. Processing time is when your streaming engine happens to see that event, which can be seconds, minutes, or during an outage, hours later. Networks are slow, phones lose signal, upstream systems queue things up, so these two clocks are almost never the same."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332242-704331877.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332242-704331877.png",
+          "alt": "The same event with two different timestamps, when it actually happened versus when the engine actually processed it"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Out Of Order Arrivals",
+          "text": "4.2 Out Of Order Arrivals"
+        },
+        {
+          "type": "paragraph",
+          "content": "If you window strictly by processing time, life is simple but the numbers can be misleading, an event delayed by a slow network gets counted in the wrong window entirely. If you window by event time, which is usually what the business actually wants, you have to deal with events showing up late and out of order. A page view that happened at 10:02 might not reach your engine until 10:09, well after the 10:00 to 10:05 window would naturally have wanted to close."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332244-210461790.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332244-210461790.png",
+          "alt": "A late arriving event for 10:02 that only reaches the engine at 10:09, after its window would normally have closed"
+        },
+        {
+          "type": "note",
+          "title": "Why this matters in practice",
+          "content": "If you close the window the instant the clock hits 10:05, that late event either gets dropped or silently mis-counted into the next window. Neither option is great, which is exactly the problem watermarks exist to solve."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 Watermarks",
+          "text": "4.3 Watermarks"
+        },
+        {
+          "type": "paragraph",
+          "content": "A watermark is the engine's running estimate of \"we have now seen all events up to this event time, it is safe to close windows ending at or before this point.\" It is not a guarantee, it is a heuristic, usually something like current max event time seen minus some slack, say 2 minutes, to give slow events a chance to still arrive."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332245-646008747.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332245-646008747.png",
+          "alt": "A watermark advancing to 10:05, which allows the engine to mark the 10:00 to 10:05 window as complete and close it"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once the watermark passes a window's end time, the engine closes that window and emits its result. Events that show up even later than that, past the watermark, are genuinely late, and each engine gives you a policy choice for handling them: drop them, route them to a separate late data stream, or update a result that was already emitted."
+        },
+        {
+          "type": "note",
+          "title": "Watermarks are a trade off, not a fix",
+          "content": "A tighter watermark closes windows faster but drops more genuinely late data. A looser watermark waits longer and catches more late events, at the cost of higher latency before you get an answer. There is no setting that gives you both instantly correct and instantly fast."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Delivery Semantics: At Least Once Versus Exactly Once",
+          "text": "5. Delivery Semantics: At Least Once Versus Exactly Once"
+        },
+        {
+          "type": "paragraph",
+          "content": "Distributed systems fail, workers crash mid task, network calls time out, retries happen. The practical question this raises is: when a message gets redelivered after a failure, does it get processed, and counted, twice?"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332245-336318705.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332245-336318705.png",
+          "alt": "The same event redelivered after a failure, resulting in a double count under at least once versus a single count under exactly once"
+        },
+        {
+          "type": "paragraph",
+          "content": "At least once means every event is guaranteed to be processed, but a retry after a partial failure can cause the same event to be processed again, which for a running count means it can get counted twice. Exactly once means the engine guarantees each event affects the result exactly one time, no matter how many retries happen underneath, usually achieved through checkpointing state and output together in a single atomic step."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Semantic\",\"Duplicates on failure\",\"Typical mechanism\"],\"rows\":[[\"At most once\",\"Events can be silently lost\",\"Fire and forget, no retry\"],[\"At least once\",\"Events can be double counted\",\"Retry until acknowledged\"],[\"Exactly once\",\"Neither lost nor double counted\",\"Atomic checkpoint of state and output together\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "This is a spectrum of cost, not a free lunch",
+          "content": "Exactly once is not magic, it comes from real coordination overhead, transactional writes, and checkpointing, which costs throughput. Plenty of production pipelines deliberately choose at least once plus an idempotent downstream write, since deduplicating by event ID on write can be cheaper than paying for full exactly once machinery everywhere."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Real Engines Compared",
+          "text": "6. Real Engines Compared"
+        },
+        {
+          "type": "paragraph",
+          "content": "The concepts above are shared across the ecosystem, but the three engines you will actually run into implement them quite differently."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Apache Flink",
+          "text": "6.1 Apache Flink"
+        },
+        {
+          "type": "paragraph",
+          "content": "Flink is a dedicated streaming cluster built around true, continuous, event by event processing from the ground up. It has some of the strongest event time and watermark support of any engine, along with exactly once state checkpointing built in natively. If a system design question wants the most correct, most sophisticated windowed streaming pipeline, Flink is usually the answer being fished for."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Kafka Streams",
+          "text": "6.2 Kafka Streams"
+        },
+        {
+          "type": "paragraph",
+          "content": "Kafka Streams is not a separate cluster at all, it is a Java library you embed directly inside your own application. Your app becomes the streaming engine. This makes it lightweight and simple to operate, no separate cluster to run, but it also ties your processing directly to the lifecycle and scaling of your own service rather than a dedicated processing platform."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.3 Spark Streaming",
+          "text": "6.3 Spark Streaming"
+        },
+        {
+          "type": "paragraph",
+          "content": "Spark Streaming historically worked in micro batches, slicing the stream into small time chunks, say every 1 second, and running a tiny batch job on each chunk. This made it easy to reuse Spark's existing batch engine, at the cost of some added latency compared to true event by event processing. Newer Spark releases add a more continuous processing mode, narrowing that gap, though the micro batch heritage still shows in how the system is built."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332245-279685582.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332245-279685582.png",
+          "alt": "Apache Flink as true streaming, Kafka Streams as a library embedded in your app, and Spark Streaming as micro batch based"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Engine\",\"Runs as\",\"Event time support\",\"Processing model\"],\"rows\":[[\"Apache Flink\",\"Dedicated cluster\",\"Strong, native watermarks\",\"True event by event streaming\"],[\"Kafka Streams\",\"Library inside your app\",\"Supported\",\"Event by event, no separate cluster\"],[\"Spark Streaming\",\"Dedicated cluster\",\"Supported\",\"Originally micro batch, now more continuous options\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Worked Example: 5 Minute Tumbling Window Page View Count",
+          "text": "7. Worked Example: 5 Minute Tumbling Window Page View Count"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say you want to count page views per URL in 5 minute tumbling windows, using event time, with a watermark that tolerates up to 2 minutes of lateness. Events arrive as (url, eventTimestamp) pairs off a Kafka topic."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332246-24310242.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396332246-24310242.png",
+          "alt": "Page view events flowing into a five minute tumbling window per URL, closed by a watermark, emitting a final count"
+        },
+        {
+          "type": "paragraph",
+          "content": "Walk through a concrete timeline. Three page views for /home land at 10:01, 10:02, and 10:03, event time. A fourth page view for /home, also stamped 10:02 event time, gets delayed by a slow mobile network and does not actually arrive at the engine until 10:09."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Event time\",\"URL\",\"Arrives at engine\",\"Handled how\"],\"rows\":[[\"10:01\",\"/home\",\"10:01\",\"Counted normally in 10:00 to 10:05 window\"],[\"10:02\",\"/home\",\"10:02\",\"Counted normally in 10:00 to 10:05 window\"],[\"10:03\",\"/home\",\"10:03\",\"Counted normally in 10:00 to 10:05 window\"],[\"10:02\",\"/home\",\"10:09\",\"Late arrival, handled by watermark policy\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "With a 2 minute watermark, the engine will not consider the 10:00 to 10:05 window complete until its watermark passes 10:05, which happens once it has seen event time up to at least 10:07 flow through. If the late event for /home genuinely arrives before the watermark crosses that point, it still gets folded into the count. If it arrives after, at 10:09 in this example, it is past the tolerance, and depending on configuration it either gets dropped or routed to a separate late data output rather than silently corrupting a result that already shipped."
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is what that same logic looks like as a real Flink job, using the DataStream API with an event time watermark strategy and a tumbling window keyed by URL."
+        },
+        {
+          "type": "code",
+          "content": "import org.apache.flink.streaming.api.datastream.DataStream;\nimport org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;\nimport org.apache.flink.streaming.api.windowing.time.Time;\nimport org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;\nimport org.apache.flink.api.common.eventtime.WatermarkStrategy;\nimport java.time.Duration;\n\nStreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();\n\nDataStream<PageView> pageViews = env\n    .fromSource(kafkaSource, WatermarkStrategy\n        .<PageView>forBoundedOutOfOrderness(Duration.ofMinutes(2))\n        .withTimestampAssigner((view, ts) -> view.eventTimestamp),\n        \"kafka-page-views\")\n    .name(\"page-view-source\");\n\nDataStream<UrlCount> counts = pageViews\n    .keyBy(view -> view.url)\n    .window(TumblingEventTimeWindows.of(Time.minutes(5)))\n    .aggregate(new CountAggregate())\n    .name(\"five-min-tumbling-count\");\n\ncounts.print();\nenv.execute(\"page-view-window-count\");",
+          "code": {
+            "language": "java",
+            "content": "import org.apache.flink.streaming.api.datastream.DataStream;\nimport org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;\nimport org.apache.flink.streaming.api.windowing.time.Time;\nimport org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;\nimport org.apache.flink.api.common.eventtime.WatermarkStrategy;\nimport java.time.Duration;\n\nStreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();\n\nDataStream<PageView> pageViews = env\n    .fromSource(kafkaSource, WatermarkStrategy\n        .<PageView>forBoundedOutOfOrderness(Duration.ofMinutes(2))\n        .withTimestampAssigner((view, ts) -> view.eventTimestamp),\n        \"kafka-page-views\")\n    .name(\"page-view-source\");\n\nDataStream<UrlCount> counts = pageViews\n    .keyBy(view -> view.url)\n    .window(TumblingEventTimeWindows.of(Time.minutes(5)))\n    .aggregate(new CountAggregate())\n    .name(\"five-min-tumbling-count\");\n\ncounts.print();\nenv.execute(\"page-view-window-count\");"
+          },
+          "codes": {
+            "java": "import org.apache.flink.streaming.api.datastream.DataStream;\nimport org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;\nimport org.apache.flink.streaming.api.windowing.time.Time;\nimport org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;\nimport org.apache.flink.api.common.eventtime.WatermarkStrategy;\nimport java.time.Duration;\n\nStreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();\n\nDataStream<PageView> pageViews = env\n    .fromSource(kafkaSource, WatermarkStrategy\n        .<PageView>forBoundedOutOfOrderness(Duration.ofMinutes(2))\n        .withTimestampAssigner((view, ts) -> view.eventTimestamp),\n        \"kafka-page-views\")\n    .name(\"page-view-source\");\n\nDataStream<UrlCount> counts = pageViews\n    .keyBy(view -> view.url)\n    .window(TumblingEventTimeWindows.of(Time.minutes(5)))\n    .aggregate(new CountAggregate())\n    .name(\"five-min-tumbling-count\");\n\ncounts.print();\nenv.execute(\"page-view-window-count\");"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The watermark strategy is the whole ballgame here, forBoundedOutOfOrderness of 2 minutes tells Flink exactly how much lateness to tolerate before it declares a window done and fires the aggregate. Everything else, the keyBy and the window assigner, is just wiring the same tumbling window concept from earlier into real code."
+        },
+        {
+          "type": "paragraph",
+          "content": "The same aggregation in Kafka Streams looks a little different, since it runs as a library rather than a cluster, but the underlying windowing concept is identical."
+        },
+        {
+          "type": "code",
+          "content": "KStream<String, PageView> pageViews = builder.stream(\"page-views\");\n\nKTable<Windowed<String>, Long> counts = pageViews\n    .groupBy((key, view) -> view.getUrl())\n    .windowedBy(TimeWindows.ofSizeAndGrace(\n        Duration.ofMinutes(5),   // window size\n        Duration.ofMinutes(2)))  // grace period for late events\n    .count();\n\ncounts.toStream().foreach((windowedUrl, count) ->\n    System.out.println(windowedUrl.key() + \" -> \" + count));",
+          "code": {
+            "language": "java",
+            "content": "KStream<String, PageView> pageViews = builder.stream(\"page-views\");\n\nKTable<Windowed<String>, Long> counts = pageViews\n    .groupBy((key, view) -> view.getUrl())\n    .windowedBy(TimeWindows.ofSizeAndGrace(\n        Duration.ofMinutes(5),   // window size\n        Duration.ofMinutes(2)))  // grace period for late events\n    .count();\n\ncounts.toStream().foreach((windowedUrl, count) ->\n    System.out.println(windowedUrl.key() + \" -> \" + count));"
+          },
+          "codes": {
+            "java": "KStream<String, PageView> pageViews = builder.stream(\"page-views\");\n\nKTable<Windowed<String>, Long> counts = pageViews\n    .groupBy((key, view) -> view.getUrl())\n    .windowedBy(TimeWindows.ofSizeAndGrace(\n        Duration.ofMinutes(5),   // window size\n        Duration.ofMinutes(2)))  // grace period for late events\n    .count();\n\ncounts.toStream().foreach((windowedUrl, count) ->\n    System.out.println(windowedUrl.key() + \" -> \" + count));"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Grace period is Kafka Streams' watermark",
+          "content": "Kafka Streams does not use the word watermark, but ofSizeAndGrace's grace period is doing exactly the same job, telling the engine how long to keep a window open for stragglers before finalizing the count."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Common Pitfalls",
+          "text": "8. Common Pitfalls"
+        },
+        {
+          "type": "list",
+          "content": "[\"Windowing by processing time when the business actually cares about event time, which quietly produces wrong numbers whenever there is any network delay.\",\"Setting a watermark so tight that normal, expected mobile network delays get treated as unrecoverable late data and dropped.\",\"Assuming exactly once in the streaming engine also means exactly once end to end, it does not, if the downstream sink is not also transactional or idempotent, duplicates can still leak out the far end.\",\"Forgetting that state has to be keyed correctly, a global running count with no key silently blends together numbers that should have stayed separate per user or per URL.\",\"Treating Kafka itself as the thing doing the aggregation, when Kafka only stores and delivers events, the streaming engine is what actually computes anything.\"]",
+          "items": [
+            "Windowing by processing time when the business actually cares about event time, which quietly produces wrong numbers whenever there is any network delay.",
+            "Setting a watermark so tight that normal, expected mobile network delays get treated as unrecoverable late data and dropped.",
+            "Assuming exactly once in the streaming engine also means exactly once end to end, it does not, if the downstream sink is not also transactional or idempotent, duplicates can still leak out the far end.",
+            "Forgetting that state has to be keyed correctly, a global running count with no key silently blends together numbers that should have stayed separate per user or per URL.",
+            "Treating Kafka itself as the thing doing the aggregation, when Kafka only stores and delivers events, the streaming engine is what actually computes anything."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "When in doubt, ask what clock you are windowing by",
+          "content": "A huge fraction of confusing streaming bugs trace back to a mismatch between event time and processing time. Before debugging anything else, check which clock the window assigner is actually using."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. The Interview Angle",
+          "text": "9. The Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "Streaming system design questions rarely stay easy for long. The first version of almost any answer, \"we consume events and count them,\" is fine as an opener, but interviewers will push on exactly the two ideas covered in sections 3 and 4: windowing, and event time versus processing time. That is where a shallow answer falls apart and a strong one stands out."
+        },
+        {
+          "type": "list",
+          "content": "[\"Can you name the three window types and say when you would pick each one?\",\"Can you explain why event time and processing time are not the same, with a concrete example of when it matters?\",\"Can you explain what a watermark is doing and why it is a trade off rather than a perfect fix?\",\"Can you explain the practical difference between at least once and exactly once, and why exactly once has a real cost?\",\"Can you name at least one real engine and describe, at a high level, how it is architected differently from the others?\"]",
+          "items": [
+            "Can you name the three window types and say when you would pick each one?",
+            "Can you explain why event time and processing time are not the same, with a concrete example of when it matters?",
+            "Can you explain what a watermark is doing and why it is a trade off rather than a perfect fix?",
+            "Can you explain the practical difference between at least once and exactly once, and why exactly once has a real cost?",
+            "Can you name at least one real engine and describe, at a high level, how it is architected differently from the others?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "What a strong answer sounds like",
+          "content": "\"We will window by event time with a watermark tuned to our expected network delay, tumbling for the raw per interval count, and we will accept at least once delivery paired with an idempotent write downstream, since paying for full exactly once everywhere is not worth it here.\" That single sentence touches windowing, event time, watermarks, and delivery semantics, exactly the four ideas this lesson covered."
+        }
+      ]
+    }
+  ]
+}

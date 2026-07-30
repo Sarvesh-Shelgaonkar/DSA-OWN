@@ -1,0 +1,773 @@
+{
+  "problemId": "p-digital-wallet-system",
+  "title": "Digital Wallet System",
+  "slug": "digital-wallet-system",
+  "sections": [
+    {
+      "id": "content",
+      "title": "Content"
+    }
+  ],
+  "content": [
+    {
+      "id": "content",
+      "title": "Content",
+      "blocks": [
+        {
+          "type": "heading1",
+          "text": "1. Problem Statement",
+          "content": "1. Problem Statement"
+        },
+        {
+          "type": "paragraph",
+          "text": "<div style=\"border:2px solid #5b5fc7;border-radius:14px;padding:18px 22px;background:rgba(91,95,199,0.07);margin:4px 0 8px 0;\"><p style=\"margin:0 0 12px 0;\">Design the core money-movement engine behind a <strong>digital wallet platform</strong> (the kind that powers peer-to-peer transfers, top-ups, and withdrawals). Two guarantees make this problem genuinely different from a typical CRUD service: every transaction must be <strong>recorded as a balanced double-entry ledger</strong>, exactly the way real accounting systems work, and every transaction must be <strong>safe to retry</strong>, since a client's network request can time out even after the server successfully processed it, and retrying must never double-charge anyone.</p><img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923115400-179403373.png\" alt=\"A request carries an idempotency key; a previously-seen key returns the original result unchanged, while a new key is validated, ledgered as a balanced debit and credit, and applied to both wallets\" style=\"width:100%;border-radius:8px;margin:4px 0 14px 0;\" /><ul style=\"margin:0 0 12px 1.25em;padding:0;list-style:disc;\"><li style=\"margin:4px 0;\"><strong>Actors:</strong> User (sends transfers, tops up, withdraws), WalletService (the core orchestrator).</li><li style=\"margin:4px 0;\"><strong>Scope:</strong> peer-to-peer transfers, top-ups, withdrawals with fees, a double-entry ledger, and idempotency-key-based deduplication.</li></ul><p style=\"border-left:3px solid #5b5fc7;padding-left:12px;font-style:italic;margin:0 0 12px 0;\">The distinguishing mechanic is exactly-once money movement: every transaction is deduplicated by an idempotency key before any balance changes, and every successful transaction writes a balanced set of debit and credit ledger entries, an accounting invariant no prior design in this series has needed.</p></div>"
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "2. Functional Requirements",
+          "content": "2. Functional Requirements"
+        },
+        {
+          "type": "paragraph",
+          "text": "The system must support the following <strong>core capabilities</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Transfer funds:</strong> move money from one wallet to another, identified by an idempotency key supplied by the caller.",
+            "<strong>Top up a wallet:</strong> add funds from an external source into a wallet.",
+            "<strong>Withdraw funds:</strong> move money out of a wallet to an external bank account, subject to a withdrawal fee.",
+            "<strong>Deduplicate retries:</strong> if the same idempotency key is submitted again, return the original transaction's result without reprocessing it.",
+            "<strong>Maintain a ledger:</strong> every successful transaction writes one or more balanced debit and credit entries that can reconstruct any wallet's balance."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "3. Non-Functional Requirements",
+          "content": "3. Non-Functional Requirements"
+        },
+        {
+          "type": "paragraph",
+          "text": "Beyond correctness, the design should hold up along five <strong>quality pillars</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923119675-440723080.png",
+          "metadata": {
+            "alt": "Five non-functional pillars: scalability, extensibility, maintainability, performance, thread safety"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Scalability:</strong> supporting millions of wallets and transactions must not require touching existing transfer logic.",
+            "<strong>Extensibility:</strong> a new fee model or transaction type should plug in without rewriting the service.",
+            "<strong>Maintainability:</strong> fee rules, notification, and id creation are isolated in their own classes.",
+            "<strong>Performance:</strong> checking whether an idempotency key was already seen, and applying a balance update, are both constant-time lookups.",
+            "<strong>Thread safety:</strong> two transfers touching the same wallet concurrently must never both read the same stale balance."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "4. Clarifying Questions",
+          "content": "4. Clarifying Questions"
+        },
+        {
+          "type": "paragraph",
+          "text": "Questions worth asking the interviewer <strong>before designing</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "How long should an idempotency key remain valid before it can be reused for a different request?",
+            "Should transfers support multiple currencies, or is a single currency assumed?",
+            "Is overdraft or a negative balance ever allowed, for any wallet?",
+            "Should the ledger be the source of truth for balance, computed by summing entries, or is a cached running balance acceptable for fast reads?",
+            "Should fees vary per user tier, or is a single fee model applied uniformly?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "5. Assumptions & Constraints",
+          "content": "5. Assumptions & Constraints"
+        },
+        {
+          "type": "paragraph",
+          "text": "To keep the design focused, we make these <strong>explicit assumptions</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A single currency is assumed throughout; multi-currency conversion is out of scope.",
+            "An idempotency key never expires in this design, it is checked for the lifetime of the system, noted as a simplification versus a real TTL-bounded key store.",
+            "A wallet's balance is maintained as a running total for fast reads, while the ledger independently records every movement for audit and integrity verification.",
+            "No wallet may go negative; every transaction is validated against the current balance before it is applied.",
+            "Peer-to-peer transfers are free; only withdrawals to an external bank incur a fee."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "6. Core Entities",
+          "content": "6. Core Entities"
+        },
+        {
+          "type": "paragraph",
+          "text": "The design centers on <strong>four core entities</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923121485-244438337.png",
+          "metadata": {
+            "alt": "Core entities: Wallet, Transaction, LedgerEntry, and IdempotencyRecord"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Wallet:</strong> an owner's running balance.",
+            "<strong>Transaction:</strong> one transfer, top-up, or withdrawal request, keyed by its idempotency key.",
+            "<strong>LedgerEntry:</strong> one debit or credit line item produced by a transaction.",
+            "<strong>IdempotencyRecord:</strong> maps a previously-seen idempotency key back to its resulting transaction."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "7. Relationships Between Entities",
+          "content": "7. Relationships Between Entities"
+        },
+        {
+          "type": "paragraph",
+          "text": "These entities connect through a small set of <strong>well-defined relationships</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923122926-632687203.png",
+          "metadata": {
+            "alt": "A wallet participates in many transactions as sender or receiver; every transaction produces two or more always-balanced ledger entries; every transaction is keyed by its idempotency record"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Wallet to Transaction</strong> is one-to-many, in either the sender or receiver role.",
+            "<strong>Transaction to LedgerEntry</strong> always produces a balanced set: total debits equal total credits.",
+            "<strong>Transaction to IdempotencyRecord</strong> is a one-to-one keying relationship."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "8. UML Class Diagram",
+          "content": "8. UML Class Diagram"
+        },
+        {
+          "type": "paragraph",
+          "text": "The class diagram below shows the <strong>full static structure</strong>, including the Strategy and Observer interfaces:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923136668-476766612.png",
+          "metadata": {
+            "alt": "UML class diagram for the Digital Wallet System"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "9. Design Patterns Used",
+          "content": "9. Design Patterns Used"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three patterns keep fee rules, notification, and id creation <strong>decoupled from the core service</strong>."
+        },
+        {
+          "type": "heading2",
+          "text": "9.1 Strategy Pattern (Fee Rules)",
+          "content": "9.1 Strategy Pattern (Fee Rules)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> a peer-to-peer transfer and a withdrawal to an external bank charge fundamentally different fees, free versus a percentage of the amount, and that is exactly the kind of decision that varies by transaction type."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923124445-639877109.png",
+          "metadata": {
+            "alt": "FeeStrategy interface with NoFeeStrategy and PercentageFeeStrategy implementations"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> a new fee model (a flat fee, a tiered fee by user level) is a new strategy implementation, with zero changes to the core transfer logic in WalletService. <strong>What it solves:</strong> it isolates fee-calculation rules from the shared, stable ledger-writing algorithm."
+        },
+        {
+          "type": "heading2",
+          "text": "9.2 Observer Pattern (Notifications)",
+          "content": "9.2 Observer Pattern (Notifications)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> a transaction succeeding, being rejected, or being detected as a duplicate are all events a real wallet platform would want to react to (push notifications, fraud monitoring, analytics)."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923126261-534917896.png",
+          "metadata": {
+            "alt": "WalletObserver interface notified by WalletService on every lifecycle event"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> WalletService does not need to know who is listening. <strong>What it solves:</strong> it decouples the core transaction workflow from side effects."
+        },
+        {
+          "type": "heading2",
+          "text": "9.3 Factory Pattern (Id Creation)",
+          "content": "9.3 Factory Pattern (Id Creation)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> transaction and ledger entry id generation should not be scattered across calling code."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923127895-856244914.png",
+          "metadata": {
+            "alt": "TransactionIdFactory generating sequential TXN and LE prefixed ids"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> every transaction and ledger entry is created through one consistent path. <strong>What it solves:</strong> centralizes id-generation rules so they cannot drift or collide."
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "10. Class Design",
+          "content": "10. Class Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "Each class has a single, clear <strong>responsibility</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Wallet:</strong> attributes walletId, ownerName, balance; responsibility: track one owner's current spendable balance.",
+            "<strong>Transaction:</strong> attributes transactionId, idempotencyKey, fromWalletId, toWalletId, amount, fee, type, status; responsibility: represent one completed or rejected money movement.",
+            "<strong>LedgerEntry:</strong> attributes entryId, walletId, transactionId, entryType, amount; responsibility: record one balanced debit or credit line.",
+            "<strong>WalletService:</strong> the orchestrator; responsibility: deduplicate by idempotency key, validate balances, write the ledger, and notify observers."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "11. Interface Design",
+          "content": "11. Interface Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two interfaces keep the design <strong>open for extension</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923129489-25177399.png",
+          "metadata": {
+            "alt": "FeeStrategy and WalletObserver interfaces with their key methods"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>FeeStrategy:</strong> calculateFee(amount): abstracts away exactly how much a transaction type costs to process.",
+            "<strong>WalletObserver:</strong> onTransactionProcessed / onTransactionRejected / onDuplicateDetected: abstracts away who reacts to lifecycle events."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "12. Sequence Diagrams",
+          "content": "12. Sequence Diagrams"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three flows below cover a <strong>successful transfer</strong>, a <strong>deduplicated retry of that same transfer</strong>, and a <strong>withdrawal with a percentage fee</strong>."
+        },
+        {
+          "type": "heading2",
+          "text": "12.1 Successful Transfer",
+          "content": "12.1 Successful Transfer"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923138976-548791885.png",
+          "metadata": {
+            "alt": "Alice transfers 200 to Bob; the idempotency key is new, so the transfer is validated, ledgered, and applied"
+          }
+        },
+        {
+          "type": "heading2",
+          "text": "12.2 Deduplicated Retry",
+          "content": "12.2 Deduplicated Retry"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923141538-256134000.png",
+          "metadata": {
+            "alt": "Alice retries the same request with the same idempotency key after a timeout; the service returns the original result without reprocessing"
+          }
+        },
+        {
+          "type": "heading2",
+          "text": "12.3 Withdrawal With a Fee",
+          "content": "12.3 Withdrawal With a Fee"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923143225-83809357.png",
+          "metadata": {
+            "alt": "Bob withdraws 100; a 2 percent fee is calculated, and the ledger splits the debit into an external-bank credit and a fee-collection credit"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "13. Important Workflows",
+          "content": "13. Important Workflows"
+        },
+        {
+          "type": "paragraph",
+          "text": "The <strong>deduplicate-then-transfer workflow</strong>, alongside its rejection branches, looks like this:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923131116-285934994.png",
+          "metadata": {
+            "alt": "Check the idempotency key first, then validate balance, then write balanced ledger entries and update both wallets"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Happy path, new key:</strong> submit with a fresh idempotency key → balance covers amount plus fee → debit sender, credit receiver, write ledger entries → record the key → return the new transaction.",
+            "<strong>Happy path, duplicate key:</strong> submit with a previously-seen idempotency key → return the exact same transaction from before, with zero balance changes.",
+            "<strong>Rejection path:</strong> submit with a fresh idempotency key → balance does not cover amount plus fee → rejected, and this outcome is not remembered against the key, so a corrected retry with the same key can still succeed."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "14. Public APIs / Methods",
+          "content": "14. Public APIs / Methods"
+        },
+        {
+          "type": "paragraph",
+          "text": "The service exposes a <strong>small, intention-revealing API</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>transfer(fromWalletId, toWalletId, amount, idempotencyKey):</strong> moves funds between two wallets, free of fees.",
+            "<strong>withdraw(walletId, amount, idempotencyKey):</strong> moves funds to an external bank, applying the configured fee strategy.",
+            "<strong>verifyLedgerIntegrity():</strong> confirms the system-wide invariant that total debits equal total credits across every ledger entry ever written."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "15. Exception Handling",
+          "content": "15. Exception Handling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three custom exceptions cover the <strong>realistic failure modes</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923133240-293615939.png",
+          "metadata": {
+            "alt": "InsufficientBalanceException, WalletNotFoundException, InvalidTransactionException"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>InsufficientBalanceException:</strong> a wallet cannot cover the requested amount plus any applicable fee.",
+            "<strong>WalletNotFoundException:</strong> an unknown wallet id was referenced.",
+            "<strong>InvalidTransactionException:</strong> a self-transfer or a non-positive amount was requested."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "16. Concurrency Considerations",
+          "content": "16. Concurrency Considerations"
+        },
+        {
+          "type": "paragraph",
+          "text": "The <strong>critical race</strong> is two transfers touching the same wallet at nearly the same moment."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923134946-35497551.png",
+          "metadata": {
+            "alt": "Two threads racing to debit the same wallet; synchronization ensures one transaction commits fully before the other reads the balance"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Synchronizing the validate-and-apply step per wallet ensures a balance is never read stale by a second transfer, which would otherwise let both transfers succeed against a balance that could only actually cover one of them."
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "17. Extensibility Discussion",
+          "content": "17. Extensibility Discussion"
+        },
+        {
+          "type": "paragraph",
+          "text": "The pattern choices make several <strong>future features</strong> low-friction to add:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A new fee model (a flat withdrawal fee, a tiered fee by account level) is a new FeeStrategy implementation.",
+            "A new notification channel (push notification, fraud alert) is a new WalletObserver implementation.",
+            "Multi-currency support can be layered on by adding a currency field and a conversion step ahead of the existing balance checks.",
+            "A time-bounded idempotency key expiry can be added by attaching a timestamp to each IdempotencyRecord and checking it before treating a key as still valid."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "18. SOLID Principles Applied",
+          "content": "18. SOLID Principles Applied"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Single Responsibility:</strong> Wallet tracks balance, FeeStrategy decides fee rules, WalletObserver reacts to events, each for one reason to change.",
+            "<strong>Open/Closed:</strong> new fee models or notification behavior extends via new classes, not edits to WalletService.",
+            "<strong>Liskov Substitution:</strong> any FeeStrategy or WalletObserver implementation can replace another without breaking the service.",
+            "<strong>Interface Segregation:</strong> WalletObserver exposes only the three lifecycle callbacks a listener actually needs.",
+            "<strong>Dependency Inversion:</strong> WalletService depends on the FeeStrategy and WalletObserver interfaces, not concrete classes."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "19. Edge Cases",
+          "content": "19. Edge Cases"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A retried request with the same idempotency key but a DIFFERENT amount or receiver is still treated as a duplicate and returns the original result, since the key alone identifies the request, an explicit assumption worth calling out.",
+            "A rejected transaction is never recorded against its idempotency key, so a client can safely correct the request (for example, after topping up) and retry with the same key.",
+            "A withdrawal whose fee alone would push the total above the balance is rejected exactly like an insufficient-balance transfer, since fee is included in the affordability check.",
+            "verifyLedgerIntegrity must hold after every single transaction, not just at the end, since a bug that unbalances even one transaction should be caught immediately in testing."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "20. Complexity Analysis",
+          "content": "20. Complexity Analysis"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>transfer / withdraw:</strong> O(1) for the idempotency lookup, balance check, and balance update; O(k) to write k ledger entries, where k is small and fixed per transaction type.",
+            "<strong>verifyLedgerIntegrity:</strong> O(n) where n is the total number of ledger entries ever written.",
+            "<strong>Space:</strong> O(wallets + transactions + ledger entries) held in memory."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "21. Database Design",
+          "content": "21. Database Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "A relational schema mirrors the in-memory model directly, with <strong>foreign keys enforcing referential integrity</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784923144870-272236951.png",
+          "metadata": {
+            "alt": "ER diagram: Wallet, Transaction, LedgerEntry, and IdempotencyRecord"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "A unique index on Transaction(idempotencyKey) makes the deduplication check itself an atomic, race-free database operation.",
+            "LedgerEntry is append-only, rows are never updated or deleted, which is what makes it trustworthy for reconstructing balance history."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "22. Improvements & Follow-Up Questions",
+          "content": "22. Improvements & Follow-Up Questions"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Add a time-bounded expiry to idempotency keys instead of retaining them forever.",
+            "Support multi-currency wallets with a conversion step.",
+            "Add tiered fee models based on account level or transaction volume.",
+            "In a distributed deployment, shard wallets across multiple database nodes and use a distributed transaction or saga pattern for cross-shard transfers."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Complete Code Implementation",
+          "content": "Complete Code Implementation"
+        },
+        {
+          "type": "paragraph",
+          "text": "TransactionType, TransactionStatus, EntryType, Wallet, LedgerEntry, Transaction, and TransactionIdFactory:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// The kind of movement a transaction represents.\nenum TransactionType { TRANSFER, TOPUP, WITHDRAWAL }\n\n// The outcome of a transaction attempt.\nenum TransactionStatus { SUCCESS, REJECTED }\n\n// Which side of a balanced ledger line this entry represents.\nenum EntryType { DEBIT, CREDIT }\n\n// A single owner's spendable balance.\nclass Wallet {\n    private final String walletId;   // unique id\n    private final String ownerName;    // display name\n    private double balance;              // current spendable balance\n\n    public Wallet(String walletId, String ownerName, double balance) {\n        this.walletId = walletId;     // store id\n        this.ownerName = ownerName;     // store owner\n        this.balance = balance;           // store starting balance\n    }\n\n    public String getWalletId() { return walletId; }         // id getter\n    public String getOwnerName() { return ownerName; }          // owner getter\n    public double getBalance() { return balance; }                // balance getter\n    public void adjustBalance(double amount) { balance += amount; } // add or subtract balance\n}\n\n// One balanced debit or credit line produced by a transaction.\nclass LedgerEntry {\n    private final String entryId;         // unique id, e.g. LE1\n    private final String walletId;          // which wallet this line affects\n    private final String transactionId;       // which transaction produced this line\n    private final EntryType entryType;           // debit or credit\n    private final double amount;                    // amount of this line\n\n    public LedgerEntry(String entryId, String walletId, String transactionId, EntryType entryType, double amount) {\n        this.entryId = entryId;             // store id\n        this.walletId = walletId;             // store wallet\n        this.transactionId = transactionId;     // store transaction\n        this.entryType = entryType;               // store debit or credit\n        this.amount = amount;                       // store amount\n    }\n\n    public EntryType getEntryType() { return entryType; } // entry type getter\n    public double getAmount() { return amount; }             // amount getter\n}\n\n// One transfer, top-up, or withdrawal request.\nclass Transaction {\n    private final String transactionId;    // unique id, e.g. TXN1\n    private final String idempotencyKey;     // caller-supplied dedup key\n    private final String fromWalletId;         // sender, null for a top-up\n    private final String toWalletId;             // receiver, null for a withdrawal\n    private final double amount;                    // requested amount\n    private final double fee;                         // fee charged, if any\n    private final TransactionType type;                  // transfer, top-up, or withdrawal\n    private TransactionStatus status;                       // success or rejected\n\n    public Transaction(String transactionId, String idempotencyKey, String fromWalletId, String toWalletId, double amount, double fee, TransactionType type, TransactionStatus status) {\n        this.transactionId = transactionId;     // store id\n        this.idempotencyKey = idempotencyKey;     // store dedup key\n        this.fromWalletId = fromWalletId;           // store sender\n        this.toWalletId = toWalletId;                 // store receiver\n        this.amount = amount;                           // store amount\n        this.fee = fee;                                   // store fee\n        this.type = type;                                   // store type\n        this.status = status;                                 // store status\n    }\n\n    public String getTransactionId() { return transactionId; } // id getter\n    public String getIdempotencyKey() { return idempotencyKey; } // key getter\n    public double getAmount() { return amount; }                  // amount getter\n    public double getFee() { return fee; }                          // fee getter\n    public TransactionStatus getStatus() { return status; }          // status getter\n}\n\n// Creates sequential, correctly-prefixed ids for transactions and ledger entries.\nclass TransactionIdFactory {\n    private int transactionCounter = 0; // running id counter for transactions\n    private int entryCounter = 0;         // running id counter for ledger entries\n\n    public String nextTransactionId() {\n        transactionCounter++;                  // bump id counter\n        return \"TXN\" + transactionCounter;        // e.g. TXN1\n    }\n\n    public String nextLedgerEntryId() {\n        entryCounter++;                       // bump id counter\n        return \"LE\" + entryCounter;             // e.g. LE1\n    }\n}",
+            "python": "from enum import Enum\n\n# The kind of movement a transaction represents.\nclass TransactionType(Enum):\n    TRANSFER = \"TRANSFER\"\n    TOPUP = \"TOPUP\"\n    WITHDRAWAL = \"WITHDRAWAL\"\n\n# The outcome of a transaction attempt.\nclass TransactionStatus(Enum):\n    SUCCESS = \"SUCCESS\"\n    REJECTED = \"REJECTED\"\n\n# Which side of a balanced ledger line this entry represents.\nclass EntryType(Enum):\n    DEBIT = \"DEBIT\"\n    CREDIT = \"CREDIT\"\n\n# A single owner's spendable balance.\nclass Wallet:\n    def __init__(self, wallet_id, owner_name, balance):\n        self.wallet_id = wallet_id      # unique id\n        self.owner_name = owner_name      # display name\n        self.balance = balance              # current spendable balance\n\n    def adjust_balance(self, amount):\n        self.balance += amount  # add or subtract balance\n\n# One balanced debit or credit line produced by a transaction.\nclass LedgerEntry:\n    def __init__(self, entry_id, wallet_id, transaction_id, entry_type, amount):\n        self.entry_id = entry_id            # unique id, e.g. LE1\n        self.wallet_id = wallet_id            # which wallet this line affects\n        self.transaction_id = transaction_id    # which transaction produced this line\n        self.entry_type = entry_type              # debit or credit\n        self.amount = amount                        # amount of this line\n\n# One transfer, top-up, or withdrawal request.\nclass Transaction:\n    def __init__(self, transaction_id, idempotency_key, from_wallet_id, to_wallet_id, amount, fee, tx_type, status):\n        self.transaction_id = transaction_id      # unique id, e.g. TXN1\n        self.idempotency_key = idempotency_key      # caller-supplied dedup key\n        self.from_wallet_id = from_wallet_id          # sender, None for a top-up\n        self.to_wallet_id = to_wallet_id                 # receiver, None for a withdrawal\n        self.amount = amount                               # requested amount\n        self.fee = fee                                       # fee charged, if any\n        self.type = tx_type                                    # transfer, top-up, or withdrawal\n        self.status = status                                     # success or rejected\n\n# Creates sequential, correctly-prefixed ids for transactions and ledger entries.\nclass TransactionIdFactory:\n    def __init__(self):\n        self.transaction_counter = 0  # running id counter for transactions\n        self.entry_counter = 0          # running id counter for ledger entries\n\n    def next_transaction_id(self):\n        self.transaction_counter += 1  # bump id counter\n        return f\"TXN{self.transaction_counter}\"  # e.g. TXN1\n\n    def next_ledger_entry_id(self):\n        self.entry_counter += 1  # bump id counter\n        return f\"LE{self.entry_counter}\"  # e.g. LE1",
+            "cpp": "#include <string>\nusing namespace std;\n\n// The kind of movement a transaction represents.\nenum class TransactionType { TRANSFER, TOPUP, WITHDRAWAL };\n\n// The outcome of a transaction attempt.\nenum class TransactionStatus { SUCCESS, REJECTED };\n\n// Which side of a balanced ledger line this entry represents.\nenum class EntryType { DEBIT, CREDIT };\n\n// A single owner's spendable balance.\nclass Wallet {\npublic:\n    string walletId;      // unique id\n    string ownerName;       // display name\n    double balance;            // current spendable balance\n\n    Wallet() : balance(0.0) {}\n    Wallet(string id, string owner, double bal) : walletId(id), ownerName(owner), balance(bal) {}\n    // constructor stores id, owner, and starting balance\n\n    void adjustBalance(double amount) { balance += amount; } // add or subtract balance\n};\n\n// One balanced debit or credit line produced by a transaction.\nclass LedgerEntry {\npublic:\n    string entryId;           // unique id, e.g. LE1\n    string walletId;            // which wallet this line affects\n    string transactionId;         // which transaction produced this line\n    EntryType entryType;            // debit or credit\n    double amount;                     // amount of this line\n\n    LedgerEntry() : amount(0.0) {}\n    LedgerEntry(string eid, string wid, string tid, EntryType et, double amt)\n        : entryId(eid), walletId(wid), transactionId(tid), entryType(et), amount(amt) {}\n    // constructor stores id, wallet, transaction, entry type, and amount\n};\n\n// One transfer, top-up, or withdrawal request.\nclass Transaction {\npublic:\n    string transactionId;      // unique id, e.g. TXN1\n    string idempotencyKey;       // caller-supplied dedup key\n    string fromWalletId;           // sender, empty for a top-up\n    string toWalletId;                // receiver, empty for a withdrawal\n    double amount;                       // requested amount\n    double fee;                             // fee charged, if any\n    TransactionType type;                      // transfer, top-up, or withdrawal\n    TransactionStatus status;                     // success or rejected\n\n    Transaction() : amount(0.0), fee(0.0), type(TransactionType::TRANSFER), status(TransactionStatus::REJECTED) {}\n    Transaction(string tid, string key, string from, string to, double amt, double f, TransactionType t, TransactionStatus s)\n        : transactionId(tid), idempotencyKey(key), fromWalletId(from), toWalletId(to), amount(amt), fee(f), type(t), status(s) {}\n    // constructor stores every field describing this transaction\n};\n\n// Creates sequential, correctly-prefixed ids for transactions and ledger entries.\nclass TransactionIdFactory {\n    int transactionCounter = 0; // running id counter for transactions\n    int entryCounter = 0;         // running id counter for ledger entries\n\npublic:\n    string nextTransactionId() {\n        transactionCounter++;                        // bump id counter\n        return \"TXN\" + to_string(transactionCounter);   // e.g. TXN1\n    }\n\n    string nextLedgerEntryId() {\n        entryCounter++;                             // bump id counter\n        return \"LE\" + to_string(entryCounter);         // e.g. LE1\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "FeeStrategy, NoFeeStrategy, PercentageFeeStrategy, WalletObserver and ConsoleWalletObserver:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Strategy interface: how much fee a transaction type charges.\ninterface FeeStrategy {\n    double calculateFee(double amount); // returns the fee owed on this amount\n}\n\n// Peer-to-peer transfers are free.\nclass NoFeeStrategy implements FeeStrategy {\n    @Override\n    public double calculateFee(double amount) { return 0.0; } // always zero\n}\n\n// Withdrawals to an external bank charge a percentage of the amount.\nclass PercentageFeeStrategy implements FeeStrategy {\n    private final double percentage; // e.g. 0.02 for 2 percent\n\n    public PercentageFeeStrategy(double percentage) {\n        this.percentage = percentage; // store the rate\n    }\n\n    @Override\n    public double calculateFee(double amount) { return amount * percentage; } // proportional fee\n}\n\n// Observer interface: reacts to wallet lifecycle events.\ninterface WalletObserver {\n    void onTransactionProcessed(Transaction transaction);      // a transaction succeeded\n    void onTransactionRejected(String walletId, String reason);  // a transaction failed validation\n    void onDuplicateDetected(String idempotencyKey);              // a retry was deduplicated\n}\n\n// Simple observer that prints events to the console.\nclass ConsoleWalletObserver implements WalletObserver {\n    @Override\n    public void onTransactionProcessed(Transaction transaction) {\n        System.out.println(\"Transaction \" + transaction.getTransactionId() + \" processed: amount \" + transaction.getAmount() + \" fee \" + transaction.getFee());\n    }\n\n    @Override\n    public void onTransactionRejected(String walletId, String reason) {\n        System.out.println(\"Transaction rejected for \" + walletId + \": \" + reason);\n    }\n\n    @Override\n    public void onDuplicateDetected(String idempotencyKey) {\n        System.out.println(\"Duplicate detected for idempotency key \" + idempotencyKey + \", returning original result\");\n    }\n}",
+            "python": "# Strategy interface: how much fee a transaction type charges.\nclass FeeStrategy:\n    def calculate_fee(self, amount): raise NotImplementedError\n\n# Peer-to-peer transfers are free.\nclass NoFeeStrategy(FeeStrategy):\n    def calculate_fee(self, amount):\n        return 0.0  # always zero\n\n# Withdrawals to an external bank charge a percentage of the amount.\nclass PercentageFeeStrategy(FeeStrategy):\n    def __init__(self, percentage):\n        self.percentage = percentage  # e.g. 0.02 for 2 percent\n\n    def calculate_fee(self, amount):\n        return amount * self.percentage  # proportional fee\n\n# Observer interface: reacts to wallet lifecycle events.\nclass WalletObserver:\n    def on_transaction_processed(self, transaction): raise NotImplementedError\n    def on_transaction_rejected(self, wallet_id, reason): raise NotImplementedError\n    def on_duplicate_detected(self, idempotency_key): raise NotImplementedError\n\n# Simple observer that prints events to the console.\nclass ConsoleWalletObserver(WalletObserver):\n    def on_transaction_processed(self, transaction):\n        print(f\"Transaction {transaction.transaction_id} processed: amount {transaction.amount} fee {transaction.fee}\")\n\n    def on_transaction_rejected(self, wallet_id, reason):\n        print(f\"Transaction rejected for {wallet_id}: {reason}\")\n\n    def on_duplicate_detected(self, idempotency_key):\n        print(f\"Duplicate detected for idempotency key {idempotency_key}, returning original result\")",
+            "cpp": "#include <string>\n#include <iostream>\nusing namespace std;\n\n// Strategy interface: how much fee a transaction type charges.\nclass FeeStrategy {\npublic:\n    virtual double calculateFee(double amount) = 0;\n    virtual ~FeeStrategy() {}\n};\n\n// Peer-to-peer transfers are free.\nclass NoFeeStrategy : public FeeStrategy {\npublic:\n    double calculateFee(double amount) override { return 0.0; } // always zero\n};\n\n// Withdrawals to an external bank charge a percentage of the amount.\nclass PercentageFeeStrategy : public FeeStrategy {\n    double percentage; // e.g. 0.02 for 2 percent\n\npublic:\n    PercentageFeeStrategy(double p) : percentage(p) {} // store the rate\n\n    double calculateFee(double amount) override { return amount * percentage; } // proportional fee\n};\n\n// Observer interface: reacts to wallet lifecycle events.\nclass WalletObserver {\npublic:\n    virtual void onTransactionProcessed(const Transaction& transaction) = 0;\n    virtual void onTransactionRejected(const string& walletId, const string& reason) = 0;\n    virtual void onDuplicateDetected(const string& idempotencyKey) = 0;\n    virtual ~WalletObserver() {}\n};\n\n// Simple observer that prints events to the console.\nclass ConsoleWalletObserver : public WalletObserver {\npublic:\n    void onTransactionProcessed(const Transaction& transaction) override {\n        cout << \"Transaction \" << transaction.transactionId << \" processed: amount \" << transaction.amount << \" fee \" << transaction.fee << endl;\n    }\n    void onTransactionRejected(const string& walletId, const string& reason) override {\n        cout << \"Transaction rejected for \" << walletId << \": \" << reason << endl;\n    }\n    void onDuplicateDetected(const string& idempotencyKey) override {\n        cout << \"Duplicate detected for idempotency key \" << idempotencyKey << \", returning original result\" << endl;\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "WalletService, including the transfer, withdraw and ledger integrity logic:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Custom exceptions for the realistic failure modes.\nclass InsufficientBalanceException extends RuntimeException {\n    public InsufficientBalanceException(String msg) { super(msg); }\n}\nclass WalletNotFoundException extends RuntimeException {\n    public WalletNotFoundException(String msg) { super(msg); }\n}\nclass InvalidTransactionException extends RuntimeException {\n    public InvalidTransactionException(String msg) { super(msg); }\n}\n\n// The core money-movement engine tying every piece together.\nclass WalletService {\n    private final java.util.Map<String, Wallet> wallets = new java.util.HashMap<>();                     // walletId -> Wallet\n    private final java.util.Map<String, Transaction> idempotencyStore = new java.util.HashMap<>();          // idempotencyKey -> Transaction\n    private final java.util.List<LedgerEntry> ledger = new java.util.ArrayList<>();                            // every ledger line ever written\n    private final java.util.List<WalletObserver> observers = new java.util.ArrayList<>();                        // listeners\n    private static final String EXTERNAL_BANK = \"EXTERNAL_BANK\";                                                    // pseudo wallet for outbound funds\n    private static final String FEE_COLLECTION = \"FEE_COLLECTION\";                                                     // pseudo wallet for collected fees\n\n    public WalletService() {\n        wallets.put(EXTERNAL_BANK, new Wallet(EXTERNAL_BANK, \"External Bank\", 0.0));   // register the external sink\n        wallets.put(FEE_COLLECTION, new Wallet(FEE_COLLECTION, \"Fee Collection\", 0.0)); // register the fee sink\n    }\n\n    public void addWallet(Wallet wallet) { wallets.put(wallet.getWalletId(), wallet); } // register a real wallet\n    public void addObserver(WalletObserver observer) { observers.add(observer); }          // register a listener\n\n    private void writeEntry(String walletId, String transactionId, EntryType type, double amount, TransactionIdFactory factory) {\n        ledger.add(new LedgerEntry(factory.nextLedgerEntryId(), walletId, transactionId, type, amount)); // append one ledger line\n    }\n\n    // Moves funds between two wallets, free of fees, deduplicated by idempotency key.\n    public synchronized Transaction transfer(String fromWalletId, String toWalletId, double amount, String idempotencyKey, TransactionIdFactory factory) {\n        if (idempotencyStore.containsKey(idempotencyKey)) {                     // already processed this exact request\n            for (WalletObserver obs : observers) obs.onDuplicateDetected(idempotencyKey); // notify\n            return idempotencyStore.get(idempotencyKey);                            // return the original result untouched\n        }\n        if (fromWalletId.equals(toWalletId)) throw new InvalidTransactionException(\"Cannot transfer to the same wallet\"); // reject self-transfer\n        if (amount <= 0) throw new InvalidTransactionException(\"Amount must be positive\");   // reject non-positive amount\n        Wallet from = wallets.get(fromWalletId);                                                // sender\n        Wallet to = wallets.get(toWalletId);                                                       // receiver\n        if (from == null || to == null) throw new WalletNotFoundException(\"Unknown wallet\");         // reject unknown wallet\n        FeeStrategy feeStrategy = new NoFeeStrategy();                                                  // peer-to-peer transfers are free\n        double fee = feeStrategy.calculateFee(amount);                                                    // compute fee, zero here\n        if (from.getBalance() < amount + fee) {                                                              // not enough funds\n            for (WalletObserver obs : observers) obs.onTransactionRejected(fromWalletId, \"Insufficient balance\"); // notify\n            throw new InsufficientBalanceException(\"Not enough balance in \" + fromWalletId);\n        }\n        String transactionId = factory.nextTransactionId();                                                    // build id\n        from.adjustBalance(-amount);                                                                             // debit sender\n        to.adjustBalance(amount);                                                                                  // credit receiver\n        writeEntry(fromWalletId, transactionId, EntryType.DEBIT, amount, factory);                                   // ledger debit line\n        writeEntry(toWalletId, transactionId, EntryType.CREDIT, amount, factory);                                      // ledger credit line\n        Transaction transaction = new Transaction(transactionId, idempotencyKey, fromWalletId, toWalletId, amount, fee, TransactionType.TRANSFER, TransactionStatus.SUCCESS);\n        idempotencyStore.put(idempotencyKey, transaction);                                                          // remember this key's result\n        for (WalletObserver obs : observers) obs.onTransactionProcessed(transaction);                                  // notify\n        return transaction; // hand back the completed transaction\n    }\n\n    // Moves funds out of a wallet to an external bank, applying a percentage fee, deduplicated by idempotency key.\n    public synchronized Transaction withdraw(String walletId, double amount, String idempotencyKey, TransactionIdFactory factory) {\n        if (idempotencyStore.containsKey(idempotencyKey)) {                     // already processed this exact request\n            for (WalletObserver obs : observers) obs.onDuplicateDetected(idempotencyKey); // notify\n            return idempotencyStore.get(idempotencyKey);                            // return the original result untouched\n        }\n        if (amount <= 0) throw new InvalidTransactionException(\"Amount must be positive\"); // reject non-positive amount\n        Wallet wallet = wallets.get(walletId);                                               // withdrawing wallet\n        if (wallet == null) throw new WalletNotFoundException(\"Unknown wallet\");               // reject unknown wallet\n        FeeStrategy feeStrategy = new PercentageFeeStrategy(0.02);                                // withdrawals charge 2 percent\n        double fee = feeStrategy.calculateFee(amount);                                              // compute fee\n        if (wallet.getBalance() < amount + fee) {                                                     // not enough funds\n            for (WalletObserver obs : observers) obs.onTransactionRejected(walletId, \"Insufficient balance\"); // notify\n            throw new InsufficientBalanceException(\"Not enough balance in \" + walletId);\n        }\n        String transactionId = factory.nextTransactionId();                                          // build id\n        wallet.adjustBalance(-(amount + fee));                                                          // debit the full amount plus fee\n        wallets.get(EXTERNAL_BANK).adjustBalance(amount);                                                  // funds leave to the external bank\n        wallets.get(FEE_COLLECTION).adjustBalance(fee);                                                      // fee collected internally\n        writeEntry(walletId, transactionId, EntryType.DEBIT, amount + fee, factory);                           // ledger debit line\n        writeEntry(EXTERNAL_BANK, transactionId, EntryType.CREDIT, amount, factory);                             // ledger credit to external bank\n        writeEntry(FEE_COLLECTION, transactionId, EntryType.CREDIT, fee, factory);                                 // ledger credit to fee collection\n        Transaction transaction = new Transaction(transactionId, idempotencyKey, walletId, EXTERNAL_BANK, amount, fee, TransactionType.WITHDRAWAL, TransactionStatus.SUCCESS);\n        idempotencyStore.put(idempotencyKey, transaction);                                                     // remember this key's result\n        for (WalletObserver obs : observers) obs.onTransactionProcessed(transaction);                             // notify\n        return transaction; // hand back the completed transaction\n    }\n\n    // Confirms the system-wide double-entry invariant: total debits equal total credits.\n    public boolean verifyLedgerIntegrity() {\n        double totalDebits = 0.0;                                    // running debit total\n        double totalCredits = 0.0;                                     // running credit total\n        for (LedgerEntry entry : ledger) {                                // scan every ledger line ever written\n            if (entry.getEntryType() == EntryType.DEBIT) totalDebits += entry.getAmount();   // accumulate debits\n            else totalCredits += entry.getAmount();                                             // accumulate credits\n        }\n        return Math.abs(totalDebits-totalCredits) < 0.0001; // true only if the books balance\n    }\n\n    public Wallet getWallet(String walletId) { return wallets.get(walletId); } // wallet lookup, used by the demo to print balances\n}",
+            "python": "# Custom exceptions for the realistic failure modes.\nclass InsufficientBalanceException(Exception): pass\nclass WalletNotFoundException(Exception): pass\nclass InvalidTransactionException(Exception): pass\n\n# The core money-movement engine tying every piece together.\nclass WalletService:\n    EXTERNAL_BANK = \"EXTERNAL_BANK\"    # pseudo wallet for outbound funds\n    FEE_COLLECTION = \"FEE_COLLECTION\"    # pseudo wallet for collected fees\n\n    def __init__(self):\n        self.wallets = {}            # walletId -> Wallet\n        self.idempotency_store = {}    # idempotencyKey -> Transaction\n        self.ledger = []                 # every ledger line ever written\n        self.observers = []                 # listeners\n        self.wallets[self.EXTERNAL_BANK] = Wallet(self.EXTERNAL_BANK, \"External Bank\", 0.0)     # register the external sink\n        self.wallets[self.FEE_COLLECTION] = Wallet(self.FEE_COLLECTION, \"Fee Collection\", 0.0)  # register the fee sink\n\n    def add_wallet(self, wallet):\n        self.wallets[wallet.wallet_id] = wallet  # register a real wallet\n\n    def add_observer(self, observer):\n        self.observers.append(observer)  # register a listener\n\n    def _write_entry(self, wallet_id, transaction_id, entry_type, amount, factory):\n        self.ledger.append(LedgerEntry(factory.next_ledger_entry_id(), wallet_id, transaction_id, entry_type, amount))  # append one ledger line\n\n    def transfer(self, from_wallet_id, to_wallet_id, amount, idempotency_key, factory):\n        if idempotency_key in self.idempotency_store:  # already processed this exact request\n            for obs in self.observers:\n                obs.on_duplicate_detected(idempotency_key)  # notify\n            return self.idempotency_store[idempotency_key]  # return the original result untouched\n        if from_wallet_id == to_wallet_id:\n            raise InvalidTransactionException(\"Cannot transfer to the same wallet\")  # reject self-transfer\n        if amount <= 0:\n            raise InvalidTransactionException(\"Amount must be positive\")  # reject non-positive amount\n        from_wallet = self.wallets.get(from_wallet_id)  # sender\n        to_wallet = self.wallets.get(to_wallet_id)         # receiver\n        if from_wallet is None or to_wallet is None:\n            raise WalletNotFoundException(\"Unknown wallet\")  # reject unknown wallet\n        fee_strategy = NoFeeStrategy()  # peer-to-peer transfers are free\n        fee = fee_strategy.calculate_fee(amount)  # compute fee, zero here\n        if from_wallet.balance < amount + fee:  # not enough funds\n            for obs in self.observers:\n                obs.on_transaction_rejected(from_wallet_id, \"Insufficient balance\")  # notify\n            raise InsufficientBalanceException(f\"Not enough balance in {from_wallet_id}\")\n        transaction_id = factory.next_transaction_id()  # build id\n        from_wallet.adjust_balance(-amount)  # debit sender\n        to_wallet.adjust_balance(amount)  # credit receiver\n        self._write_entry(from_wallet_id, transaction_id, EntryType.DEBIT, amount, factory)  # ledger debit line\n        self._write_entry(to_wallet_id, transaction_id, EntryType.CREDIT, amount, factory)  # ledger credit line\n        transaction = Transaction(transaction_id, idempotency_key, from_wallet_id, to_wallet_id, amount, fee, TransactionType.TRANSFER, TransactionStatus.SUCCESS)\n        self.idempotency_store[idempotency_key] = transaction  # remember this key's result\n        for obs in self.observers:\n            obs.on_transaction_processed(transaction)  # notify\n        return transaction  # hand back the completed transaction\n\n    def withdraw(self, wallet_id, amount, idempotency_key, factory):\n        if idempotency_key in self.idempotency_store:  # already processed this exact request\n            for obs in self.observers:\n                obs.on_duplicate_detected(idempotency_key)  # notify\n            return self.idempotency_store[idempotency_key]  # return the original result untouched\n        if amount <= 0:\n            raise InvalidTransactionException(\"Amount must be positive\")  # reject non-positive amount\n        wallet = self.wallets.get(wallet_id)  # withdrawing wallet\n        if wallet is None:\n            raise WalletNotFoundException(\"Unknown wallet\")  # reject unknown wallet\n        fee_strategy = PercentageFeeStrategy(0.02)  # withdrawals charge 2 percent\n        fee = fee_strategy.calculate_fee(amount)  # compute fee\n        if wallet.balance < amount + fee:  # not enough funds\n            for obs in self.observers:\n                obs.on_transaction_rejected(wallet_id, \"Insufficient balance\")  # notify\n            raise InsufficientBalanceException(f\"Not enough balance in {wallet_id}\")\n        transaction_id = factory.next_transaction_id()  # build id\n        wallet.adjust_balance(-(amount + fee))  # debit the full amount plus fee\n        self.wallets[self.EXTERNAL_BANK].adjust_balance(amount)  # funds leave to the external bank\n        self.wallets[self.FEE_COLLECTION].adjust_balance(fee)  # fee collected internally\n        self._write_entry(wallet_id, transaction_id, EntryType.DEBIT, amount + fee, factory)  # ledger debit line\n        self._write_entry(self.EXTERNAL_BANK, transaction_id, EntryType.CREDIT, amount, factory)  # ledger credit to external bank\n        self._write_entry(self.FEE_COLLECTION, transaction_id, EntryType.CREDIT, fee, factory)  # ledger credit to fee collection\n        transaction = Transaction(transaction_id, idempotency_key, wallet_id, self.EXTERNAL_BANK, amount, fee, TransactionType.WITHDRAWAL, TransactionStatus.SUCCESS)\n        self.idempotency_store[idempotency_key] = transaction  # remember this key's result\n        for obs in self.observers:\n            obs.on_transaction_processed(transaction)  # notify\n        return transaction  # hand back the completed transaction\n\n    def verify_ledger_integrity(self):\n        total_debits = 0.0    # running debit total\n        total_credits = 0.0     # running credit total\n        for entry in self.ledger:  # scan every ledger line ever written\n            if entry.entry_type == EntryType.DEBIT:\n                total_debits += entry.amount  # accumulate debits\n            else:\n                total_credits += entry.amount  # accumulate credits\n        return abs(total_debits-total_credits) < 0.0001  # true only if the books balance\n\n    def get_wallet(self, wallet_id):\n        return self.wallets.get(wallet_id)  # wallet lookup, used by the demo to print balances",
+            "cpp": "#include <string>\n#include <vector>\n#include <map>\n#include <memory>\n#include <cmath>\n#include <stdexcept>\nusing namespace std;\n\n// Custom exceptions for the realistic failure modes.\nclass InsufficientBalanceException : public runtime_error {\npublic: InsufficientBalanceException(const string& msg) : runtime_error(msg) {}\n};\nclass WalletNotFoundException : public runtime_error {\npublic: WalletNotFoundException(const string& msg) : runtime_error(msg) {}\n};\nclass InvalidTransactionException : public runtime_error {\npublic: InvalidTransactionException(const string& msg) : runtime_error(msg) {}\n};\n\n// The core money-movement engine tying every piece together.\nclass WalletService {\n    map<string, Wallet> wallets;                    // walletId -> Wallet\n    map<string, Transaction> idempotencyStore;         // idempotencyKey -> Transaction\n    vector<LedgerEntry> ledger;                          // every ledger line ever written\n    vector<shared_ptr<WalletObserver>> observers;          // listeners\n    const string EXTERNAL_BANK = \"EXTERNAL_BANK\";              // pseudo wallet for outbound funds\n    const string FEE_COLLECTION = \"FEE_COLLECTION\";              // pseudo wallet for collected fees\n\n    void writeEntry(string walletId, string transactionId, EntryType type, double amount, TransactionIdFactory& factory) {\n        ledger.push_back(LedgerEntry(factory.nextLedgerEntryId(), walletId, transactionId, type, amount)); // append one ledger line\n    }\n\npublic:\n    WalletService() {\n        wallets[EXTERNAL_BANK] = Wallet(EXTERNAL_BANK, \"External Bank\", 0.0);   // register the external sink\n        wallets[FEE_COLLECTION] = Wallet(FEE_COLLECTION, \"Fee Collection\", 0.0); // register the fee sink\n    }\n\n    void addWallet(Wallet wallet) { wallets[wallet.walletId] = wallet; }         // register a real wallet\n    void addObserver(shared_ptr<WalletObserver> observer) { observers.push_back(observer); } // register a listener\n\n    Transaction transfer(string fromWalletId, string toWalletId, double amount, string idempotencyKey, TransactionIdFactory& factory) {\n        if (idempotencyStore.find(idempotencyKey) != idempotencyStore.end()) {  // already processed this exact request\n            for (auto& obs : observers) obs->onDuplicateDetected(idempotencyKey); // notify\n            return idempotencyStore.at(idempotencyKey);                             // return the original result untouched\n        }\n        if (fromWalletId == toWalletId) throw InvalidTransactionException(\"Cannot transfer to the same wallet\"); // reject self-transfer\n        if (amount <= 0) throw InvalidTransactionException(\"Amount must be positive\");   // reject non-positive amount\n        if (wallets.find(fromWalletId) == wallets.end() || wallets.find(toWalletId) == wallets.end())\n            throw WalletNotFoundException(\"Unknown wallet\");                                // reject unknown wallet\n        Wallet& from = wallets.at(fromWalletId);                                              // sender\n        Wallet& to = wallets.at(toWalletId);                                                     // receiver\n        NoFeeStrategy feeStrategy;                                                                 // peer-to-peer transfers are free\n        double fee = feeStrategy.calculateFee(amount);                                               // compute fee, zero here\n        if (from.balance < amount + fee) {                                                             // not enough funds\n            for (auto& obs : observers) obs->onTransactionRejected(fromWalletId, \"Insufficient balance\"); // notify\n            throw InsufficientBalanceException(\"Not enough balance in \" + fromWalletId);\n        }\n        string transactionId = factory.nextTransactionId();                                              // build id\n        from.adjustBalance(-amount);                                                                       // debit sender\n        to.adjustBalance(amount);                                                                            // credit receiver\n        writeEntry(fromWalletId, transactionId, EntryType::DEBIT, amount, factory);                            // ledger debit line\n        writeEntry(toWalletId, transactionId, EntryType::CREDIT, amount, factory);                               // ledger credit line\n        Transaction transaction(transactionId, idempotencyKey, fromWalletId, toWalletId, amount, fee, TransactionType::TRANSFER, TransactionStatus::SUCCESS);\n        idempotencyStore[idempotencyKey] = transaction;                                                          // remember this key's result\n        for (auto& obs : observers) obs->onTransactionProcessed(transaction);                                       // notify\n        return transaction; // hand back the completed transaction\n    }\n\n    Transaction withdraw(string walletId, double amount, string idempotencyKey, TransactionIdFactory& factory) {\n        if (idempotencyStore.find(idempotencyKey) != idempotencyStore.end()) {  // already processed this exact request\n            for (auto& obs : observers) obs->onDuplicateDetected(idempotencyKey); // notify\n            return idempotencyStore.at(idempotencyKey);                             // return the original result untouched\n        }\n        if (amount <= 0) throw InvalidTransactionException(\"Amount must be positive\"); // reject non-positive amount\n        if (wallets.find(walletId) == wallets.end()) throw WalletNotFoundException(\"Unknown wallet\"); // reject unknown wallet\n        Wallet& wallet = wallets.at(walletId);                                           // withdrawing wallet\n        PercentageFeeStrategy feeStrategy(0.02);                                            // withdrawals charge 2 percent\n        double fee = feeStrategy.calculateFee(amount);                                        // compute fee\n        if (wallet.balance < amount + fee) {                                                    // not enough funds\n            for (auto& obs : observers) obs->onTransactionRejected(walletId, \"Insufficient balance\"); // notify\n            throw InsufficientBalanceException(\"Not enough balance in \" + walletId);\n        }\n        string transactionId = factory.nextTransactionId();                                     // build id\n        wallet.adjustBalance(-(amount + fee));                                                     // debit the full amount plus fee\n        wallets.at(EXTERNAL_BANK).adjustBalance(amount);                                              // funds leave to the external bank\n        wallets.at(FEE_COLLECTION).adjustBalance(fee);                                                   // fee collected internally\n        writeEntry(walletId, transactionId, EntryType::DEBIT, amount + fee, factory);                      // ledger debit line\n        writeEntry(EXTERNAL_BANK, transactionId, EntryType::CREDIT, amount, factory);                        // ledger credit to external bank\n        writeEntry(FEE_COLLECTION, transactionId, EntryType::CREDIT, fee, factory);                             // ledger credit to fee collection\n        Transaction transaction(transactionId, idempotencyKey, walletId, EXTERNAL_BANK, amount, fee, TransactionType::WITHDRAWAL, TransactionStatus::SUCCESS);\n        idempotencyStore[idempotencyKey] = transaction;                                                    // remember this key's result\n        for (auto& obs : observers) obs->onTransactionProcessed(transaction);                                 // notify\n        return transaction; // hand back the completed transaction\n    }\n\n    bool verifyLedgerIntegrity() {\n        double totalDebits = 0.0;                                    // running debit total\n        double totalCredits = 0.0;                                     // running credit total\n        for (auto& entry : ledger) {                                     // scan every ledger line ever written\n            if (entry.entryType == EntryType::DEBIT) totalDebits += entry.amount;    // accumulate debits\n            else totalCredits += entry.amount;                                          // accumulate credits\n        }\n        return abs(totalDebits-totalCredits) < 0.0001; // true only if the books balance\n    }\n\n    Wallet getWallet(string walletId) { return wallets.at(walletId); } // wallet lookup, used by the demo to print balances\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Complete, self-contained, directly runnable file (every class above combined into one file per language, exactly as you would actually copy, compile and run it), demonstrating a successful transfer, a deduplicated retry, an insufficient-balance rejection, a withdrawal with a fee, a self-transfer rejection, and a final ledger integrity check:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        WalletService service = new WalletService();\n        service.addObserver(new ConsoleWalletObserver());\n        TransactionIdFactory factory = new TransactionIdFactory();\n\n        Wallet alice = new Wallet(\"Alice\", \"Alice\", 500.0);\n        Wallet bob = new Wallet(\"Bob\", \"Bob\", 100.0);\n        service.addWallet(alice);\n        service.addWallet(bob);\n\n        service.transfer(\"Alice\", \"Bob\", 200.0, \"IK1\", factory);\n        System.out.println(\"After transfer: Alice=\" + service.getWallet(\"Alice\").getBalance() + \" Bob=\" + service.getWallet(\"Bob\").getBalance());\n\n        service.transfer(\"Alice\", \"Bob\", 200.0, \"IK1\", factory);\n        System.out.println(\"After retry: Alice=\" + service.getWallet(\"Alice\").getBalance() + \" Bob=\" + service.getWallet(\"Bob\").getBalance());\n\n        try {\n            service.transfer(\"Alice\", \"Bob\", 1000.0, \"IK2\", factory);\n        } catch (InsufficientBalanceException e) {\n            System.out.println(\"Caught expected: \" + e.getMessage());\n        }\n\n        service.withdraw(\"Bob\", 100.0, \"IK3\", factory);\n        System.out.println(\"After withdrawal: Bob=\" + service.getWallet(\"Bob\").getBalance());\n\n        try {\n            service.transfer(\"Alice\", \"Alice\", 50.0, \"IK4\", factory);\n        } catch (InvalidTransactionException e) {\n            System.out.println(\"Caught expected: \" + e.getMessage());\n        }\n\n        System.out.println(\"Ledger balanced: \" + service.verifyLedgerIntegrity());\n    }\n}\n\nenum TransactionType { TRANSFER, TOPUP, WITHDRAWAL }\nenum TransactionStatus { SUCCESS, REJECTED }\nenum EntryType { DEBIT, CREDIT }\n\nclass Wallet {\n    private final String walletId;\n    private final String ownerName;\n    private double balance;\n\n    public Wallet(String walletId, String ownerName, double balance) {\n        this.walletId = walletId;\n        this.ownerName = ownerName;\n        this.balance = balance;\n    }\n\n    public String getWalletId() { return walletId; }\n    public String getOwnerName() { return ownerName; }\n    public double getBalance() { return balance; }\n    public void adjustBalance(double amount) { balance += amount; }\n}\n\nclass LedgerEntry {\n    private final String entryId;\n    private final String walletId;\n    private final String transactionId;\n    private final EntryType entryType;\n    private final double amount;\n\n    public LedgerEntry(String entryId, String walletId, String transactionId, EntryType entryType, double amount) {\n        this.entryId = entryId;\n        this.walletId = walletId;\n        this.transactionId = transactionId;\n        this.entryType = entryType;\n        this.amount = amount;\n    }\n\n    public EntryType getEntryType() { return entryType; }\n    public double getAmount() { return amount; }\n}\n\nclass Transaction {\n    private final String transactionId;\n    private final String idempotencyKey;\n    private final String fromWalletId;\n    private final String toWalletId;\n    private final double amount;\n    private final double fee;\n    private final TransactionType type;\n    private TransactionStatus status;\n\n    public Transaction(String transactionId, String idempotencyKey, String fromWalletId, String toWalletId, double amount, double fee, TransactionType type, TransactionStatus status) {\n        this.transactionId = transactionId;\n        this.idempotencyKey = idempotencyKey;\n        this.fromWalletId = fromWalletId;\n        this.toWalletId = toWalletId;\n        this.amount = amount;\n        this.fee = fee;\n        this.type = type;\n        this.status = status;\n    }\n\n    public String getTransactionId() { return transactionId; }\n    public String getIdempotencyKey() { return idempotencyKey; }\n    public double getAmount() { return amount; }\n    public double getFee() { return fee; }\n    public TransactionStatus getStatus() { return status; }\n}\n\nclass TransactionIdFactory {\n    private int transactionCounter = 0;\n    private int entryCounter = 0;\n\n    public String nextTransactionId() {\n        transactionCounter++;\n        return \"TXN\" + transactionCounter;\n    }\n\n    public String nextLedgerEntryId() {\n        entryCounter++;\n        return \"LE\" + entryCounter;\n    }\n}\n\ninterface FeeStrategy {\n    double calculateFee(double amount);\n}\n\nclass NoFeeStrategy implements FeeStrategy {\n    @Override\n    public double calculateFee(double amount) { return 0.0; }\n}\n\nclass PercentageFeeStrategy implements FeeStrategy {\n    private final double percentage;\n\n    public PercentageFeeStrategy(double percentage) {\n        this.percentage = percentage;\n    }\n\n    @Override\n    public double calculateFee(double amount) { return amount * percentage; }\n}\n\ninterface WalletObserver {\n    void onTransactionProcessed(Transaction transaction);\n    void onTransactionRejected(String walletId, String reason);\n    void onDuplicateDetected(String idempotencyKey);\n}\n\nclass ConsoleWalletObserver implements WalletObserver {\n    @Override\n    public void onTransactionProcessed(Transaction transaction) {\n        System.out.println(\"Transaction \" + transaction.getTransactionId() + \" processed: amount \" + transaction.getAmount() + \" fee \" + transaction.getFee());\n    }\n\n    @Override\n    public void onTransactionRejected(String walletId, String reason) {\n        System.out.println(\"Transaction rejected for \" + walletId + \": \" + reason);\n    }\n\n    @Override\n    public void onDuplicateDetected(String idempotencyKey) {\n        System.out.println(\"Duplicate detected for idempotency key \" + idempotencyKey + \", returning original result\");\n    }\n}\n\nclass InsufficientBalanceException extends RuntimeException {\n    public InsufficientBalanceException(String msg) { super(msg); }\n}\nclass WalletNotFoundException extends RuntimeException {\n    public WalletNotFoundException(String msg) { super(msg); }\n}\nclass InvalidTransactionException extends RuntimeException {\n    public InvalidTransactionException(String msg) { super(msg); }\n}\n\nclass WalletService {\n    private final Map<String, Wallet> wallets = new HashMap<>();\n    private final Map<String, Transaction> idempotencyStore = new HashMap<>();\n    private final List<LedgerEntry> ledger = new ArrayList<>();\n    private final List<WalletObserver> observers = new ArrayList<>();\n    private static final String EXTERNAL_BANK = \"EXTERNAL_BANK\";\n    private static final String FEE_COLLECTION = \"FEE_COLLECTION\";\n\n    public WalletService() {\n        wallets.put(EXTERNAL_BANK, new Wallet(EXTERNAL_BANK, \"External Bank\", 0.0));\n        wallets.put(FEE_COLLECTION, new Wallet(FEE_COLLECTION, \"Fee Collection\", 0.0));\n    }\n\n    public void addWallet(Wallet wallet) { wallets.put(wallet.getWalletId(), wallet); }\n    public void addObserver(WalletObserver observer) { observers.add(observer); }\n\n    private void writeEntry(String walletId, String transactionId, EntryType type, double amount, TransactionIdFactory factory) {\n        ledger.add(new LedgerEntry(factory.nextLedgerEntryId(), walletId, transactionId, type, amount));\n    }\n\n    public synchronized Transaction transfer(String fromWalletId, String toWalletId, double amount, String idempotencyKey, TransactionIdFactory factory) {\n        if (idempotencyStore.containsKey(idempotencyKey)) {\n            for (WalletObserver obs : observers) obs.onDuplicateDetected(idempotencyKey);\n            return idempotencyStore.get(idempotencyKey);\n        }\n        if (fromWalletId.equals(toWalletId)) throw new InvalidTransactionException(\"Cannot transfer to the same wallet\");\n        if (amount <= 0) throw new InvalidTransactionException(\"Amount must be positive\");\n        Wallet from = wallets.get(fromWalletId);\n        Wallet to = wallets.get(toWalletId);\n        if (from == null || to == null) throw new WalletNotFoundException(\"Unknown wallet\");\n        FeeStrategy feeStrategy = new NoFeeStrategy();\n        double fee = feeStrategy.calculateFee(amount);\n        if (from.getBalance() < amount + fee) {\n            for (WalletObserver obs : observers) obs.onTransactionRejected(fromWalletId, \"Insufficient balance\");\n            throw new InsufficientBalanceException(\"Not enough balance in \" + fromWalletId);\n        }\n        String transactionId = factory.nextTransactionId();\n        from.adjustBalance(-amount);\n        to.adjustBalance(amount);\n        writeEntry(fromWalletId, transactionId, EntryType.DEBIT, amount, factory);\n        writeEntry(toWalletId, transactionId, EntryType.CREDIT, amount, factory);\n        Transaction transaction = new Transaction(transactionId, idempotencyKey, fromWalletId, toWalletId, amount, fee, TransactionType.TRANSFER, TransactionStatus.SUCCESS);\n        idempotencyStore.put(idempotencyKey, transaction);\n        for (WalletObserver obs : observers) obs.onTransactionProcessed(transaction);\n        return transaction;\n    }\n\n    public synchronized Transaction withdraw(String walletId, double amount, String idempotencyKey, TransactionIdFactory factory) {\n        if (idempotencyStore.containsKey(idempotencyKey)) {\n            for (WalletObserver obs : observers) obs.onDuplicateDetected(idempotencyKey);\n            return idempotencyStore.get(idempotencyKey);\n        }\n        if (amount <= 0) throw new InvalidTransactionException(\"Amount must be positive\");\n        Wallet wallet = wallets.get(walletId);\n        if (wallet == null) throw new WalletNotFoundException(\"Unknown wallet\");\n        FeeStrategy feeStrategy = new PercentageFeeStrategy(0.02);\n        double fee = feeStrategy.calculateFee(amount);\n        if (wallet.getBalance() < amount + fee) {\n            for (WalletObserver obs : observers) obs.onTransactionRejected(walletId, \"Insufficient balance\");\n            throw new InsufficientBalanceException(\"Not enough balance in \" + walletId);\n        }\n        String transactionId = factory.nextTransactionId();\n        wallet.adjustBalance(-(amount + fee));\n        wallets.get(EXTERNAL_BANK).adjustBalance(amount);\n        wallets.get(FEE_COLLECTION).adjustBalance(fee);\n        writeEntry(walletId, transactionId, EntryType.DEBIT, amount + fee, factory);\n        writeEntry(EXTERNAL_BANK, transactionId, EntryType.CREDIT, amount, factory);\n        writeEntry(FEE_COLLECTION, transactionId, EntryType.CREDIT, fee, factory);\n        Transaction transaction = new Transaction(transactionId, idempotencyKey, walletId, EXTERNAL_BANK, amount, fee, TransactionType.WITHDRAWAL, TransactionStatus.SUCCESS);\n        idempotencyStore.put(idempotencyKey, transaction);\n        for (WalletObserver obs : observers) obs.onTransactionProcessed(transaction);\n        return transaction;\n    }\n\n    public boolean verifyLedgerIntegrity() {\n        double totalDebits = 0.0;\n        double totalCredits = 0.0;\n        for (LedgerEntry entry : ledger) {\n            if (entry.getEntryType() == EntryType.DEBIT) totalDebits += entry.getAmount();\n            else totalCredits += entry.getAmount();\n        }\n        return Math.abs(totalDebits-totalCredits) < 0.0001;\n    }\n\n    public Wallet getWallet(String walletId) { return wallets.get(walletId); }\n}",
+            "python": "class TransactionType:\n    TRANSFER = \"TRANSFER\"\n    TOPUP = \"TOPUP\"\n    WITHDRAWAL = \"WITHDRAWAL\"\n\nclass TransactionStatus:\n    SUCCESS = \"SUCCESS\"\n    REJECTED = \"REJECTED\"\n\nclass EntryType:\n    DEBIT = \"DEBIT\"\n    CREDIT = \"CREDIT\"\n\nclass Wallet:\n    def __init__(self, wallet_id, owner_name, balance):\n        self.wallet_id = wallet_id\n        self.owner_name = owner_name\n        self.balance = balance\n\n    def adjust_balance(self, amount):\n        self.balance += amount\n\nclass LedgerEntry:\n    def __init__(self, entry_id, wallet_id, transaction_id, entry_type, amount):\n        self.entry_id = entry_id\n        self.wallet_id = wallet_id\n        self.transaction_id = transaction_id\n        self.entry_type = entry_type\n        self.amount = amount\n\nclass Transaction:\n    def __init__(self, transaction_id, idempotency_key, from_wallet_id, to_wallet_id, amount, fee, tx_type, status):\n        self.transaction_id = transaction_id\n        self.idempotency_key = idempotency_key\n        self.from_wallet_id = from_wallet_id\n        self.to_wallet_id = to_wallet_id\n        self.amount = amount\n        self.fee = fee\n        self.type = tx_type\n        self.status = status\n\nclass TransactionIdFactory:\n    def __init__(self):\n        self.transaction_counter = 0\n        self.entry_counter = 0\n\n    def next_transaction_id(self):\n        self.transaction_counter += 1\n        return f\"TXN{self.transaction_counter}\"\n\n    def next_ledger_entry_id(self):\n        self.entry_counter += 1\n        return f\"LE{self.entry_counter}\"\n\nclass FeeStrategy:\n    def calculate_fee(self, amount): raise NotImplementedError\n\nclass NoFeeStrategy(FeeStrategy):\n    def calculate_fee(self, amount):\n        return 0.0\n\nclass PercentageFeeStrategy(FeeStrategy):\n    def __init__(self, percentage):\n        self.percentage = percentage\n\n    def calculate_fee(self, amount):\n        return amount * self.percentage\n\nclass WalletObserver:\n    def on_transaction_processed(self, transaction): raise NotImplementedError\n    def on_transaction_rejected(self, wallet_id, reason): raise NotImplementedError\n    def on_duplicate_detected(self, idempotency_key): raise NotImplementedError\n\nclass ConsoleWalletObserver(WalletObserver):\n    def on_transaction_processed(self, transaction):\n        print(f\"Transaction {transaction.transaction_id} processed: amount {transaction.amount} fee {transaction.fee}\")\n\n    def on_transaction_rejected(self, wallet_id, reason):\n        print(f\"Transaction rejected for {wallet_id}: {reason}\")\n\n    def on_duplicate_detected(self, idempotency_key):\n        print(f\"Duplicate detected for idempotency key {idempotency_key}, returning original result\")\n\nclass InsufficientBalanceException(Exception): pass\nclass WalletNotFoundException(Exception): pass\nclass InvalidTransactionException(Exception): pass\n\nclass WalletService:\n    EXTERNAL_BANK = \"EXTERNAL_BANK\"\n    FEE_COLLECTION = \"FEE_COLLECTION\"\n\n    def __init__(self):\n        self.wallets = {}\n        self.idempotency_store = {}\n        self.ledger = []\n        self.observers = []\n        self.wallets[self.EXTERNAL_BANK] = Wallet(self.EXTERNAL_BANK, \"External Bank\", 0.0)\n        self.wallets[self.FEE_COLLECTION] = Wallet(self.FEE_COLLECTION, \"Fee Collection\", 0.0)\n\n    def add_wallet(self, wallet):\n        self.wallets[wallet.wallet_id] = wallet\n\n    def add_observer(self, observer):\n        self.observers.append(observer)\n\n    def _write_entry(self, wallet_id, transaction_id, entry_type, amount, factory):\n        self.ledger.append(LedgerEntry(factory.next_ledger_entry_id(), wallet_id, transaction_id, entry_type, amount))\n\n    def transfer(self, from_wallet_id, to_wallet_id, amount, idempotency_key, factory):\n        if idempotency_key in self.idempotency_store:\n            for obs in self.observers:\n                obs.on_duplicate_detected(idempotency_key)\n            return self.idempotency_store[idempotency_key]\n        if from_wallet_id == to_wallet_id:\n            raise InvalidTransactionException(\"Cannot transfer to the same wallet\")\n        if amount <= 0:\n            raise InvalidTransactionException(\"Amount must be positive\")\n        from_wallet = self.wallets.get(from_wallet_id)\n        to_wallet = self.wallets.get(to_wallet_id)\n        if from_wallet is None or to_wallet is None:\n            raise WalletNotFoundException(\"Unknown wallet\")\n        fee_strategy = NoFeeStrategy()\n        fee = fee_strategy.calculate_fee(amount)\n        if from_wallet.balance < amount + fee:\n            for obs in self.observers:\n                obs.on_transaction_rejected(from_wallet_id, \"Insufficient balance\")\n            raise InsufficientBalanceException(f\"Not enough balance in {from_wallet_id}\")\n        transaction_id = factory.next_transaction_id()\n        from_wallet.adjust_balance(-amount)\n        to_wallet.adjust_balance(amount)\n        self._write_entry(from_wallet_id, transaction_id, EntryType.DEBIT, amount, factory)\n        self._write_entry(to_wallet_id, transaction_id, EntryType.CREDIT, amount, factory)\n        transaction = Transaction(transaction_id, idempotency_key, from_wallet_id, to_wallet_id, amount, fee, TransactionType.TRANSFER, TransactionStatus.SUCCESS)\n        self.idempotency_store[idempotency_key] = transaction\n        for obs in self.observers:\n            obs.on_transaction_processed(transaction)\n        return transaction\n\n    def withdraw(self, wallet_id, amount, idempotency_key, factory):\n        if idempotency_key in self.idempotency_store:\n            for obs in self.observers:\n                obs.on_duplicate_detected(idempotency_key)\n            return self.idempotency_store[idempotency_key]\n        if amount <= 0:\n            raise InvalidTransactionException(\"Amount must be positive\")\n        wallet = self.wallets.get(wallet_id)\n        if wallet is None:\n            raise WalletNotFoundException(\"Unknown wallet\")\n        fee_strategy = PercentageFeeStrategy(0.02)\n        fee = fee_strategy.calculate_fee(amount)\n        if wallet.balance < amount + fee:\n            for obs in self.observers:\n                obs.on_transaction_rejected(wallet_id, \"Insufficient balance\")\n            raise InsufficientBalanceException(f\"Not enough balance in {wallet_id}\")\n        transaction_id = factory.next_transaction_id()\n        wallet.adjust_balance(-(amount + fee))\n        self.wallets[self.EXTERNAL_BANK].adjust_balance(amount)\n        self.wallets[self.FEE_COLLECTION].adjust_balance(fee)\n        self._write_entry(wallet_id, transaction_id, EntryType.DEBIT, amount + fee, factory)\n        self._write_entry(self.EXTERNAL_BANK, transaction_id, EntryType.CREDIT, amount, factory)\n        self._write_entry(self.FEE_COLLECTION, transaction_id, EntryType.CREDIT, fee, factory)\n        transaction = Transaction(transaction_id, idempotency_key, wallet_id, self.EXTERNAL_BANK, amount, fee, TransactionType.WITHDRAWAL, TransactionStatus.SUCCESS)\n        self.idempotency_store[idempotency_key] = transaction\n        for obs in self.observers:\n            obs.on_transaction_processed(transaction)\n        return transaction\n\n    def verify_ledger_integrity(self):\n        total_debits = 0.0\n        total_credits = 0.0\n        for entry in self.ledger:\n            if entry.entry_type == EntryType.DEBIT:\n                total_debits += entry.amount\n            else:\n                total_credits += entry.amount\n        return abs(total_debits-total_credits) < 0.0001\n\n    def get_wallet(self, wallet_id):\n        return self.wallets.get(wallet_id)\n\ndef main():\n    service = WalletService()\n    service.add_observer(ConsoleWalletObserver())\n    factory = TransactionIdFactory()\n\n    alice = Wallet(\"Alice\", \"Alice\", 500.0)\n    bob = Wallet(\"Bob\", \"Bob\", 100.0)\n    service.add_wallet(alice)\n    service.add_wallet(bob)\n\n    service.transfer(\"Alice\", \"Bob\", 200.0, \"IK1\", factory)\n    print(f\"After transfer: Alice={service.get_wallet('Alice').balance} Bob={service.get_wallet('Bob').balance}\")\n\n    service.transfer(\"Alice\", \"Bob\", 200.0, \"IK1\", factory)\n    print(f\"After retry: Alice={service.get_wallet('Alice').balance} Bob={service.get_wallet('Bob').balance}\")\n\n    try:\n        service.transfer(\"Alice\", \"Bob\", 1000.0, \"IK2\", factory)\n    except InsufficientBalanceException as e:\n        print(f\"Caught expected: {e}\")\n\n    service.withdraw(\"Bob\", 100.0, \"IK3\", factory)\n    print(f\"After withdrawal: Bob={service.get_wallet('Bob').balance}\")\n\n    try:\n        service.transfer(\"Alice\", \"Alice\", 50.0, \"IK4\", factory)\n    except InvalidTransactionException as e:\n        print(f\"Caught expected: {e}\")\n\n    print(f\"Ledger balanced: {service.verify_ledger_integrity()}\")\n\nif __name__ == \"__main__\":\n    main()",
+            "cpp": "#include <iostream>\n#include <string>\n#include <vector>\n#include <map>\n#include <memory>\n#include <cmath>\n#include <stdexcept>\nusing namespace std;\n\nenum class TransactionType { TRANSFER, TOPUP, WITHDRAWAL };\nenum class TransactionStatus { SUCCESS, REJECTED };\nenum class EntryType { DEBIT, CREDIT };\n\nclass Wallet {\npublic:\n    string walletId;\n    string ownerName;\n    double balance;\n\n    Wallet() : balance(0.0) {}\n    Wallet(string id, string owner, double bal) : walletId(id), ownerName(owner), balance(bal) {}\n\n    void adjustBalance(double amount) { balance += amount; }\n};\n\nclass LedgerEntry {\npublic:\n    string entryId;\n    string walletId;\n    string transactionId;\n    EntryType entryType;\n    double amount;\n\n    LedgerEntry() : amount(0.0) {}\n    LedgerEntry(string eid, string wid, string tid, EntryType et, double amt)\n        : entryId(eid), walletId(wid), transactionId(tid), entryType(et), amount(amt) {}\n};\n\nclass Transaction {\npublic:\n    string transactionId;\n    string idempotencyKey;\n    string fromWalletId;\n    string toWalletId;\n    double amount;\n    double fee;\n    TransactionType type;\n    TransactionStatus status;\n\n    Transaction() : amount(0.0), fee(0.0), type(TransactionType::TRANSFER), status(TransactionStatus::REJECTED) {}\n    Transaction(string tid, string key, string from, string to, double amt, double f, TransactionType t, TransactionStatus s)\n        : transactionId(tid), idempotencyKey(key), fromWalletId(from), toWalletId(to), amount(amt), fee(f), type(t), status(s) {}\n};\n\nclass TransactionIdFactory {\n    int transactionCounter = 0;\n    int entryCounter = 0;\n\npublic:\n    string nextTransactionId() {\n        transactionCounter++;\n        return \"TXN\" + to_string(transactionCounter);\n    }\n\n    string nextLedgerEntryId() {\n        entryCounter++;\n        return \"LE\" + to_string(entryCounter);\n    }\n};\n\nclass FeeStrategy {\npublic:\n    virtual double calculateFee(double amount) = 0;\n    virtual ~FeeStrategy() {}\n};\n\nclass NoFeeStrategy : public FeeStrategy {\npublic:\n    double calculateFee(double amount) override { return 0.0; }\n};\n\nclass PercentageFeeStrategy : public FeeStrategy {\n    double percentage;\n\npublic:\n    PercentageFeeStrategy(double p) : percentage(p) {}\n\n    double calculateFee(double amount) override { return amount * percentage; }\n};\n\nclass WalletObserver {\npublic:\n    virtual void onTransactionProcessed(const Transaction& transaction) = 0;\n    virtual void onTransactionRejected(const string& walletId, const string& reason) = 0;\n    virtual void onDuplicateDetected(const string& idempotencyKey) = 0;\n    virtual ~WalletObserver() {}\n};\n\nclass ConsoleWalletObserver : public WalletObserver {\npublic:\n    void onTransactionProcessed(const Transaction& transaction) override {\n        cout << \"Transaction \" << transaction.transactionId << \" processed: amount \" << transaction.amount << \" fee \" << transaction.fee << endl;\n    }\n    void onTransactionRejected(const string& walletId, const string& reason) override {\n        cout << \"Transaction rejected for \" << walletId << \": \" << reason << endl;\n    }\n    void onDuplicateDetected(const string& idempotencyKey) override {\n        cout << \"Duplicate detected for idempotency key \" << idempotencyKey << \", returning original result\" << endl;\n    }\n};\n\nclass InsufficientBalanceException : public runtime_error {\npublic: InsufficientBalanceException(const string& msg) : runtime_error(msg) {}\n};\nclass WalletNotFoundException : public runtime_error {\npublic: WalletNotFoundException(const string& msg) : runtime_error(msg) {}\n};\nclass InvalidTransactionException : public runtime_error {\npublic: InvalidTransactionException(const string& msg) : runtime_error(msg) {}\n};\n\nclass WalletService {\n    map<string, Wallet> wallets;\n    map<string, Transaction> idempotencyStore;\n    vector<LedgerEntry> ledger;\n    vector<shared_ptr<WalletObserver>> observers;\n    const string EXTERNAL_BANK = \"EXTERNAL_BANK\";\n    const string FEE_COLLECTION = \"FEE_COLLECTION\";\n\n    void writeEntry(string walletId, string transactionId, EntryType type, double amount, TransactionIdFactory& factory) {\n        ledger.push_back(LedgerEntry(factory.nextLedgerEntryId(), walletId, transactionId, type, amount));\n    }\n\npublic:\n    WalletService() {\n        wallets[EXTERNAL_BANK] = Wallet(EXTERNAL_BANK, \"External Bank\", 0.0);\n        wallets[FEE_COLLECTION] = Wallet(FEE_COLLECTION, \"Fee Collection\", 0.0);\n    }\n\n    void addWallet(Wallet wallet) { wallets[wallet.walletId] = wallet; }\n    void addObserver(shared_ptr<WalletObserver> observer) { observers.push_back(observer); }\n\n    Transaction transfer(string fromWalletId, string toWalletId, double amount, string idempotencyKey, TransactionIdFactory& factory) {\n        if (idempotencyStore.find(idempotencyKey) != idempotencyStore.end()) {\n            for (auto& obs : observers) obs->onDuplicateDetected(idempotencyKey);\n            return idempotencyStore.at(idempotencyKey);\n        }\n        if (fromWalletId == toWalletId) throw InvalidTransactionException(\"Cannot transfer to the same wallet\");\n        if (amount <= 0) throw InvalidTransactionException(\"Amount must be positive\");\n        if (wallets.find(fromWalletId) == wallets.end() || wallets.find(toWalletId) == wallets.end())\n            throw WalletNotFoundException(\"Unknown wallet\");\n        Wallet& from = wallets.at(fromWalletId);\n        Wallet& to = wallets.at(toWalletId);\n        NoFeeStrategy feeStrategy;\n        double fee = feeStrategy.calculateFee(amount);\n        if (from.balance < amount + fee) {\n            for (auto& obs : observers) obs->onTransactionRejected(fromWalletId, \"Insufficient balance\");\n            throw InsufficientBalanceException(\"Not enough balance in \" + fromWalletId);\n        }\n        string transactionId = factory.nextTransactionId();\n        from.adjustBalance(-amount);\n        to.adjustBalance(amount);\n        writeEntry(fromWalletId, transactionId, EntryType::DEBIT, amount, factory);\n        writeEntry(toWalletId, transactionId, EntryType::CREDIT, amount, factory);\n        Transaction transaction(transactionId, idempotencyKey, fromWalletId, toWalletId, amount, fee, TransactionType::TRANSFER, TransactionStatus::SUCCESS);\n        idempotencyStore[idempotencyKey] = transaction;\n        for (auto& obs : observers) obs->onTransactionProcessed(transaction);\n        return transaction;\n    }\n\n    Transaction withdraw(string walletId, double amount, string idempotencyKey, TransactionIdFactory& factory) {\n        if (idempotencyStore.find(idempotencyKey) != idempotencyStore.end()) {\n            for (auto& obs : observers) obs->onDuplicateDetected(idempotencyKey);\n            return idempotencyStore.at(idempotencyKey);\n        }\n        if (amount <= 0) throw InvalidTransactionException(\"Amount must be positive\");\n        if (wallets.find(walletId) == wallets.end()) throw WalletNotFoundException(\"Unknown wallet\");\n        Wallet& wallet = wallets.at(walletId);\n        PercentageFeeStrategy feeStrategy(0.02);\n        double fee = feeStrategy.calculateFee(amount);\n        if (wallet.balance < amount + fee) {\n            for (auto& obs : observers) obs->onTransactionRejected(walletId, \"Insufficient balance\");\n            throw InsufficientBalanceException(\"Not enough balance in \" + walletId);\n        }\n        string transactionId = factory.nextTransactionId();\n        wallet.adjustBalance(-(amount + fee));\n        wallets.at(EXTERNAL_BANK).adjustBalance(amount);\n        wallets.at(FEE_COLLECTION).adjustBalance(fee);\n        writeEntry(walletId, transactionId, EntryType::DEBIT, amount + fee, factory);\n        writeEntry(EXTERNAL_BANK, transactionId, EntryType::CREDIT, amount, factory);\n        writeEntry(FEE_COLLECTION, transactionId, EntryType::CREDIT, fee, factory);\n        Transaction transaction(transactionId, idempotencyKey, walletId, EXTERNAL_BANK, amount, fee, TransactionType::WITHDRAWAL, TransactionStatus::SUCCESS);\n        idempotencyStore[idempotencyKey] = transaction;\n        for (auto& obs : observers) obs->onTransactionProcessed(transaction);\n        return transaction;\n    }\n\n    bool verifyLedgerIntegrity() {\n        double totalDebits = 0.0;\n        double totalCredits = 0.0;\n        for (auto& entry : ledger) {\n            if (entry.entryType == EntryType::DEBIT) totalDebits += entry.amount;\n            else totalCredits += entry.amount;\n        }\n        return abs(totalDebits-totalCredits) < 0.0001;\n    }\n\n    Wallet getWallet(string walletId) { return wallets.at(walletId); }\n};\n\nint main() {\n    WalletService service;\n    service.addObserver(make_shared<ConsoleWalletObserver>());\n    TransactionIdFactory factory;\n\n    Wallet alice(\"Alice\", \"Alice\", 500.0);\n    Wallet bob(\"Bob\", \"Bob\", 100.0);\n    service.addWallet(alice);\n    service.addWallet(bob);\n\n    service.transfer(\"Alice\", \"Bob\", 200.0, \"IK1\", factory);\n    cout << \"After transfer: Alice=\" << service.getWallet(\"Alice\").balance << \" Bob=\" << service.getWallet(\"Bob\").balance << endl;\n\n    service.transfer(\"Alice\", \"Bob\", 200.0, \"IK1\", factory);\n    cout << \"After retry: Alice=\" << service.getWallet(\"Alice\").balance << \" Bob=\" << service.getWallet(\"Bob\").balance << endl;\n\n    try {\n        service.transfer(\"Alice\", \"Bob\", 1000.0, \"IK2\", factory);\n    } catch (InsufficientBalanceException& e) {\n        cout << \"Caught expected: \" << e.what() << endl;\n    }\n\n    service.withdraw(\"Bob\", 100.0, \"IK3\", factory);\n    cout << \"After withdrawal: Bob=\" << service.getWallet(\"Bob\").balance << endl;\n\n    try {\n        service.transfer(\"Alice\", \"Alice\", 50.0, \"IK4\", factory);\n    } catch (InvalidTransactionException& e) {\n        cout << \"Caught expected: \" << e.what() << endl;\n    }\n\n    cout << \"Ledger balanced: \" << (service.verifyLedgerIntegrity() ? \"true\" : \"false\") << endl;\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Folder Structure",
+          "content": "Folder Structure"
+        },
+        {
+          "type": "paragraph",
+          "text": "A real project would split these classes across files as follows:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "src/main/java/wallet/\n  TransactionType.java\n  TransactionStatus.java\n  EntryType.java\n  Wallet.java\n  LedgerEntry.java\n  Transaction.java\n  TransactionIdFactory.java\n  FeeStrategy.java\n  NoFeeStrategy.java\n  PercentageFeeStrategy.java\n  WalletObserver.java\n  ConsoleWalletObserver.java\n  WalletService.java\n  exceptions/\n    InsufficientBalanceException.java\n    WalletNotFoundException.java\n    InvalidTransactionException.java\n  Main.java",
+            "python": "wallet/\n  __init__.py\n  wallet_model.py\n  ledger_entry.py\n  transaction.py\n  transaction_id_factory.py\n  fee_strategy.py\n  wallet_observer.py\n  exceptions.py\n  wallet_service.py\n  main.py",
+            "cpp": "wallet/\n  include/\n    Wallet.h\n    LedgerEntry.h\n    Transaction.h\n    TransactionIdFactory.h\n    FeeStrategy.h\n    WalletObserver.h\n    Exceptions.h\n    WalletService.h\n  src/\n    TransactionIdFactory.cpp\n    PercentageFeeStrategy.cpp\n    WalletService.cpp\n    main.cpp"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Interview Discussion Points",
+          "content": "Interview Discussion Points"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Why check the idempotency key before validating balance, rather than after? Because the entire point of the key is to make retries a complete no-op, and running balance checks against a request that has already succeeded once would risk observably different behavior (or worse, a race) on the retry.",
+            "Why model a withdrawal as touching three wallets (the real one, an external bank sink, and a fee collection sink) instead of just debiting one balance? Because it keeps the accounting invariant strictly true for every transaction type, not just transfers, which is exactly what makes verifyLedgerIntegrity meaningful as a system-wide sanity check rather than a special case.",
+            "How would you extend this to support a real, time-bounded idempotency window? Store a timestamp on each IdempotencyRecord and check it is still within the allowed window before treating a key as a valid duplicate, otherwise treat it as a brand new request."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Trade-offs & Alternative Designs",
+          "content": "Trade-offs & Alternative Designs"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Cached running balance vs balance-by-ledger-replay:</strong> a cached balance on Wallet gives O(1) reads, at the cost of needing careful synchronization to keep it consistent with the ledger; recomputing balance by summing ledger entries on every read would be always-correct by construction but far slower at scale.",
+            "<strong>Idempotency keys never expiring vs a time-bounded window:</strong> never expiring is simpler to reason about and impossible to get wrong by reusing a key too early, at the cost of an ever-growing store; a real system would need an expiry policy to bound memory.",
+            "<strong>Synchronous ledger writes vs asynchronous, eventually-consistent ledger writes:</strong> synchronous writes (used here) guarantee the ledger and the balance are never out of sync, at the cost of coupling transaction latency to ledger write latency; an async approach would need a reconciliation process to catch drift."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Production Considerations & Best Practices",
+          "content": "Production Considerations & Best Practices"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Persist wallets, transactions, ledger entries, and idempotency records in a relational database with the unique constraint on idempotencyKey enforced at the database level, not just in application code.",
+            "Emit transaction events to a message queue so downstream systems (notifications, fraud detection, analytics) can consume them asynchronously instead of via in-process observers.",
+            "Run a periodic reconciliation job that recomputes every wallet balance from the ledger and alerts on any drift from the cached balance.",
+            "Rate-limit and monitor withdrawal requests per wallet to catch abuse patterns that a single-transaction validation cannot see."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

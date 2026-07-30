@@ -1,0 +1,573 @@
+{
+  "slug": "server-initialization",
+  "title": "Server Initialization",
+  "content": [
+    {
+      "id": "server-initialization",
+      "title": "Server Initialization",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Every MCP server starts life as a handful of lines that most people skim past on their way to writing the interesting part, a tool handler or a resource reader. But those first lines matter more than they look. They are where your server tells the world its name, its version, and, indirectly, what kind of thing it is willing to become. Get this part right and everything downstream, capability declaration, registration, discovery, gets easier because the foundation is solid."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Initialization Actually Means Here",
+          "id": "init-what-it-means"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173191501-726213650.png",
+          "alt": "A server moves from importing the SDK through constructing the server object to being ready",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173191501-726213650.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Initialization, in the MCP sense, has two layers that are easy to conflate. The first is purely local, constructing a server object in your code, giving it a name and a version, nothing has talked to a client yet. The second is the protocol level initialize handshake that happens once a client connects, where that name and version actually get sent over the wire. This lesson focuses on the first layer, the code you write before any client is even in the picture."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping these two layers distinct in your head helps later, because bugs in one look completely different from bugs in the other. A wrong version string is a local mistake you will catch by reading your own code. A hung handshake is a protocol level problem you will only see by watching actual client traffic."
+        },
+        {
+          "type": "paragraph",
+          "text": "Almost every SDK, Python or TypeScript, follows the same shape, construct an object, attach handlers to it, hand it to a runner function that deals with transport. Once you have seen this shape once, you can recognize it in any MCP server you read, regardless of what domain it serves."
+        },
+        {
+          "type": "note",
+          "title": "Local construction versus the protocol handshake",
+          "content": "Constructing a Server object never touches a network or a subprocess, it is exactly as testable as any other Python object you build. The protocol handshake only happens later, once run is called and a client is actually on the other end of a transport."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Installing the SDK and Setting Up a Project",
+          "id": "init-installing-sdk"
+        },
+        {
+          "type": "paragraph",
+          "text": "Before writing a single line of server code, you need a project with the MCP SDK installed. The Python SDK is distributed as a normal PyPI package, and a minimal project needs almost nothing beyond that one dependency to get a server object constructed."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "# terminal, setting up a fresh project\nmkdir weather-server && cd weather-server\npython -m venv .venv\nsource .venv/bin/activate\npip install mcp\n\n# quick sanity check that the import works\npython -c \"from mcp.server import Server; print('mcp sdk import ok')\""
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth running that sanity check before writing anything else. A surprising number of early server bugs turn out to be an environment problem, the wrong virtual environment active, or the package installed for a different Python version, and catching that in one line saves a confusing debugging session later."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Constructing the Server Object",
+          "id": "init-constructing-server"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173193682-123668486.png",
+          "alt": "A name and version are passed in to construct the server object",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173193682-123668486.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The Server class from the SDK is the object at the center of everything a server does, every tool, resource, and prompt handler you write eventually attaches to one instance of it. Constructing it takes exactly one required argument, a name, which identifies your server to any client that connects."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from mcp.server import Server\n\n# the name is how a client, and a human looking at logs,\n# identifies this particular server among possibly many others\nserver = Server(\"weather-server\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "That single line does a lot of quiet work under the hood, it sets up empty internal registries for tools, resources, and prompts, and it prepares the object to eventually be handed a read stream and a write stream by a transport runner. Nothing has been registered yet, and no client has connected, this is purely local object construction."
+        },
+        {
+          "type": "note",
+          "title": "The name is not cosmetic",
+          "content": "A server name shows up in client side logs, in host UI listing connected servers, and sometimes in error messages a user actually sees. Pick something short, specific, and stable, renaming a server later means every host configuration pointing at the old name needs updating too."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Declaring Version Metadata",
+          "id": "init-version-metadata"
+        },
+        {
+          "type": "paragraph",
+          "text": "Alongside a name, a well behaved server also reports a version, and in most SDKs this is supplied not to the Server constructor directly but to the initialization options object built right before the server actually starts running. This version travels to the client during the initialize handshake and lets a host distinguish between two builds of the same server."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "init_options = server.create_initialization_options()\n# init_options carries serverInfo, including name and version,\n# plus the capabilities object covered in the next lesson\nprint(init_options.server_info.name, init_options.server_info.version)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice, teams usually wire the version to whatever their normal release process already produces, a value read from pyproject.toml, an environment variable set at deploy time, or a git tag baked in during a build step, rather than a string hardcoded and forgotten."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import tomllib\n\ndef read_version() -> str:\n    with open(\"pyproject.toml\", \"rb\") as f:\n        data = tomllib.load(f)\n    return data[\"project\"][\"version\"]\n\nserver = Server(\"weather-server\", version=read_version())"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. The Async Entry Point",
+          "id": "init-async-entry-point"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP servers in Python are built on asyncio from top to bottom, every handler you register is an async function, and the code that actually runs the server is an async function too. This is not incidental, a server needs to be able to handle a shutdown signal arriving while a tool call is still in flight, and asyncio's cooperative scheduling is what makes that possible without threads."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\n\nasync def main():\n    # construction and registration happen here, before run() is called\n    ...\n\nif __name__ == \"__main__\":\n    asyncio.run(main())"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to think of everything before the actual run call as setup, and everything the run call does internally as the part that talks to a client. Keeping that boundary clear in your own code makes it much easier to unit test the setup half without needing a live client connection at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Choosing and Binding a Transport",
+          "id": "init-choosing-transport"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173195395-104141323.png",
+          "alt": "A server chooses a transport and binds to it before serving requests",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173195395-104141323.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A constructed Server object does not yet know how it will talk to a client, that is the job of a transport, and stdio is the default choice for most local development and for servers meant to be launched directly by a host application as a subprocess. The SDK ships a ready made stdio_server context manager that wires standard input and standard output up as the two ends of the connection."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import mcp.server.stdio\n\nasync def main():\n    server = Server(\"weather-server\")\n    # ... register tools, resources, prompts here ...\n\n    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):\n        await server.run(\n            read_stream,\n            write_stream,\n            server.create_initialization_options()\n        )"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Everything passed to run here, the two streams and the initialization options, is exactly what the server needs to start speaking the protocol. Nothing about tool or resource registration changes based on which transport you pick, which is one of the nicer properties of the SDK's design, transport and capability code stay fully decoupled."
+        },
+        {
+          "type": "paragraph",
+          "text": "Other transports follow the same shape but bind different underlying streams, an HTTP based transport binds to a socket and a listening port instead of stdin and stdout, and a WebSocket transport binds to an open socket connection. The Transport Mechanisms module goes deeper on the tradeoffs between these choices, for initialization purposes the important thing is that server.run always takes the same three arguments regardless of which one you pick."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. A Complete Minimal Server",
+          "id": "init-complete-minimal"
+        },
+        {
+          "type": "paragraph",
+          "text": "Putting the previous few sections together produces a genuinely runnable server, with no tools or resources registered yet, but fully able to complete a handshake with any MCP client or the MCP Inspector. This is a useful checkpoint to actually run before adding anything else."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport logging\nimport sys\n\nfrom mcp.server import Server\nimport mcp.server.stdio\n\nlogging.basicConfig(level=logging.INFO, stream=sys.stderr)\nlogger = logging.getLogger(\"weather-server\")\n\nserver = Server(\"weather-server\")\n\n\nasync def main():\n    logger.info(\"starting weather-server\")\n    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):\n        await server.run(\n            read_stream,\n            write_stream,\n            server.create_initialization_options()\n        )\n\n\nif __name__ == \"__main__\":\n    asyncio.run(main())"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Run this with python server.py and it will sit there, apparently doing nothing, which is correct, it is waiting on stdin for a client to speak first. Connecting the MCP Inspector to it should complete a handshake cleanly even though there is nothing to actually call yet."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Logging to stderr, Never stdout",
+          "id": "init-logging-stderr"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173196907-128078717.png",
+          "alt": "Stderr is used for logs while stdout is kept clean for protocol messages",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173196907-128078717.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "This point is worth its own section because it causes so much early confusion. Over stdio transport, standard output is entirely reserved for JSON-RPC protocol messages, every print statement, every accidental library log line that lands on stdout corrupts the message stream a client is trying to parse."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Stream\",\"Used for\",\"Safe to write debug output to\"],\"rows\":[[\"stdout\",\"JSON-RPC protocol messages\",\"No\"],[\"stderr\",\"Human readable logs, warnings, tracebacks\",\"Yes\"],[\"A log file\",\"Persistent structured logs\",\"Yes\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "The fix is simple and shown already above, configure logging.basicConfig with stream=sys.stderr, and audit any third party library your server imports for its own logging defaults, some libraries default to stdout and need to be reconfigured explicitly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. TypeScript Initialization for Comparison",
+          "id": "init-typescript-comparison"
+        },
+        {
+          "type": "paragraph",
+          "text": "The TypeScript SDK follows the identical shape, just with different syntax, a Server object constructed with a name and version, handlers attached to it, and a connect call that binds a transport. Seeing both side by side makes clear how much of this is protocol shape rather than language specific idiom."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "typescript",
+            "content": "import { Server } from \"@modelcontextprotocol/sdk/server/index.js\";\nimport { StdioServerTransport } from \"@modelcontextprotocol/sdk/server/stdio.js\";\n\nconst server = new Server(\n  { name: \"weather-server\", version: \"1.0.0\" },\n  { capabilities: {} }\n);\n\nconst transport = new StdioServerTransport();\nawait server.connect(transport);"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice capabilities are passed at construction time here rather than through a separate options object built later, a small API difference between the two SDKs that the next lesson, Capability Declaration, covers in more depth for both languages."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Python builds initialization options with a dedicated create_initialization_options call, made just before run.",
+            "TypeScript passes capabilities directly into the Server constructor, alongside name and version.",
+            "Both SDKs still separate transport binding, stdio_server versus StdioServerTransport, from the server object itself.",
+            "Both expose the same conceptual pieces, name, version, capabilities, transport, just arranged slightly differently in code."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Environment Configuration at Startup",
+          "id": "init-env-config"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173198588-424027722.png",
+          "alt": "Environment variables are read at startup to configure the server",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173198588-424027722.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Real servers almost always need some configuration beyond a name and version, an API key for a weather service, a database connection string, a base URL for an internal service. The cleanest place to read this is right at the top of main, before anything else happens, so a missing or malformed value fails loudly at startup rather than quietly during the first tool call."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import os\nimport sys\n\ndef load_config() -> dict:\n    api_key = os.environ.get(\"WEATHER_API_KEY\")\n    if not api_key:\n        print(\"WEATHER_API_KEY is required\", file=sys.stderr)\n        sys.exit(1)\n    return {\"api_key\": api_key}\n\nconfig = load_config()\nserver = Server(\"weather-server\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Failing fast here, with a clear message on stderr and a non-zero exit code, is far kinder to whoever operates this server later than letting it start successfully and then fail confusingly on the first real request."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Structuring a Server Across Multiple Files",
+          "id": "init-multi-file-structure"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single file server.py is fine for a demo, but a server with several tools, resources, and prompts quickly benefits from being split up, one module for configuration, one for each family of tools, and a thin entry point that imports and wires everything together."
+        },
+        {
+          "type": "list",
+          "items": [
+            "server.py, the entry point, constructs the Server object and calls run.",
+            "config.py, reads and validates environment configuration.",
+            "tools/, one module per logical group of tools, each registering onto the shared server instance.",
+            "resources/, similarly organized, one module per resource family."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# server.py\nfrom mcp.server import Server\nfrom config import load_config\nimport tools.weather_tools  # noqa: F401, registers its handlers on import\n\nconfig = load_config()\nserver = Server(\"weather-server\")\ntools.weather_tools.register(server, config)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Verifying Initialization Actually Worked",
+          "id": "init-verifying-it-worked"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth checking a fresh server actually initializes correctly before building anything on top of it, and the fastest way to do that without writing a full client is the MCP Inspector, a small tool built exactly for this kind of manual verification."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "# terminal\nnpx @modelcontextprotocol/inspector python server.py"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The Inspector launches your server as a subprocess, completes the handshake, and shows you the server's reported name and version directly in its UI. Seeing the exact name and version string you set confirms the whole construction and options pipeline is wired correctly, before you have registered a single tool."
+        },
+        {
+          "type": "paragraph",
+          "text": "This same check is worth repeating after any change to how your server reads configuration, a refactor that accidentally swaps which environment variable feeds the version string is exactly the kind of mistake that a thirty second Inspector check catches immediately, and a code review might not."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Handling Construction Errors Gracefully",
+          "id": "init-construction-errors"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173200119-442986755.png",
+          "alt": "A construction error is caught and reported rather than crashing silently",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173200119-442986755.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Construction can fail for reasons that have nothing to do with MCP itself, a missing dependency, a bad configuration file, a port already in use for HTTP transport. Wrapping the whole startup sequence in a try block that logs clearly and exits with a distinct code makes these failures far easier to diagnose from the outside."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "async def main():\n    try:\n        config = load_config()\n        server = build_server(config)\n    except Exception:\n        logger.exception(\"failed to initialize server\")\n        sys.exit(1)\n\n    async with mcp.server.stdio.stdio_server() as streams:\n        await server.run(*streams, server.create_initialization_options())"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This distinction matters more than it looks, a server that fails during construction and one that fails mid conversation with a client look identical from the outside, a process that exited, unless your logging tells the two apart."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Naming and Versioning Conventions Worth Following",
+          "id": "init-naming-conventions"
+        },
+        {
+          "type": "paragraph",
+          "text": "There is no protocol level requirement about what a server name or version looks like, but a few informal conventions make a server easier to live with once several of them are running side by side inside a host."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Use a lowercase, hyphenated name that matches the package or repository name, weather-server rather than WeatherServer.",
+            "Follow semantic versioning for the version string, so a client can reason about whether an upgrade is likely breaking.",
+            "Avoid embedding environment names in the server name itself, weather-server-prod, prefer configuration for that instead.",
+            "Keep the name stable across releases, treat it closer to an API contract than a cosmetic label."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Testing Initialization in Isolation",
+          "id": "init-testing-in-isolation"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because construction and registration are ordinary synchronous or async Python code, they can be unit tested directly without spinning up a transport or a client at all, which makes for a fast, reliable first line of tests."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import pytest\nfrom server import build_server\n\ndef test_server_has_correct_name():\n    server = build_server(config={\"api_key\": \"test-key\"})\n    options = server.create_initialization_options()\n    assert options.server_info.name == \"weather-server\"\n\ndef test_construction_fails_without_api_key():\n    with pytest.raises(SystemExit):\n        build_server(config={})"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Tests like these run in milliseconds and catch an entire class of regressions, a typo in a version string, an accidentally removed environment check, long before they would surface in a slower, full integration test against a live client."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Initialization in Containerized Deployments",
+          "id": "init-containerized-deployments"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173201718-578908746.png",
+          "alt": "A container starts up and runs the same initialization sequence",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173201718-578908746.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Many production MCP servers, especially ones using HTTP transport, run inside a container rather than being launched directly by a host as a subprocess. Initialization there follows the exact same code path, but startup failures need to surface through mechanisms a container orchestrator actually understands, exit codes and readiness checks rather than a scrollback of terminal output a human might read."
+        },
+        {
+          "type": "paragraph",
+          "text": "A common pattern is to separate a lightweight readiness check from the full server startup, so an orchestrator can tell the difference between a container that is still loading configuration and one that has genuinely failed."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "dockerfile",
+            "content": "# Dockerfile snippet\nFROM python:3.12-slim\nWORKDIR /app\nCOPY pyproject.toml .\nRUN pip install .\nCOPY . .\nENV WEATHER_API_KEY=\"\"\nCMD [\"python\", \"server.py\"]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Exit code discipline from earlier sections becomes even more important here, an orchestrator like Kubernetes decides whether to restart a crashed container almost entirely based on the exit code and any configured health checks, not on log content it has to parse and interpret."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: A Configurable, Testable Entry Point",
+          "id": "init-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is a complete, slightly more realistic entry point that pulls together configuration loading, a build function separated from the run call, and clean error handling, structured so it is easy to both run for real and unit test in isolation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport logging\nimport os\nimport sys\n\nfrom mcp.server import Server\nimport mcp.server.stdio\n\nlogging.basicConfig(level=logging.INFO, stream=sys.stderr)\nlogger = logging.getLogger(\"weather-server\")\n\n\ndef load_config() -> dict:\n    api_key = os.environ.get(\"WEATHER_API_KEY\")\n    if not api_key:\n        raise SystemExit(\"WEATHER_API_KEY is required\")\n    return {\"api_key\": api_key}\n\n\ndef build_server(config: dict) -> Server:\n    server = Server(\"weather-server\", version=\"1.2.0\")\n    # tool, resource, and prompt registration would happen here\n    return server\n\n\nasync def run(server: Server):\n    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):\n        logger.info(\"weather-server ready, waiting for client\")\n        await server.run(read_stream, write_stream, server.create_initialization_options())\n\n\ndef main():\n    try:\n        config = load_config()\n        server = build_server(config)\n    except SystemExit as e:\n        logger.error(str(e))\n        raise\n    asyncio.run(run(server))\n\n\nif __name__ == \"__main__\":\n    main()"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The key structural idea here is the split between build_server, pure and synchronous, easy to unit test, and run, which is where transport and the actual protocol conversation happen. That seam is what makes the difference between a server you can only ever test manually and one you can cover with fast automated tests."
+        },
+        {
+          "type": "note",
+          "title": "A note on reproducibility",
+          "content": "Pin the SDK version in your project's dependency file, mcp==1.x rather than an unpinned mcp. A server that initializes cleanly today on one SDK version and fails silently after an unrelated dependency upgrade is a frustrating bug to track down, and pinning versions is the cheapest possible insurance against it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "init-common-mistakes"
+        },
+        {
+          "type": "paragraph",
+          "text": "A handful of initialization mistakes show up repeatedly in early server code, most costing far more debugging time than the fix itself takes."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Printing debug output with print instead of logging to stderr, silently corrupting the stdout message stream on stdio transport.",
+            "Hardcoding a version string once and never updating it, leaving clients unable to distinguish an old build from a new one.",
+            "Reading configuration lazily inside a handler instead of at startup, turning a missing environment variable into a confusing runtime error deep inside a tool call.",
+            "Mixing server construction and the run call together in one function, making the setup logic impossible to unit test without a live transport.",
+            "Choosing a server name that embeds an environment or version number, forcing a host configuration update on every release.",
+            "Forgetting to check that the SDK import actually succeeds in the target environment before writing any handler code."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "init-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Build a fresh server project from scratch, following the steps in this lesson. Give it a name and a version read from an environment variable, add the try and except wrapper around construction, and configure logging to stderr correctly."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "# expected terminal session\n$ export WEATHER_SERVER_VERSION=0.1.0\n$ python server.py\n# process should sit quietly, waiting on stdin\n\n# in a second terminal\n$ npx @modelcontextprotocol/inspector python server.py\n# Inspector UI should show name=weather-server, version=0.1.0"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "Stretch goal one: unset the version environment variable and confirm your server exits with a clear error rather than starting with an empty version string.",
+            "Stretch goal two: write one pytest test that asserts the constructed server reports the exact version you expect."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "init-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Initializing an MCP server is a small amount of code, construct a Server object, give it a name and a version, load configuration, and bind a transport, but every one of those steps has a right way and several quietly wrong ways that only surface once a real client or a real deployment environment gets involved."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson, Capability Declaration, picks up exactly where this one leaves off, looking at how that same Server object tells a connecting client which of tools, resources, and prompts it actually supports."
+        }
+      ]
+    }
+  ]
+}

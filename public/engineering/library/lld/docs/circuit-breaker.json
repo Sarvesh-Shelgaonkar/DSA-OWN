@@ -1,0 +1,534 @@
+{
+  "slug": "circuit-breaker",
+  "title": "Circuit Breaker",
+  "content": [
+    {
+      "id": "circuit-breaker",
+      "title": "Circuit Breaker",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Somewhere in your system there is a call to another service. A database, a payment gateway, a recommendation microservice, something you do not fully control."
+        },
+        {
+          "type": "paragraph",
+          "content": "Most of the time that call works fine. But when the downstream service starts failing, the naive thing your code does is keep calling it anyway, over and over, for every incoming request."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is exactly the wrong move. Repeated calls to a service that is already struggling pile on more load, use up threads and connections, and slow your own service down while it waits for timeouts."
+        },
+        {
+          "type": "paragraph",
+          "content": "The Circuit Breaker pattern exists to stop that spiral. It watches for failures, and once things look bad enough, it stops calling the failing service at all for a while."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A circuit breaker is a stateful guard around a risky call that fails fast once the call has been failing too often, instead of letting every request wait on a doomed attempt."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Why calling a failing service again and again makes things worse",
+          "text": "1. Why calling a failing service again and again makes things worse"
+        },
+        {
+          "type": "paragraph",
+          "content": "Imagine a downstream payment service that has started timing out under load. Each call from your service waits the full timeout, say five seconds, before giving up."
+        },
+        {
+          "type": "paragraph",
+          "content": "If you have a hundred requests per second hitting that call path, you now have hundreds of threads sitting idle, waiting on a service that was never going to answer in time."
+        },
+        {
+          "type": "paragraph",
+          "content": "Your own service becomes slow and eventually runs out of connections or threads, even though the actual bug lives somewhere else entirely."
+        },
+        {
+          "type": "heading3",
+          "content": "The cascading failure",
+          "text": "The cascading failure"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is how one failing service takes down its callers, and then their callers, and so on up the chain. It is called a cascading failure, and it is one of the most common causes of large outages."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512281648-836337273.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512281648-836337273.png",
+          "alt": "Flowchart showing how a slow failing downstream service holds threads in the caller, slowing it down and spreading failure further upstream"
+        },
+        {
+          "type": "heading3",
+          "content": "The fix is to stop trying",
+          "text": "The fix is to stop trying"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of hoping the next call will succeed, a circuit breaker notices the pattern of failure and short circuits future calls immediately, returning an error or a fallback without even attempting the network call."
+        },
+        {
+          "type": "list",
+          "content": "[\"Failing fast frees up threads and connections immediately\",\"It stops adding load to a service that is already struggling\",\"It gives the downstream service room to recover instead of being hit constantly\",\"It gives you a clear, fast error to handle instead of a slow timeout\"]",
+          "items": [
+            "Failing fast frees up threads and connections immediately",
+            "It stops adding load to a service that is already struggling",
+            "It gives the downstream service room to recover instead of being hit constantly",
+            "It gives you a clear, fast error to handle instead of a slow timeout"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The three states of a circuit breaker",
+          "text": "2. The three states of a circuit breaker"
+        },
+        {
+          "type": "paragraph",
+          "content": "A circuit breaker is named after an electrical circuit breaker, the switch in your fuse box that trips and cuts power when it detects a dangerous surge."
+        },
+        {
+          "type": "paragraph",
+          "content": "The software version borrows the same idea and the same three states."
+        },
+        {
+          "type": "list",
+          "content": "[\"Closed, the normal state where calls pass through as usual\",\"Open, the tripped state where calls fail immediately without being attempted\",\"Half Open, a cautious in between state where a few test calls are allowed through\"]",
+          "items": [
+            "Closed, the normal state where calls pass through as usual",
+            "Open, the tripped state where calls fail immediately without being attempted",
+            "Half Open, a cautious in between state where a few test calls are allowed through"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783495077890-189258274.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783495077890-189258274.png",
+          "alt": "State machine diagram showing Closed, Open and Half Open states of a circuit breaker with labeled transitions"
+        },
+        {
+          "type": "note",
+          "title": "Think of it as a switch, not a filter",
+          "content": "A circuit breaker does not decide whether an individual request is good or bad. It only tracks whether the underlying call has been succeeding or failing recently, and switches state based on that history."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Closed state, calls go through normally",
+          "text": "3. The Closed state, calls go through normally"
+        },
+        {
+          "type": "paragraph",
+          "content": "Closed is the default and healthy state. Every request that comes in results in a real call to the downstream service."
+        },
+        {
+          "type": "paragraph",
+          "content": "While in this state, the breaker keeps a running count of recent failures. A timeout, a thrown exception, or an error response from the downstream service all count as a failure."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512283392-122956136.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512283392-122956136.png",
+          "alt": "Flowchart of the Closed state showing a request calling the downstream service, a failure count reset on success, and an incremented count on failure while staying below the threshold"
+        },
+        {
+          "type": "heading3",
+          "content": "Counting failures",
+          "text": "Counting failures"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most implementations use either a simple rolling count of the last N calls, or a sliding time window, say the last ten seconds, to decide the current failure rate."
+        },
+        {
+          "type": "heading3",
+          "content": "Tripping the breaker",
+          "text": "Tripping the breaker"
+        },
+        {
+          "type": "paragraph",
+          "content": "As long as the failure count or failure rate stays under the configured threshold, the breaker stays Closed and nothing changes for the caller."
+        },
+        {
+          "type": "paragraph",
+          "content": "The moment failures cross that threshold, the breaker trips and moves to Open."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The Open state, calls fail fast without even trying",
+          "text": "4. The Open state, calls fail fast without even trying"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once the breaker is Open, it stops calling the downstream service entirely. Every request during this state is rejected immediately, usually with a specific exception or a fallback value."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512284888-900058530.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512284888-900058530.png",
+          "alt": "Flowchart of a request arriving while the breaker is Open, showing the call rejected immediately with the downstream service never reached and a fallback returned"
+        },
+        {
+          "type": "heading3",
+          "content": "Fail fast, not fail slow",
+          "text": "Fail fast, not fail slow"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the whole point of the pattern. Instead of every caller waiting out a timeout against a service that is not answering, they get an instant, predictable failure."
+        },
+        {
+          "type": "heading3",
+          "content": "The reset timeout",
+          "text": "The reset timeout"
+        },
+        {
+          "type": "paragraph",
+          "content": "The breaker does not stay Open forever. It holds a reset timeout, for example thirty seconds, after which it assumes enough time has passed that the downstream service might have recovered."
+        },
+        {
+          "type": "paragraph",
+          "content": "Once that timeout elapses, the breaker moves itself to Half Open to check."
+        },
+        {
+          "type": "example-box",
+          "title": "Why not just retry immediately",
+          "text": "If the breaker allowed calls through right after tripping, it would just recreate the exact overload that caused the failures in the first place. The reset timeout gives the downstream service breathing room."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. The Half Open state, a cautious probe to test recovery",
+          "text": "5. The Half Open state, a cautious probe to test recovery"
+        },
+        {
+          "type": "paragraph",
+          "content": "Half Open is a trial period. The breaker allows a small, limited number of calls through to the downstream service, instead of the full normal traffic."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512286385-526917160.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512286385-526917160.png",
+          "alt": "Flowchart of the Half Open state showing a limited test call sent after the reset timeout, closing the breaker on success and reopening it on failure"
+        },
+        {
+          "type": "heading3",
+          "content": "Why not just close it immediately",
+          "text": "Why not just close it immediately"
+        },
+        {
+          "type": "paragraph",
+          "content": "Going straight from Open back to Closed would mean throwing the full volume of traffic at a service that may still be recovering, which risks tripping the breaker again right away."
+        },
+        {
+          "type": "heading3",
+          "content": "What happens to the test calls",
+          "text": "What happens to the test calls"
+        },
+        {
+          "type": "paragraph",
+          "content": "If those test calls succeed, the breaker concludes the downstream service is healthy again and moves back to Closed, resuming normal traffic."
+        },
+        {
+          "type": "paragraph",
+          "content": "If even one of those test calls fails, the breaker assumes the service has not recovered yet, and it moves straight back to Open, restarting the reset timeout."
+        },
+        {
+          "type": "note",
+          "title": "Limit concurrent test calls",
+          "content": "A common implementation detail is to allow only one or a handful of calls through while Half Open, and reject any others as if the breaker were still Open, until the trial calls resolve."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. State transition rules, summarized",
+          "text": "6. State transition rules, summarized"
+        },
+        {
+          "type": "paragraph",
+          "content": "Putting the three states together gives us a small, predictable state machine with exactly four transitions."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"State\",\"What happens to calls\",\"How it exits this state\"],\"rows\":[[\"Closed\",\"Calls pass through normally, failures are counted\",\"Failures cross threshold, moves to Open\"],[\"Open\",\"Calls fail immediately, downstream is never called\",\"Reset timeout elapses, moves to Half Open\"],[\"Half Open\",\"A limited number of test calls are allowed through\",\"Test call succeeds, moves to Closed. Test call fails, moves back to Open\"]]}"
+        },
+        {
+          "type": "list",
+          "content": "[\"Closed to Open, triggered by failure count or failure rate crossing a threshold\",\"Open to Half Open, triggered by the reset timeout elapsing\",\"Half Open to Closed, triggered by a successful test call\",\"Half Open to Open, triggered by a failed test call\"]",
+          "items": [
+            "Closed to Open, triggered by failure count or failure rate crossing a threshold",
+            "Open to Half Open, triggered by the reset timeout elapsing",
+            "Half Open to Closed, triggered by a successful test call",
+            "Half Open to Open, triggered by a failed test call"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice there is no direct path from Closed to Half Open, and no direct path from Open to Closed. Every recovery has to pass through the probing step."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Implementing a basic circuit breaker",
+          "text": "7. Implementing a basic circuit breaker"
+        },
+        {
+          "type": "paragraph",
+          "content": "At its core, a circuit breaker is just a small state machine plus a few counters. Let us build one piece at a time."
+        },
+        {
+          "type": "heading3",
+          "content": "Step one, the state and counters",
+          "text": "Step one, the state and counters"
+        },
+        {
+          "type": "paragraph",
+          "content": "We need to track the current state, a failure count, the timestamp of when the breaker last opened, and configuration for the threshold and reset timeout."
+        },
+        {
+          "type": "code",
+          "content": "class CircuitBreaker {\n  constructor({ failureThreshold = 5, resetTimeoutMs = 30000 } = {}) {\n    this.state = 'CLOSED';\n    this.failureCount = 0;\n    this.failureThreshold = failureThreshold;\n    this.resetTimeoutMs = resetTimeoutMs;\n    this.openedAt = null;\n  }\n\n  recordSuccess() {\n    this.failureCount = 0;\n    this.state = 'CLOSED';\n  }\n\n  recordFailure() {\n    this.failureCount += 1;\n    if (this.state === 'HALF_OPEN' || this.failureCount >= this.failureThreshold) {\n      this.state = 'OPEN';\n      this.openedAt = Date.now();\n      this.failureCount = 0;\n    }\n  }\n}\n\nmodule.exports = { CircuitBreaker };",
+          "code": {
+            "language": "javascript",
+            "content": "class CircuitBreaker {\n  constructor({ failureThreshold = 5, resetTimeoutMs = 30000 } = {}) {\n    this.state = 'CLOSED';\n    this.failureCount = 0;\n    this.failureThreshold = failureThreshold;\n    this.resetTimeoutMs = resetTimeoutMs;\n    this.openedAt = null;\n  }\n\n  recordSuccess() {\n    this.failureCount = 0;\n    this.state = 'CLOSED';\n  }\n\n  recordFailure() {\n    this.failureCount += 1;\n    if (this.state === 'HALF_OPEN' || this.failureCount >= this.failureThreshold) {\n      this.state = 'OPEN';\n      this.openedAt = Date.now();\n      this.failureCount = 0;\n    }\n  }\n}\n\nmodule.exports = { CircuitBreaker };"
+          },
+          "codes": {
+            "javascript": "class CircuitBreaker {\n  constructor({ failureThreshold = 5, resetTimeoutMs = 30000 } = {}) {\n    this.state = 'CLOSED';\n    this.failureCount = 0;\n    this.failureThreshold = failureThreshold;\n    this.resetTimeoutMs = resetTimeoutMs;\n    this.openedAt = null;\n  }\n\n  recordSuccess() {\n    this.failureCount = 0;\n    this.state = 'CLOSED';\n  }\n\n  recordFailure() {\n    this.failureCount += 1;\n    if (this.state === 'HALF_OPEN' || this.failureCount >= this.failureThreshold) {\n      this.state = 'OPEN';\n      this.openedAt = Date.now();\n      this.failureCount = 0;\n    }\n  }\n}\n\nmodule.exports = { CircuitBreaker };",
+            "python": "import time\n\n\nclass CircuitBreaker:\n    \"\"\"Tracks failure count and switches between CLOSED and OPEN states.\"\"\"\n\n    def __init__(self, failure_threshold=5, reset_timeout_ms=30000):\n        self.state = \"CLOSED\"\n        self.failure_count = 0\n        self.failure_threshold = failure_threshold\n        self.reset_timeout_ms = reset_timeout_ms\n        self.opened_at = None\n\n    def record_success(self):\n        self.failure_count = 0\n        self.state = \"CLOSED\"\n\n    def record_failure(self):\n        self.failure_count += 1\n        if self.state == \"HALF_OPEN\" or self.failure_count >= self.failure_threshold:\n            self.state = \"OPEN\"\n            self.opened_at = time.time() * 1000\n            self.failure_count = 0\n\n\nif __name__ == \"__main__\":\n    breaker = CircuitBreaker(failure_threshold=3)\n\n    for i in range(1, 4):\n        breaker.record_failure()\n        print(f\"after failure {i}: state={breaker.state}\")\n\n    breaker.record_success()\n    print(f\"after success: state={breaker.state}\")",
+            "java": "class CircuitBreaker {\n    private String state = \"CLOSED\";\n    private int failureCount = 0;\n    private final int failureThreshold;\n    private final long resetTimeoutMs;\n    private long openedAt = 0;\n\n    public CircuitBreaker(int failureThreshold, long resetTimeoutMs) {\n        this.failureThreshold = failureThreshold;\n        this.resetTimeoutMs = resetTimeoutMs;\n    }\n\n    public void recordSuccess() {\n        this.failureCount = 0;\n        this.state = \"CLOSED\";\n    }\n\n    public void recordFailure() {\n        this.failureCount++;\n        if (state.equals(\"HALF_OPEN\") || failureCount >= failureThreshold) {\n            this.state = \"OPEN\";\n            this.openedAt = System.currentTimeMillis();\n            this.failureCount = 0;\n        }\n    }\n\n    public String getState() {\n        return state;\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        CircuitBreaker breaker = new CircuitBreaker(3, 30000);\n\n        for (int i = 1; i <= 3; i++) {\n            breaker.recordFailure();\n            System.out.println(\"after failure \" + i + \": state=\" + breaker.getState());\n        }\n\n        breaker.recordSuccess();\n        System.out.println(\"after success: state=\" + breaker.getState());\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n#include <chrono>\n\nclass CircuitBreaker {\npublic:\n    CircuitBreaker(int failureThreshold, long long resetTimeoutMs)\n        : state(\"CLOSED\"), failureCount(0), failureThreshold(failureThreshold),\n          resetTimeoutMs(resetTimeoutMs), openedAt(0) {}\n\n    void recordSuccess() {\n        failureCount = 0;\n        state = \"CLOSED\";\n    }\n\n    void recordFailure() {\n        failureCount++;\n        if (state == \"HALF_OPEN\" || failureCount >= failureThreshold) {\n            state = \"OPEN\";\n            openedAt = currentMillis();\n            failureCount = 0;\n        }\n    }\n\n    std::string getState() const {\n        return state;\n    }\n\nprivate:\n    static long long currentMillis() {\n        using namespace std::chrono;\n        return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();\n    }\n\n    std::string state;\n    int failureCount;\n    int failureThreshold;\n    long long resetTimeoutMs;\n    long long openedAt;\n};\n\nint main() {\n    CircuitBreaker breaker(3, 30000);\n\n    for (int i = 1; i <= 3; i++) {\n        breaker.recordFailure();\n        std::cout << \"after failure \" << i << \": state=\" << breaker.getState() << std::endl;\n    }\n\n    breaker.recordSuccess();\n    std::cout << \"after success: state=\" << breaker.getState() << std::endl;\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "heading3",
+          "content": "Step two, deciding whether the reset timeout has elapsed",
+          "text": "Step two, deciding whether the reset timeout has elapsed"
+        },
+        {
+          "type": "paragraph",
+          "content": "The breaker needs a way to check whether enough time has passed since it opened, so it can move itself into Half Open."
+        },
+        {
+          "type": "code",
+          "content": "// add this method to CircuitBreaker\nCircuitBreaker.prototype.canAttempt = function () {\n  if (this.state === 'CLOSED') return true;\n  if (this.state === 'OPEN') {\n    const elapsed = Date.now() - this.openedAt;\n    if (elapsed >= this.resetTimeoutMs) {\n      this.state = 'HALF_OPEN';\n      return true;\n    }\n    return false;\n  }\n  // HALF_OPEN, allow the probe call\n  return true;\n};",
+          "code": {
+            "language": "javascript",
+            "content": "// add this method to CircuitBreaker\nCircuitBreaker.prototype.canAttempt = function () {\n  if (this.state === 'CLOSED') return true;\n  if (this.state === 'OPEN') {\n    const elapsed = Date.now() - this.openedAt;\n    if (elapsed >= this.resetTimeoutMs) {\n      this.state = 'HALF_OPEN';\n      return true;\n    }\n    return false;\n  }\n  // HALF_OPEN, allow the probe call\n  return true;\n};"
+          },
+          "codes": {
+            "javascript": "// add this method to CircuitBreaker\nCircuitBreaker.prototype.canAttempt = function () {\n  if (this.state === 'CLOSED') return true;\n  if (this.state === 'OPEN') {\n    const elapsed = Date.now() - this.openedAt;\n    if (elapsed >= this.resetTimeoutMs) {\n      this.state = 'HALF_OPEN';\n      return true;\n    }\n    return false;\n  }\n  // HALF_OPEN, allow the probe call\n  return true;\n};",
+            "python": "import time\n\n\nclass CircuitBreaker:\n    def __init__(self, failure_threshold=5, reset_timeout_ms=30000):\n        self.state = \"CLOSED\"\n        self.failure_count = 0\n        self.failure_threshold = failure_threshold\n        self.reset_timeout_ms = reset_timeout_ms\n        self.opened_at = None\n\n    def record_success(self):\n        self.failure_count = 0\n        self.state = \"CLOSED\"\n\n    def record_failure(self):\n        self.failure_count += 1\n        if self.state == \"HALF_OPEN\" or self.failure_count >= self.failure_threshold:\n            self.state = \"OPEN\"\n            self.opened_at = time.time() * 1000\n            self.failure_count = 0\n\n    def can_attempt(self):\n        if self.state == \"CLOSED\":\n            return True\n        if self.state == \"OPEN\":\n            elapsed = time.time() * 1000 - self.opened_at\n            if elapsed >= self.reset_timeout_ms:\n                self.state = \"HALF_OPEN\"\n                return True\n            return False\n        # HALF_OPEN, allow the probe call\n        return True\n\n\nif __name__ == \"__main__\":\n    breaker = CircuitBreaker(failure_threshold=1, reset_timeout_ms=500)\n\n    breaker.record_failure()\n    print(f\"right after tripping: state={breaker.state} can_attempt={breaker.can_attempt()}\")\n\n    time.sleep(0.6)\n    allowed = breaker.can_attempt()\n    print(f\"after reset timeout: can_attempt={allowed} state={breaker.state}\")",
+            "java": "class CircuitBreaker {\n    private String state = \"CLOSED\";\n    private int failureCount = 0;\n    private final int failureThreshold;\n    private final long resetTimeoutMs;\n    private long openedAt = 0;\n\n    public CircuitBreaker(int failureThreshold, long resetTimeoutMs) {\n        this.failureThreshold = failureThreshold;\n        this.resetTimeoutMs = resetTimeoutMs;\n    }\n\n    public void recordSuccess() {\n        this.failureCount = 0;\n        this.state = \"CLOSED\";\n    }\n\n    public void recordFailure() {\n        this.failureCount++;\n        if (state.equals(\"HALF_OPEN\") || failureCount >= failureThreshold) {\n            this.state = \"OPEN\";\n            this.openedAt = System.currentTimeMillis();\n            this.failureCount = 0;\n        }\n    }\n\n    public boolean canAttempt() {\n        if (state.equals(\"CLOSED\")) return true;\n        if (state.equals(\"OPEN\")) {\n            long elapsed = System.currentTimeMillis() - openedAt;\n            if (elapsed >= resetTimeoutMs) {\n                state = \"HALF_OPEN\";\n                return true;\n            }\n            return false;\n        }\n        // HALF_OPEN, allow the probe call\n        return true;\n    }\n\n    public String getState() {\n        return state;\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) throws InterruptedException {\n        CircuitBreaker breaker = new CircuitBreaker(1, 500);\n\n        breaker.recordFailure();\n        System.out.println(\"right after tripping: state=\" + breaker.getState() + \" canAttempt=\" + breaker.canAttempt());\n\n        Thread.sleep(600);\n        boolean allowed = breaker.canAttempt();\n        System.out.println(\"after reset timeout: canAttempt=\" + allowed + \" state=\" + breaker.getState());\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n#include <chrono>\n#include <thread>\n\nclass CircuitBreaker {\npublic:\n    CircuitBreaker(int failureThreshold, long long resetTimeoutMs)\n        : state(\"CLOSED\"), failureCount(0), failureThreshold(failureThreshold),\n          resetTimeoutMs(resetTimeoutMs), openedAt(0) {}\n\n    void recordSuccess() {\n        failureCount = 0;\n        state = \"CLOSED\";\n    }\n\n    void recordFailure() {\n        failureCount++;\n        if (state == \"HALF_OPEN\" || failureCount >= failureThreshold) {\n            state = \"OPEN\";\n            openedAt = currentMillis();\n            failureCount = 0;\n        }\n    }\n\n    bool canAttempt() {\n        if (state == \"CLOSED\") return true;\n        if (state == \"OPEN\") {\n            long long elapsed = currentMillis() - openedAt;\n            if (elapsed >= resetTimeoutMs) {\n                state = \"HALF_OPEN\";\n                return true;\n            }\n            return false;\n        }\n        // HALF_OPEN, allow the probe call\n        return true;\n    }\n\n    std::string getState() const {\n        return state;\n    }\n\nprivate:\n    static long long currentMillis() {\n        using namespace std::chrono;\n        return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();\n    }\n\n    std::string state;\n    int failureCount;\n    int failureThreshold;\n    long long resetTimeoutMs;\n    long long openedAt;\n};\n\nint main() {\n    std::cout << std::boolalpha;\n    CircuitBreaker breaker(1, 500);\n\n    breaker.recordFailure();\n    std::cout << \"right after tripping: state=\" << breaker.getState()\n              << \" canAttempt=\" << breaker.canAttempt() << std::endl;\n\n    std::this_thread::sleep_for(std::chrono::milliseconds(600));\n    bool allowed = breaker.canAttempt();\n    std::cout << \"after reset timeout: canAttempt=\" << allowed\n              << \" state=\" << breaker.getState() << std::endl;\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Keep the state machine tiny",
+          "content": "Resist the urge to add extra states. Closed, Open and Half Open cover the pattern completely. Anything else, like separate counters for different error types, can live outside the state machine as configuration."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Wrapping the actual call, checking state before calling through",
+          "text": "8. Wrapping the actual call, checking state before calling through"
+        },
+        {
+          "type": "paragraph",
+          "content": "The state machine alone does nothing. The important part is the wrapper function that every caller goes through instead of calling the downstream service directly."
+        },
+        {
+          "type": "heading3",
+          "content": "The call wrapping logic",
+          "text": "The call wrapping logic"
+        },
+        {
+          "type": "paragraph",
+          "content": "Before attempting the real call, we ask the breaker if it is allowed. If not, we fail immediately or return a fallback. If yes, we make the call and report the outcome back to the breaker."
+        },
+        {
+          "type": "code",
+          "content": "async function callThroughBreaker(breaker, fn, fallback) {\n  if (!breaker.canAttempt()) {\n    if (fallback) return fallback();\n    throw new Error('Circuit is open, call rejected without attempting it');\n  }\n\n  try {\n    const result = await fn();\n    breaker.recordSuccess();\n    return result;\n  } catch (err) {\n    breaker.recordFailure();\n    throw err;\n  }\n}\n\nmodule.exports = { callThroughBreaker };",
+          "code": {
+            "language": "javascript",
+            "content": "async function callThroughBreaker(breaker, fn, fallback) {\n  if (!breaker.canAttempt()) {\n    if (fallback) return fallback();\n    throw new Error('Circuit is open, call rejected without attempting it');\n  }\n\n  try {\n    const result = await fn();\n    breaker.recordSuccess();\n    return result;\n  } catch (err) {\n    breaker.recordFailure();\n    throw err;\n  }\n}\n\nmodule.exports = { callThroughBreaker };"
+          },
+          "codes": {
+            "javascript": "async function callThroughBreaker(breaker, fn, fallback) {\n  if (!breaker.canAttempt()) {\n    if (fallback) return fallback();\n    throw new Error('Circuit is open, call rejected without attempting it');\n  }\n\n  try {\n    const result = await fn();\n    breaker.recordSuccess();\n    return result;\n  } catch (err) {\n    breaker.recordFailure();\n    throw err;\n  }\n}\n\nmodule.exports = { callThroughBreaker };",
+            "python": "import time\nimport asyncio\n\n\nclass CircuitBreaker:\n    def __init__(self, failure_threshold=5, reset_timeout_ms=30000):\n        self.state = \"CLOSED\"\n        self.failure_count = 0\n        self.failure_threshold = failure_threshold\n        self.reset_timeout_ms = reset_timeout_ms\n        self.opened_at = None\n\n    def record_success(self):\n        self.failure_count = 0\n        self.state = \"CLOSED\"\n\n    def record_failure(self):\n        self.failure_count += 1\n        if self.state == \"HALF_OPEN\" or self.failure_count >= self.failure_threshold:\n            self.state = \"OPEN\"\n            self.opened_at = time.time() * 1000\n            self.failure_count = 0\n\n    def can_attempt(self):\n        if self.state == \"CLOSED\":\n            return True\n        if self.state == \"OPEN\":\n            elapsed = time.time() * 1000 - self.opened_at\n            if elapsed >= self.reset_timeout_ms:\n                self.state = \"HALF_OPEN\"\n                return True\n            return False\n        return True\n\n\nasync def call_through_breaker(breaker, fn, fallback=None):\n    if not breaker.can_attempt():\n        if fallback:\n            return await fallback()\n        raise RuntimeError(\"Circuit is open, call rejected without attempting it\")\n\n    try:\n        result = await fn()\n        breaker.record_success()\n        return result\n    except Exception as err:\n        breaker.record_failure()\n        raise err\n\n\nasync def risky_call():\n    raise RuntimeError(\"downstream timeout\")\n\n\nasync def fallback_call():\n    return {\"cached\": True}\n\n\nasync def demo():\n    breaker = CircuitBreaker(failure_threshold=1)\n\n    try:\n        result = await call_through_breaker(breaker, risky_call, fallback_call)\n        print(f\"first call result: {result}\")\n    except Exception as err:\n        print(f\"first call error: {err}\")\n\n    result = await call_through_breaker(breaker, risky_call, fallback_call)\n    print(f\"second call result: {result} state={breaker.state}\")\n\n\nif __name__ == \"__main__\":\n    asyncio.run(demo())",
+            "java": "import java.util.Map;\nimport java.util.concurrent.Callable;\nimport java.util.function.Supplier;\n\nclass CircuitBreaker {\n    private String state = \"CLOSED\";\n    private int failureCount = 0;\n    private final int failureThreshold;\n    private final long resetTimeoutMs;\n    private long openedAt = 0;\n\n    public CircuitBreaker(int failureThreshold, long resetTimeoutMs) {\n        this.failureThreshold = failureThreshold;\n        this.resetTimeoutMs = resetTimeoutMs;\n    }\n\n    public void recordSuccess() {\n        this.failureCount = 0;\n        this.state = \"CLOSED\";\n    }\n\n    public void recordFailure() {\n        this.failureCount++;\n        if (state.equals(\"HALF_OPEN\") || failureCount >= failureThreshold) {\n            this.state = \"OPEN\";\n            this.openedAt = System.currentTimeMillis();\n            this.failureCount = 0;\n        }\n    }\n\n    public boolean canAttempt() {\n        if (state.equals(\"CLOSED\")) return true;\n        if (state.equals(\"OPEN\")) {\n            long elapsed = System.currentTimeMillis() - openedAt;\n            if (elapsed >= resetTimeoutMs) {\n                state = \"HALF_OPEN\";\n                return true;\n            }\n            return false;\n        }\n        return true;\n    }\n\n    public String getState() {\n        return state;\n    }\n}\n\nclass BreakerCaller {\n    public <T> T callThroughBreaker(CircuitBreaker breaker, Callable<T> fn, Supplier<T> fallback) throws Exception {\n        if (!breaker.canAttempt()) {\n            if (fallback != null) return fallback.get();\n            throw new IllegalStateException(\"Circuit is open, call rejected without attempting it\");\n        }\n\n        try {\n            T result = fn.call();\n            breaker.recordSuccess();\n            return result;\n        } catch (Exception err) {\n            breaker.recordFailure();\n            throw err;\n        }\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) throws Exception {\n        CircuitBreaker breaker = new CircuitBreaker(1, 30000);\n        BreakerCaller caller = new BreakerCaller();\n\n        Callable<Map<String, Object>> riskyCall = () -> {\n            throw new RuntimeException(\"downstream timeout\");\n        };\n        Supplier<Map<String, Object>> fallbackCall = () -> Map.of(\"cached\", true);\n\n        try {\n            Map<String, Object> result = caller.callThroughBreaker(breaker, riskyCall, fallbackCall);\n            System.out.println(\"first call result: \" + result);\n        } catch (Exception err) {\n            System.out.println(\"first call error: \" + err.getMessage());\n        }\n\n        Map<String, Object> result = caller.callThroughBreaker(breaker, riskyCall, fallbackCall);\n        System.out.println(\"second call result: \" + result + \" state=\" + breaker.getState());\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n#include <functional>\n#include <stdexcept>\n\nclass CircuitBreaker {\npublic:\n    CircuitBreaker(int failureThreshold, long long resetTimeoutMs)\n        : state(\"CLOSED\"), failureCount(0), failureThreshold(failureThreshold),\n          resetTimeoutMs(resetTimeoutMs), openedAt(0) {}\n\n    void recordSuccess() {\n        failureCount = 0;\n        state = \"CLOSED\";\n    }\n\n    void recordFailure() {\n        failureCount++;\n        if (state == \"HALF_OPEN\" || failureCount >= failureThreshold) {\n            state = \"OPEN\";\n            openedAt = currentMillis();\n            failureCount = 0;\n        }\n    }\n\n    bool canAttempt() {\n        if (state == \"CLOSED\") return true;\n        if (state == \"OPEN\") {\n            long long elapsed = currentMillis() - openedAt;\n            if (elapsed >= resetTimeoutMs) {\n                state = \"HALF_OPEN\";\n                return true;\n            }\n            return false;\n        }\n        return true;\n    }\n\n    std::string getState() const {\n        return state;\n    }\n\nprivate:\n    static long long currentMillis() {\n        using namespace std::chrono;\n        return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();\n    }\n\n    std::string state;\n    int failureCount;\n    int failureThreshold;\n    long long resetTimeoutMs;\n    long long openedAt;\n};\n\ntemplate <typename T>\nT callThroughBreaker(CircuitBreaker& breaker, const std::function<T()>& fn, const std::function<T()>& fallback) {\n    if (!breaker.canAttempt()) {\n        if (fallback) return fallback();\n        throw std::runtime_error(\"Circuit is open, call rejected without attempting it\");\n    }\n\n    try {\n        T result = fn();\n        breaker.recordSuccess();\n        return result;\n    } catch (const std::exception&) {\n        breaker.recordFailure();\n        throw;\n    }\n}\n\nint main() {\n    CircuitBreaker breaker(1, 30000);\n\n    std::function<std::string()> riskyCall = []() -> std::string {\n        throw std::runtime_error(\"downstream timeout\");\n    };\n    std::function<std::string()> fallbackCall = []() -> std::string {\n        return \"cached-fallback\";\n    };\n\n    try {\n        std::string result = callThroughBreaker<std::string>(breaker, riskyCall, fallbackCall);\n        std::cout << \"first call result: \" << result << std::endl;\n    } catch (const std::exception& err) {\n        std::cout << \"first call error: \" << err.what() << std::endl;\n    }\n\n    std::string result = callThroughBreaker<std::string>(breaker, riskyCall, fallbackCall);\n    std::cout << \"second call result: \" << result << \" state=\" << breaker.getState() << std::endl;\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This wrapper is the only place callers interact with the breaker. The rest of your code just calls callThroughBreaker instead of calling the flaky service directly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. A worked example, wrapping a flaky service call",
+          "text": "9. A worked example, wrapping a flaky service call"
+        },
+        {
+          "type": "paragraph",
+          "content": "Let us put it together with a fake service that fails on purpose for a while, then recovers, so we can watch the breaker trip and reset."
+        },
+        {
+          "type": "heading3",
+          "content": "The flaky service",
+          "text": "The flaky service"
+        },
+        {
+          "type": "paragraph",
+          "content": "Imagine an inventory service that starts throwing errors for a stretch of calls, then goes back to responding normally."
+        },
+        {
+          "type": "code",
+          "content": "let callCount = 0;\nasync function flakyInventoryService() {\n  callCount += 1;\n  // fails for calls 3 through 7, recovers after that\n  if (callCount >= 3 && callCount <= 7) {\n    throw new Error('inventory service timeout');\n  }\n  return { itemId: 'sku-42', inStock: true };\n}\n\nasync function demo() {\n  const breaker = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 2000 });\n\n  for (let i = 1; i <= 10; i++) {\n    try {\n      const result = await callThroughBreaker(breaker, flakyInventoryService, () => ({ inStock: null, cached: true }));\n      console.log(`call ${i}: state=${breaker.state} result=${JSON.stringify(result)}`);\n    } catch (err) {\n      console.log(`call ${i}: state=${breaker.state} error=${err.message}`);\n    }\n    // wait a bit before some calls to let the reset timeout elapse\n    if (i === 8) await new Promise((r) => setTimeout(r, 2100));\n  }\n}\n\ndemo();",
+          "code": {
+            "language": "javascript",
+            "content": "let callCount = 0;\nasync function flakyInventoryService() {\n  callCount += 1;\n  // fails for calls 3 through 7, recovers after that\n  if (callCount >= 3 && callCount <= 7) {\n    throw new Error('inventory service timeout');\n  }\n  return { itemId: 'sku-42', inStock: true };\n}\n\nasync function demo() {\n  const breaker = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 2000 });\n\n  for (let i = 1; i <= 10; i++) {\n    try {\n      const result = await callThroughBreaker(breaker, flakyInventoryService, () => ({ inStock: null, cached: true }));\n      console.log(`call ${i}: state=${breaker.state} result=${JSON.stringify(result)}`);\n    } catch (err) {\n      console.log(`call ${i}: state=${breaker.state} error=${err.message}`);\n    }\n    // wait a bit before some calls to let the reset timeout elapse\n    if (i === 8) await new Promise((r) => setTimeout(r, 2100));\n  }\n}\n\ndemo();"
+          },
+          "codes": {
+            "javascript": "let callCount = 0;\nasync function flakyInventoryService() {\n  callCount += 1;\n  // fails for calls 3 through 7, recovers after that\n  if (callCount >= 3 && callCount <= 7) {\n    throw new Error('inventory service timeout');\n  }\n  return { itemId: 'sku-42', inStock: true };\n}\n\nasync function demo() {\n  const breaker = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 2000 });\n\n  for (let i = 1; i <= 10; i++) {\n    try {\n      const result = await callThroughBreaker(breaker, flakyInventoryService, () => ({ inStock: null, cached: true }));\n      console.log(`call ${i}: state=${breaker.state} result=${JSON.stringify(result)}`);\n    } catch (err) {\n      console.log(`call ${i}: state=${breaker.state} error=${err.message}`);\n    }\n    // wait a bit before some calls to let the reset timeout elapse\n    if (i === 8) await new Promise((r) => setTimeout(r, 2100));\n  }\n}\n\ndemo();",
+            "python": "import asyncio\nimport time\n\n\nclass CircuitBreaker:\n    def __init__(self, failure_threshold=5, reset_timeout_ms=30000):\n        self.state = \"CLOSED\"\n        self.failure_count = 0\n        self.failure_threshold = failure_threshold\n        self.reset_timeout_ms = reset_timeout_ms\n        self.opened_at = None\n\n    def record_success(self):\n        self.failure_count = 0\n        self.state = \"CLOSED\"\n\n    def record_failure(self):\n        self.failure_count += 1\n        if self.state == \"HALF_OPEN\" or self.failure_count >= self.failure_threshold:\n            self.state = \"OPEN\"\n            self.opened_at = time.time() * 1000\n            self.failure_count = 0\n\n    def can_attempt(self):\n        if self.state == \"CLOSED\":\n            return True\n        if self.state == \"OPEN\":\n            elapsed = time.time() * 1000 - self.opened_at\n            if elapsed >= self.reset_timeout_ms:\n                self.state = \"HALF_OPEN\"\n                return True\n            return False\n        return True\n\n\nasync def call_through_breaker(breaker, fn, fallback=None):\n    if not breaker.can_attempt():\n        if fallback:\n            return await fallback()\n        raise RuntimeError(\"Circuit is open, call rejected without attempting it\")\n\n    try:\n        result = await fn()\n        breaker.record_success()\n        return result\n    except Exception as err:\n        breaker.record_failure()\n        raise err\n\n\nasync def flaky_inventory_service(call_index):\n    # fails for calls 3 through 7, recovers after that\n    if 3 <= call_index <= 7:\n        raise RuntimeError(\"inventory service timeout\")\n    return {\"item_id\": \"sku-42\", \"in_stock\": True}\n\n\nasync def fallback_response():\n    return {\"in_stock\": None, \"cached\": True}\n\n\nasync def demo():\n    breaker = CircuitBreaker(failure_threshold=3, reset_timeout_ms=2000)\n\n    for i in range(1, 11):\n        try:\n            result = await call_through_breaker(breaker, lambda i=i: flaky_inventory_service(i), fallback_response)\n            print(f\"call {i}: state={breaker.state} result={result}\")\n        except Exception as err:\n            print(f\"call {i}: state={breaker.state} error={err}\")\n        if i == 8:\n            await asyncio.sleep(2.1)\n\n\nif __name__ == \"__main__\":\n    asyncio.run(demo())",
+            "java": "import java.util.HashMap;\nimport java.util.Map;\nimport java.util.concurrent.Callable;\nimport java.util.function.Supplier;\n\nclass CircuitBreaker {\n    private String state = \"CLOSED\";\n    private int failureCount = 0;\n    private final int failureThreshold;\n    private final long resetTimeoutMs;\n    private long openedAt = 0;\n\n    public CircuitBreaker(int failureThreshold, long resetTimeoutMs) {\n        this.failureThreshold = failureThreshold;\n        this.resetTimeoutMs = resetTimeoutMs;\n    }\n\n    public void recordSuccess() {\n        this.failureCount = 0;\n        this.state = \"CLOSED\";\n    }\n\n    public void recordFailure() {\n        this.failureCount++;\n        if (state.equals(\"HALF_OPEN\") || failureCount >= failureThreshold) {\n            this.state = \"OPEN\";\n            this.openedAt = System.currentTimeMillis();\n            this.failureCount = 0;\n        }\n    }\n\n    public boolean canAttempt() {\n        if (state.equals(\"CLOSED\")) return true;\n        if (state.equals(\"OPEN\")) {\n            long elapsed = System.currentTimeMillis() - openedAt;\n            if (elapsed >= resetTimeoutMs) {\n                state = \"HALF_OPEN\";\n                return true;\n            }\n            return false;\n        }\n        return true;\n    }\n\n    public String getState() {\n        return state;\n    }\n}\n\nclass BreakerCaller {\n    public <T> T callThroughBreaker(CircuitBreaker breaker, Callable<T> fn, Supplier<T> fallback) throws Exception {\n        if (!breaker.canAttempt()) {\n            if (fallback != null) return fallback.get();\n            throw new IllegalStateException(\"Circuit is open, call rejected without attempting it\");\n        }\n\n        try {\n            T result = fn.call();\n            breaker.recordSuccess();\n            return result;\n        } catch (Exception err) {\n            breaker.recordFailure();\n            throw err;\n        }\n    }\n}\n\npublic class Main {\n    static Map<String, Object> flakyInventoryService(int callIndex) {\n        // fails for calls 3 through 7, recovers after that\n        if (callIndex >= 3 && callIndex <= 7) {\n            throw new RuntimeException(\"inventory service timeout\");\n        }\n        Map<String, Object> result = new HashMap<>();\n        result.put(\"itemId\", \"sku-42\");\n        result.put(\"inStock\", true);\n        return result;\n    }\n\n    public static void main(String[] args) throws Exception {\n        CircuitBreaker breaker = new CircuitBreaker(3, 2000);\n        BreakerCaller caller = new BreakerCaller();\n\n        for (int i = 1; i <= 10; i++) {\n            final int callIndex = i;\n            try {\n                Map<String, Object> result = caller.callThroughBreaker(breaker,\n                    () -> flakyInventoryService(callIndex),\n                    () -> {\n                        Map<String, Object> fallback = new HashMap<>();\n                        fallback.put(\"inStock\", null);\n                        fallback.put(\"cached\", true);\n                        return fallback;\n                    });\n                System.out.println(\"call \" + i + \": state=\" + breaker.getState() + \" result=\" + result);\n            } catch (Exception err) {\n                System.out.println(\"call \" + i + \": state=\" + breaker.getState() + \" error=\" + err.getMessage());\n            }\n            if (i == 8) Thread.sleep(2100);\n        }\n    }\n}",
+            "cpp": "#include <iostream>\n#include <string>\n#include <functional>\n#include <stdexcept>\n#include <chrono>\n#include <thread>\n\nclass CircuitBreaker {\npublic:\n    CircuitBreaker(int failureThreshold, long long resetTimeoutMs)\n        : state(\"CLOSED\"), failureCount(0), failureThreshold(failureThreshold),\n          resetTimeoutMs(resetTimeoutMs), openedAt(0) {}\n\n    void recordSuccess() {\n        failureCount = 0;\n        state = \"CLOSED\";\n    }\n\n    void recordFailure() {\n        failureCount++;\n        if (state == \"HALF_OPEN\" || failureCount >= failureThreshold) {\n            state = \"OPEN\";\n            openedAt = currentMillis();\n            failureCount = 0;\n        }\n    }\n\n    bool canAttempt() {\n        if (state == \"CLOSED\") return true;\n        if (state == \"OPEN\") {\n            long long elapsed = currentMillis() - openedAt;\n            if (elapsed >= resetTimeoutMs) {\n                state = \"HALF_OPEN\";\n                return true;\n            }\n            return false;\n        }\n        return true;\n    }\n\n    std::string getState() const {\n        return state;\n    }\n\nprivate:\n    static long long currentMillis() {\n        using namespace std::chrono;\n        return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();\n    }\n\n    std::string state;\n    int failureCount;\n    int failureThreshold;\n    long long resetTimeoutMs;\n    long long openedAt;\n};\n\nstruct InventoryResult {\n    bool cached = false;\n    std::string itemId;\n    bool inStock = false;\n};\n\nstd::ostream& operator<<(std::ostream& os, const InventoryResult& r) {\n    if (r.cached) {\n        os << \"{inStock=null, cached=true}\";\n    } else {\n        os << \"{itemId=\" << r.itemId << \", inStock=\" << (r.inStock ? \"true\" : \"false\") << \"}\";\n    }\n    return os;\n}\n\ntemplate <typename T>\nT callThroughBreaker(CircuitBreaker& breaker, const std::function<T()>& fn, const std::function<T()>& fallback) {\n    if (!breaker.canAttempt()) {\n        if (fallback) return fallback();\n        throw std::runtime_error(\"Circuit is open, call rejected without attempting it\");\n    }\n\n    try {\n        T result = fn();\n        breaker.recordSuccess();\n        return result;\n    } catch (const std::exception&) {\n        breaker.recordFailure();\n        throw;\n    }\n}\n\nInventoryResult flakyInventoryService(int callIndex) {\n    // fails for calls 3 through 7, recovers after that\n    if (callIndex >= 3 && callIndex <= 7) {\n        throw std::runtime_error(\"inventory service timeout\");\n    }\n    InventoryResult r;\n    r.itemId = \"sku-42\";\n    r.inStock = true;\n    return r;\n}\n\nint main() {\n    CircuitBreaker breaker(3, 2000);\n\n    for (int i = 1; i <= 10; i++) {\n        std::function<InventoryResult()> risky = [i]() { return flakyInventoryService(i); };\n        std::function<InventoryResult()> fallback = []() {\n            InventoryResult r;\n            r.cached = true;\n            return r;\n        };\n\n        try {\n            InventoryResult result = callThroughBreaker<InventoryResult>(breaker, risky, fallback);\n            std::cout << \"call \" << i << \": state=\" << breaker.getState() << \" result=\" << result << std::endl;\n        } catch (const std::exception& err) {\n            std::cout << \"call \" << i << \": state=\" << breaker.getState() << \" error=\" << err.what() << std::endl;\n        }\n        if (i == 8) std::this_thread::sleep_for(std::chrono::milliseconds(2100));\n    }\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "heading3",
+          "content": "Reading the trace",
+          "text": "Reading the trace"
+        },
+        {
+          "type": "paragraph",
+          "content": "Calls one and two succeed with the breaker Closed. Calls three, four and five fail, and after the third failure the threshold of three is crossed, so the breaker trips to Open."
+        },
+        {
+          "type": "paragraph",
+          "content": "Calls six and seven are rejected instantly by the breaker itself, without ever reaching the flaky service, even though the service was going to fail anyway at that point."
+        },
+        {
+          "type": "paragraph",
+          "content": "After call eight we sleep past the reset timeout. Call nine becomes the Half Open probe. Since the service has recovered by call nine, that probe succeeds and the breaker closes again, so call ten runs normally."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512287885-694325902.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512287885-694325902.png",
+          "alt": "Timeline diagram of the worked example showing calls one and two succeeding, calls three to five failing and tripping the breaker, calls six and seven rejected instantly, then the half open probe succeeding and normal calls resuming"
+        },
+        {
+          "type": "example-box",
+          "title": "What this buys you",
+          "text": "During calls six and seven, real production traffic would have failed instantly instead of waiting on a timeout that was never going to succeed, which keeps the caller responsive and reduces load on the struggling service."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Tuning thresholds and timeouts",
+          "text": "10. Tuning thresholds and timeouts"
+        },
+        {
+          "type": "paragraph",
+          "content": "The pattern is simple, but picking good numbers for it takes some judgement based on the traffic and the downstream service."
+        },
+        {
+          "type": "heading3",
+          "content": "Failure threshold",
+          "text": "Failure threshold"
+        },
+        {
+          "type": "paragraph",
+          "content": "Too low, and a couple of unlucky timeouts trip the breaker unnecessarily during normal blips. Too high, and you delay the fail fast benefit while the service is genuinely struggling."
+        },
+        {
+          "type": "heading3",
+          "content": "Reset timeout",
+          "text": "Reset timeout"
+        },
+        {
+          "type": "paragraph",
+          "content": "Too short, and the breaker keeps flapping between Open and Half Open before the service has really recovered. Too long, and you keep rejecting calls well after the service is healthy again."
+        },
+        {
+          "type": "heading3",
+          "content": "Failure rate over a fixed count",
+          "text": "Failure rate over a fixed count"
+        },
+        {
+          "type": "paragraph",
+          "content": "Many production implementations use a failure rate over a sliding window, for example fifty percent of the last twenty calls, rather than a raw count, since raw counts behave oddly under bursty traffic."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Setting\",\"Too low\",\"Too high\"],\"rows\":[[\"Failure threshold\",\"Trips on normal, harmless blips\",\"Delays protection during a real outage\"],[\"Reset timeout\",\"Flaps repeatedly before real recovery\",\"Keeps rejecting calls after service is healthy\"],[\"Half Open probe count\",\"Slow to confirm recovery\",\"Risks overloading a barely recovered service\"]]}"
+        },
+        {
+          "type": "pros-cons",
+          "content": "{\"pros\":[\"Prevents cascading failures across services\",\"Frees up threads and connections during an outage\",\"Gives callers a fast, predictable failure instead of a slow timeout\",\"Automatically probes for recovery without manual intervention\"],\"cons\":[\"Adds another piece of state to configure and monitor per dependency\",\"Badly tuned thresholds can trip on harmless blips or miss real outages\",\"A fallback path, if one exists, needs its own testing and maintenance\"]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. How Circuit Breaker fits alongside retries and timeouts",
+          "text": "11. How Circuit Breaker fits alongside retries and timeouts"
+        },
+        {
+          "type": "paragraph",
+          "content": "Circuit Breaker is rarely used alone. It usually sits next to two other reliability patterns, timeouts and retries, and each one covers a different failure mode."
+        },
+        {
+          "type": "paragraph",
+          "content": "A timeout bounds how long a single call is allowed to take, so one slow request cannot hang forever. A retry handles the occasional, isolated failure by trying again, often with backoff."
+        },
+        {
+          "type": "paragraph",
+          "content": "Circuit Breaker steps in when failures stop being occasional and start being persistent. Retrying against a service that is completely down just multiplies the load on it, which is exactly the situation the breaker is built to prevent."
+        },
+        {
+          "type": "paragraph",
+          "content": "A common setup wraps the call with a timeout, wraps that with a retry for transient blips, and wraps the whole thing with a circuit breaker so that sustained failure stops the retries from hammering a service that needs time to recover."
+        },
+        {
+          "type": "note",
+          "title": "Order matters",
+          "content": "Put the circuit breaker on the outside. If it is Open, you want to skip the retries and the timeouts entirely, not run them uselessly against a service you already know is down."
+        },
+        {
+          "type": "paragraph",
+          "content": "Used together, these three patterns turn a single flaky dependency from a threat to your whole system into a contained, well understood failure that your service can shrug off and recover from on its own."
+        }
+      ]
+    }
+  ]
+}

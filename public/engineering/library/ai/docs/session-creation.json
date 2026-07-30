@@ -1,0 +1,519 @@
+{
+  "slug": "session-creation",
+  "title": "Session Creation",
+  "content": [
+    {
+      "id": "session-creation",
+      "title": "Session Creation",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Finishing the initialize handshake is not the same thing as having a usable session. There is still a small but important step where the connection gets an identity, some state gets set up, and the client decides how it will keep track of that connection going forward."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson is about that step, session creation. It covers how a session gets an identifier, how that identifier travels on transports like HTTP, and how a client that talks to several servers at once keeps all of those sessions straight."
+        },
+        {
+          "type": "paragraph",
+          "text": "It also covers the other end of the story, closing a session properly instead of just walking away from it, which is where a surprising number of real bugs live."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Session Creation Actually Covers",
+          "id": "session-creation-what-it-covers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577561532-324310601.png",
+          "alt": "A client and server move from the initialize handshake into an active session",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The initialize handshake tells both sides what the other supports. Session creation is the step right after that, where the connection becomes something you can refer to, reuse, and eventually close."
+        },
+        {
+          "type": "paragraph",
+          "text": "Think of it like checking into a hotel. The conversation at the desk is the handshake, but you are not settled in until you have a room key in hand."
+        },
+        {
+          "type": "note",
+          "title": "Handshake and session creation are two different jobs",
+          "content": "The initialize exchange negotiates protocol version and capabilities. Session creation is about identity and bookkeeping for the connection itself. Many bugs come from treating these as one step when they are really two."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Where This Sits Right After Initialize",
+          "id": "session-creation-where-it-sits"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once the client sends its initialized notification, the connection is protocol ready but still needs to be wired into whatever bookkeeping the client keeps for active connections."
+        },
+        {
+          "type": "paragraph",
+          "text": "For a transport that supports it, this is also the moment a session identifier usually first appears, often riding along with the very first response after initialize."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Client sends initialize request",
+            "Server responds with its capabilities",
+            "Client sends initialized notification",
+            "Server or transport layer assigns a session identifier",
+            "Client stores that identifier and marks the session as active"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Why a Session Needs an Identifier at All",
+          "id": "session-creation-why-identifier"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577565940-995603035.png",
+          "alt": "A session identifier lets requests be routed back to the right session",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single stdio connection does not really need an identifier, there is exactly one client and one server sharing one pipe for the whole process lifetime."
+        },
+        {
+          "type": "paragraph",
+          "text": "HTTP is different. A server might be talking to many clients, and a client might reconnect, retry, or open several logical conversations against the same server."
+        },
+        {
+          "type": "paragraph",
+          "text": "Without something to tell those conversations apart, a server has no reliable way to know which stream of messages belongs to which conversation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. The Mcp-Session-Id Header on HTTP",
+          "id": "session-creation-mcp-session-id-header"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577568247-317360281.png",
+          "alt": "An HTTP request carries the session id in a dedicated header",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "On HTTP transport, a server can hand back a session id in an Mcp-Session-Id header, typically on the response to the initialize request."
+        },
+        {
+          "type": "paragraph",
+          "text": "From that point on, the client is expected to send that same header on every subsequent request tied to this session."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "// After initialize, the server response may include:\n// Mcp-Session-Id: 9f86d081-884c-4d5a-9a1b-3b1c2e5a7f10\n\nasync function initializeSession(baseUrl) {\n  const res = await fetch(baseUrl + '/mcp', {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json' },\n    body: JSON.stringify({\n      jsonrpc: '2.0',\n      id: 1,\n      method: 'initialize',\n      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'demo-client', version: '1.0.0' } }\n    })\n  });\n\n  const sessionId = res.headers.get('Mcp-Session-Id');\n  if (!sessionId) {\n    throw new Error('server did not issue a session id');\n  }\n  return sessionId;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Every later request for this session simply attaches the same header value, so the server can route it to the right in memory state."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function callTool(baseUrl, sessionId, toolName, args) {\n  return fetch(baseUrl + '/mcp', {\n    method: 'POST',\n    headers: {\n      'Content-Type': 'application/json',\n      'Mcp-Session-Id': sessionId\n    },\n    body: JSON.stringify({\n      jsonrpc: '2.0',\n      id: 2,\n      method: 'tools/call',\n      params: { name: toolName, arguments: args }\n    })\n  });\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Transports That Do Not Need a Session Id",
+          "id": "session-creation-transports-without-id"
+        },
+        {
+          "type": "paragraph",
+          "text": "Stdio transport has no equivalent header, and it does not need one. The process boundary itself is the session boundary, one client, one server, one pipe."
+        },
+        {
+          "type": "paragraph",
+          "text": "It still helps to model this internally as a session object in your client code, even without a wire level identifier, because the rest of your session handling logic can then stay uniform across transports."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Transport\",\"Session identifier on the wire\",\"What identifies the session\"],\"rows\":[[\"stdio\",\"None\",\"The process and pipe itself\"],[\"HTTP\",\"Mcp-Session-Id header\",\"The header value the server issued\"],[\"WebSocket\",\"Often none needed\",\"The open socket connection itself\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Storing Session State on the Client",
+          "id": "session-creation-storing-state"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once a session exists, the client needs somewhere to keep what it knows about it, the server it talks to, the negotiated capabilities, and the session id if one exists."
+        },
+        {
+          "type": "paragraph",
+          "text": "A small object per session keeps this tidy and makes the rest of the client code easier to reason about."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "class ClientSession:\n    def __init__(self, server_name, transport, session_id=None):\n        self.server_name = server_name\n        self.transport = transport\n        self.session_id = session_id\n        self.capabilities = {}\n        self.status = \"initializing\"\n\n    def mark_ready(self, capabilities):\n        self.capabilities = capabilities\n        self.status = \"ready\""
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. One Client, Many Servers, Many Sessions",
+          "id": "session-creation-one-client-many-servers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577570704-584080723.png",
+          "alt": "One client tracks a separate session for each server it connects to",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A real host application rarely talks to just one server. It might connect to a filesystem server, a database server, and a search server, all at the same time."
+        },
+        {
+          "type": "paragraph",
+          "text": "Each of those connections is its own session, with its own identifier where the transport supports one, and its own independent lifecycle."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Building a Session Map",
+          "id": "session-creation-building-session-map"
+        },
+        {
+          "type": "paragraph",
+          "text": "The natural way to track several sessions at once is a simple map, keyed by something stable like server name or session id, with the session object as the value."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const sessions = new Map();\n\nfunction registerSession(serverName, sessionId, transport) {\n  sessions.set(serverName, {\n    serverName,\n    sessionId,\n    transport,\n    status: 'ready',\n    createdAt: Date.now()\n  });\n}\n\nfunction getSession(serverName) {\n  const session = sessions.get(serverName);\n  if (!session) {\n    throw new Error('no active session for server: ' + serverName);\n  }\n  return session;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "With this in place, calling a tool becomes a two step lookup, find the right session, then send the request tagged with that session's identifier."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Routing a Request to the Right Session",
+          "id": "session-creation-routing-requests"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a host application wants to call a tool, it first has to decide which server actually owns that tool, then pull the matching session out of the map."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is why keeping a clear session map matters so much, without it, a client has no reliable way to know which Mcp-Session-Id header, or which stdio pipe, a given request should travel over."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Look up which server exposes the requested tool",
+            "Fetch that server's session from the session map",
+            "Attach the session id, if the transport uses one, to the outgoing request",
+            "Send the request over that session's own transport"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Session Lifetime and Idle Sessions",
+          "id": "session-creation-lifetime-and-idle"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577573024-623490614.png",
+          "alt": "An active session is compared against an idle session",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A session does not have to live forever just because it was created. Servers commonly expire sessions that have been idle for too long, to avoid holding memory for connections nobody is using anymore."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well behaved client should expect this and treat a rejected session id as a signal to re-initialize, not as a fatal error."
+        },
+        {
+          "type": "note",
+          "title": "An expired session id is not a crash, it is a prompt",
+          "content": "If a server responds saying it does not recognize a session id anymore, the right move is usually to run initialize again and get a fresh session, not to give up on that server entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Ending a Session Cleanly",
+          "id": "session-creation-ending-cleanly"
+        },
+        {
+          "type": "paragraph",
+          "text": "Just as a session gets created through an explicit step, it should also end through an explicit step, not simply by the client walking away."
+        },
+        {
+          "type": "paragraph",
+          "text": "On HTTP transport this often means sending an explicit close or delete request tied to the session id, so the server knows to free whatever state it was holding."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function closeSession(baseUrl, sessionId) {\n  await fetch(baseUrl + '/mcp', {\n    method: 'DELETE',\n    headers: { 'Mcp-Session-Id': sessionId }\n  });\n  sessions.delete(sessionIdToServerName(sessionId));\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "For stdio, ending the session is simpler, closing the pipes and letting the child process exit is itself the clean shutdown signal."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Dangling Sessions and Why They Are a Problem",
+          "id": "session-creation-dangling-sessions"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577576110-672018963.png",
+          "alt": "A dangling session with no owner still holds resources",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A dangling session is one the client has simply forgotten about, without ever telling the server it is done."
+        },
+        {
+          "type": "paragraph",
+          "text": "On the server side that often means memory held for a connection that will never send another request, and on the client side it can mean a session map entry pointing at a connection that no longer works."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Server keeps holding session state for a client that already disappeared",
+            "Client's session map still lists the session as ready",
+            "Next request against that session id fails unexpectedly",
+            "Nothing in the client code ever notices or cleans up the stale entry"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Detecting and Cleaning Up Dangling Sessions",
+          "id": "session-creation-detecting-dangling"
+        },
+        {
+          "type": "paragraph",
+          "text": "A simple habit avoids most of this, whenever a session errors out or a transport closes unexpectedly, remove it from the session map right away instead of leaving it there."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "function markSessionFailed(serverName) {\n  const session = sessions.get(serverName);\n  if (session) {\n    session.status = 'failed';\n    sessions.delete(serverName);\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Pairing this with a shutdown hook that closes every session in the map, one by one, when the host application itself exits, closes the loop entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Concurrency Across Multiple Sessions",
+          "id": "session-creation-concurrency"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577580455-321201608.png",
+          "alt": "Session one and session two run concurrently without interfering",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a client holds several sessions at once, requests to different servers can and should happen concurrently, there is no reason one slow server should block a call to a different, unrelated one."
+        },
+        {
+          "type": "paragraph",
+          "text": "The session map makes this natural, each session carries its own transport, so requests against different sessions are already independent of each other."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Situation\",\"What should happen\",\"What to avoid\"],\"rows\":[[\"Two servers, two tool calls\",\"Both requests run concurrently\",\"Waiting on one before starting the other\"],[\"One server is slow\",\"Other sessions keep working normally\",\"Letting one slow session block the whole client\"],[\"One session fails\",\"Only that session is marked failed\",\"Tearing down unrelated sessions too\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Session Ids Are Not Secrets to Skip Protecting",
+          "id": "session-creation-security"
+        },
+        {
+          "type": "paragraph",
+          "text": "A session id is not a password, but it does grant access to whatever that session was set up to do, so it deserves the same care as any other bearer credential."
+        },
+        {
+          "type": "paragraph",
+          "text": "Generating session ids as long, random, hard to guess values, and only sending them over an encrypted connection, closes off an easy attack path."
+        },
+        {
+          "type": "note",
+          "title": "Do not log session ids in plain text",
+          "content": "Full server logs are often shared more widely than people expect. Treat a session id the same way you would treat an auth token, and mask or omit it from logs rather than printing it in full."
+        },
+        {
+          "type": "paragraph",
+          "text": "This matters even more once a client is juggling sessions across several servers, since a leaked session id for one server should never accidentally help someone impersonate a session on a different one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: Tracking Three Sessions at Once",
+          "id": "session-creation-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Imagine a client that connects to a filesystem server over stdio, a search server over HTTP, and a database server over HTTP, all at startup."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function connectAll(configs) {\n  for (const cfg of configs) {\n    const transport = await openTransport(cfg);\n    const initResult = await sendInitialize(transport, cfg);\n    const sessionId = cfg.transportType === 'http'\n      ? initResult.headers.get('Mcp-Session-Id')\n      : null;\n\n    registerSession(cfg.serverName, sessionId, transport);\n    console.log('session ready for', cfg.serverName, sessionId || '(stdio, no id needed)');\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "After this runs, the session map has three entries, one per server, and a tool call to any of them just becomes a lookup by server name followed by a send."
+        },
+        {
+          "type": "paragraph",
+          "text": "When the host application shuts down, it walks the same map and closes each session, HTTP sessions get an explicit delete, stdio sessions get their pipes closed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "session-creation-common-mistakes"
+        },
+        {
+          "type": "paragraph",
+          "text": "A handful of mistakes around session creation show up again and again in real client code."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Treating the initialized notification as the end of the story, without ever assigning the session a place to live in client state",
+            "Forgetting to read and store the Mcp-Session-Id header, then wondering why later requests get rejected",
+            "Using one global variable for a session id instead of a map, which breaks the moment a second server connects",
+            "Never sending an explicit close, leaving sessions dangling on the server after the client has moved on",
+            "Treating an expired session error as fatal instead of simply re-initializing",
+            "Letting one slow or failed session block requests to completely unrelated servers"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "session-creation-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take the connectAll example above and extend it to two fake HTTP servers running locally, each returning a different Mcp-Session-Id on initialize."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "// after connecting to both, confirm your session map looks like:\n// { search: { sessionId: \"abc123\", status: \"ready\" },\n//   database: { sessionId: \"def456\", status: \"ready\" } }"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "Stretch goal one, simulate one server rejecting the session id after a delay, and confirm your client re-initializes instead of crashing",
+            "Stretch goal two, call closeSession on both sessions during shutdown and confirm the session map ends up empty"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "session-creation-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Session creation is the small but essential step between a finished handshake and a connection you can actually rely on, giving it an identifier where the transport supports one, and a place to live in client state."
+        },
+        {
+          "type": "paragraph",
+          "text": "A client that tracks sessions in a clear map, and closes them explicitly instead of letting them dangle, stays reliable even when it is juggling several servers at once."
+        }
+      ]
+    }
+  ]
+}

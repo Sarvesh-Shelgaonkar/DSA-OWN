@@ -1,0 +1,472 @@
+{
+  "slug": "bloom-filters",
+  "title": "Bloom Filters",
+  "content": [
+    {
+      "id": "bloom-filters",
+      "title": "Bloom Filters",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Imagine you need to check whether a specific email address has already signed up for your service, out of half a billion existing accounts, and you need the answer in microseconds, using as little memory as possible. Storing all half a billion emails and checking each one is exactly the kind of expensive lookup a real system cannot afford to do on every single request. A <strong>Bloom filter</strong> answers a narrower, cheaper question instead: \"is this item definitely not in the set, or might it be\", using a tiny, fixed amount of memory regardless of how large the underlying set actually is."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283187431-758010987.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283187431-758010987.png",
+          "alt": "A Bloom filter never quite says yes, it says maybe, but it can say no with complete certainty",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283187431-758010987.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What a Bloom Filter Is",
+          "text": "1. What a Bloom Filter Is"
+        },
+        {
+          "type": "paragraph",
+          "content": "A Bloom filter is a <strong>probabilistic data structure</strong> for testing set membership. Ask it whether an item exists, and it gives you one of two answers: <strong>definitely not</strong>, or <strong>possibly, go check the real source to be sure</strong>. That second answer is the entire trade-off of using one at all, a Bloom filter trades perfect accuracy for extraordinary space efficiency."
+        },
+        {
+          "type": "paragraph",
+          "content": "This might sound like a strange trade to make, why use a data structure that cannot give you a definite yes, but the \"definitely not\" answer alone turns out to be enormously valuable in practice, precisely because it lets a system skip an expensive lookup entirely, the moment it can be sure that lookup would come back empty."
+        },
+        {
+          "type": "paragraph",
+          "content": "It helps to hold onto a simple mental picture: a Bloom filter is like a bouncer with a bad memory for faces but a perfect memory for who has definitely never shown up at all. They cannot always tell you for certain someone was here before, but if their notes say a name was never written down, you can trust that completely."
+        },
+        {
+          "type": "paragraph",
+          "content": "The name itself comes from Burton Howard Bloom, who described the structure back in 1970, decades before the scale problems it solves so well today, billions of items spread across distributed systems, were anywhere near as common a concern as they are now."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Why Not Just Use a Hash Set",
+          "text": "2. Why Not Just Use a Hash Set"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521725-255254359.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521725-255254359.png",
+          "alt": "A real hash set has to store every actual item, growing without bound; a Bloom filter stores none of them, staying a fixed, tiny size",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521725-255254359.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A regular hash set answers the same membership question perfectly, with no false answers at all, but it has to actually store every item to do so, memory usage grows directly with the size of the set. For half a billion email addresses, that is a genuinely large amount of memory, especially if this check needs to happen on every single app server, not just one central place."
+        },
+        {
+          "type": "paragraph",
+          "content": "A Bloom filter sidesteps this entirely by never storing the actual items at all, just a compact, fixed-size summary of what has been inserted. The size of that summary is chosen upfront and barely grows even as the number of inserted items climbs into the billions, at the cost of that summary occasionally giving a wrong \"maybe\" answer."
+        },
+        {
+          "type": "paragraph",
+          "content": "This difference becomes dramatic at real scale. A hash set holding half a billion email addresses, at roughly 30 to 50 bytes each once accounting for string overhead and data structure bookkeeping, needs many gigabytes of memory. A Bloom filter tuned for the same half a billion items and a reasonable false-positive rate can often fit in a few hundred megabytes, an order of magnitude difference that matters enormously when that structure needs to be replicated across many servers."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a deeper structural reason for this gap too, a hash set has to store enough information to reconstruct the original item on lookup, or at least distinguish it from every other possible item perfectly. A Bloom filter gives up that reconstruction ability entirely, and that giving up is precisely what its memory savings come from."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. How It Works: A Bit Array and Multiple Hash Functions",
+          "text": "3. How It Works: A Bit Array and Multiple Hash Functions"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283191404-784231741.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283191404-784231741.png",
+          "alt": "Inserting an item runs it through several different hash functions, and sets the corresponding bit for each result",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283191404-784231741.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Underneath, a Bloom filter is simply a bit array, a long sequence of bits, all starting at 0, plus a handful of independent hash functions. To insert an item, run it through each hash function, and for each result, set the corresponding position in the bit array to 1."
+        },
+        {
+          "type": "code",
+          "content": "def insert(item):\n    for seed in range(NUM_HASHES):\n        index = hash(item, seed) % ARRAY_SIZE\n        bit_array[index] = 1",
+          "code": {
+            "language": "python",
+            "content": "def insert(item):\n    for seed in range(NUM_HASHES):\n        index = hash(item, seed) % ARRAY_SIZE\n        bit_array[index] = 1"
+          },
+          "codes": {
+            "python": "def insert(item):\n    for seed in range(NUM_HASHES):\n        index = hash(item, seed) % ARRAY_SIZE\n        bit_array[index] = 1"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Checking membership",
+          "text": "3.1 Checking membership"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521725-369386064.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521725-369386064.png",
+          "alt": "Checking an item runs it through the same hash functions, and looks up whether every resulting bit is already set",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521725-369386064.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "To check whether an item might be present, run it through the exact same hash functions, and check whether every single one of the resulting bit positions is already set to 1. If even one of them is still 0, the item is guaranteed to have never been inserted, since inserting it would have set that bit. If all of them happen to be 1, the item might have been inserted, or those bits might simply have been set by the combination of other, different items."
+        },
+        {
+          "type": "code",
+          "content": "def might_contain(item):\n    for seed in range(NUM_HASHES):\n        index = hash(item, seed) % ARRAY_SIZE\n        if bit_array[index] == 0:\n            return False  # definitely not present\n    return True  # possibly present",
+          "code": {
+            "language": "python",
+            "content": "def might_contain(item):\n    for seed in range(NUM_HASHES):\n        index = hash(item, seed) % ARRAY_SIZE\n        if bit_array[index] == 0:\n            return False  # definitely not present\n    return True  # possibly present"
+          },
+          "codes": {
+            "python": "def might_contain(item):\n    for seed in range(NUM_HASHES):\n        index = hash(item, seed) % ARRAY_SIZE\n        if bit_array[index] == 0:\n            return False  # definitely not present\n    return True  # possibly present"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Using multiple independent hash functions, rather than just one, is what actually gives a Bloom filter its practical accuracy. A single hash function would mean any two different items that happen to collide on that one hash share their entire fate, one false positive causes another instantly. Spreading the check across several independent hash functions means all of them would have to coincidentally agree for a false positive to occur, which is a much rarer event."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth noting the hash functions used here do not need any cryptographic properties at all, unlike a hash function used for security purposes, a Bloom filter simply needs functions that distribute their outputs roughly uniformly across the bit array, which makes them cheap and fast to compute, an important property given how many times they get called on a busy system."
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice, a single good general-purpose hash function is often used with different seed values to simulate several independent hash functions cheaply, rather than implementing entirely separate hash algorithms, a common and well-tested engineering shortcut that keeps the implementation simple without sacrificing the statistical independence the structure relies on."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. False Positives Are Possible, False Negatives Are Not",
+          "text": "4. False Positives Are Possible, False Negatives Are Not"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283194910-613115731.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283194910-613115731.png",
+          "alt": "An item that was never inserted can still have all its bits set to 1 purely by coincidence, from other items sharing those same positions",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283194910-613115731.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the one asymmetry that defines a Bloom filter entirely: it can tell you an item is present when it actually is not (a <strong>false positive</strong>), but it can never tell you an item is absent when it actually was inserted (no false negatives, ever). Once a bit is set to 1 by any item, it stays 1 for the lifetime of the filter, and any other item that happens to hash to the exact same set of positions will also read back as \"possibly present\", even though it was never actually inserted."
+        },
+        {
+          "type": "paragraph",
+          "content": "This one-directional guarantee is exactly what makes a Bloom filter safe to use as a fast pre-check in front of something authoritative: a \"maybe\" always triggers the expensive, real check just to be sure, while a \"definitely not\" can be trusted completely and skip that expensive check entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Why this asymmetry is actually useful, not just a limitation",
+          "text": "4.1 Why this asymmetry is actually useful, not just a limitation"
+        },
+        {
+          "type": "paragraph",
+          "content": "It would be easy to read this as pure downside, an imperfect answer instead of a perfect one. But notice what this specific imperfection allows: because a negative answer is completely trustworthy, a Bloom filter can be used anywhere a full, expensive check would otherwise run on every single request, letting the expensive check skip entirely for the majority of cases where the answer really is no."
+        },
+        {
+          "type": "paragraph",
+          "content": "Compare this to the opposite asymmetry, a structure that occasionally produced false negatives instead, that would be far more dangerous to use as a pre-check, since it could tell you an item is absent when it genuinely is not, causing a real, present item to be silently skipped entirely. The direction of the error a Bloom filter makes is not an accident, it is specifically the safer direction to be wrong in."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Choosing the Size and Number of Hash Functions",
+          "text": "5. Choosing the Size and Number of Hash Functions"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521726-115256549.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521726-115256549.png",
+          "alt": "A smaller bit array fills up with 1s faster, producing more false positives; a larger one keeps the false-positive rate lower",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521726-115256549.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The false-positive rate is a direct, tunable consequence of two choices made upfront: the size of the bit array relative to the number of items expected to be inserted, and the number of independent hash functions used. A larger array relative to the item count keeps more bits at 0, naturally producing fewer accidental collisions."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Choice\",\"Effect\"],\"rows\":[[\"Larger bit array\",\"Lower false-positive rate, more memory used\"],[\"More hash functions\",\"Lower false-positive rate up to a point, then it gets worse again as bits fill up faster\"],[\"More items inserted than planned for\",\"Rising false-positive rate over time as the array saturates\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice, teams pick a target false-positive rate (1 percent is common) and an expected number of items, and a standard formula derives the array size and hash function count needed to hit that target, rather than guessing at either number directly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 The formula behind the sizing",
+          "text": "5.1 The formula behind the sizing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283199752-477291007.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283199752-477291007.png",
+          "alt": "A standard formula derives the array size and hash count directly from how many items you expect and what false-positive rate you can tolerate",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283199752-477291007.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The standard formulas are <code>m = -(n * ln(p)) / (ln(2)^2)</code> for the bit array size, and <code>k = (m/n) * ln(2)</code> for the number of hash functions, where n is the expected number of items and p is the target false-positive rate. In practice, most Bloom filter libraries accept n and p directly as inputs and compute m and k internally, so this math rarely needs to be done by hand, but knowing it exists, and that it is a well-studied, standard derivation, is worth being able to reference."
+        },
+        {
+          "type": "list",
+          "content": "[\"A 1% target false-positive rate is a common, reasonable default for most general-purpose uses.\",\"Systems where the cost of a false positive is very high (triggering an expensive fallback) often tune toward a lower rate, accepting more memory use in exchange.\",\"Systems that only care about a rough, cheap pre-filter can tolerate a higher rate to save memory, since the fallback check is what actually guarantees correctness either way.\"]",
+          "items": [
+            "A 1% target false-positive rate is a common, reasonable default for most general-purpose uses.",
+            "Systems where the cost of a false positive is very high (triggering an expensive fallback) often tune toward a lower rate, accepting more memory use in exchange.",
+            "Systems that only care about a rough, cheap pre-filter can tolerate a higher rate to save memory, since the fallback check is what actually guarantees correctness either way."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth sanity-checking these numbers with a concrete example rather than trusting the formula blindly, for one million expected items and a 1 percent target false-positive rate, the formula works out to roughly 9.6 bits per item, well under 1.2 megabytes total, a useful reference point for judging whether a proposed filter size is in a reasonable ballpark."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Why You Cannot Remove an Item",
+          "text": "6. Why You Cannot Remove an Item"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283201384-799467024.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283201384-799467024.png",
+          "alt": "Clearing a bit to \"remove\" one item can silently break every other item that happens to share that same bit position",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283201384-799467024.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A standard Bloom filter supports insertion and lookup, but not deletion. Simply flipping a bit back to 0 to \"remove\" an item is dangerous, since that same bit might also be one of the positions used by a completely different item that is still supposed to be present, silently turning a true positive into a false negative for that other item, the one guarantee a Bloom filter is never supposed to break."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Counting Bloom Filters",
+          "text": "6.1 Counting Bloom Filters"
+        },
+        {
+          "type": "paragraph",
+          "content": "When deletion genuinely needs to be supported, a <strong>counting Bloom filter</strong> replaces each single bit with a small counter instead, incrementing on insert and decrementing on delete, only treating a position as \"empty\" once its counter actually reaches zero. This adds real memory overhead (a few bits per position instead of one), a direct trade of space for the ability to delete safely."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521726-554031826.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521726-554031826.png",
+          "alt": "A cuckoo filter is a newer alternative purpose-built to support deletion cleanly, without the extra memory overhead a counting Bloom filter needs",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521726-554031826.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A newer alternative worth knowing by name is the <strong>cuckoo filter</strong>, which supports deletion natively through a different underlying structure (based on cuckoo hashing rather than a plain bit array), often with better space efficiency than a counting Bloom filter for the same target false-positive rate. It is increasingly used in newer systems specifically because deletion support was a real, recurring pain point with the classic Bloom filter design."
+        },
+        {
+          "type": "paragraph",
+          "content": "This limitation is worth weighing early, during initial design, rather than discovering it only once a real product requirement for deletion shows up, retrofitting a counting or cuckoo variant onto a system already built around a plain Bloom filter is a meaningfully bigger change than choosing the right variant from the very start."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 A practical workaround without a new data structure",
+          "text": "6.2 A practical workaround without a new data structure"
+        },
+        {
+          "type": "paragraph",
+          "content": "When deletion is rare and a counting or cuckoo filter feels like overkill, some systems simply rebuild the entire Bloom filter from scratch periodically, from whatever the current true set of items actually is. This is a blunt, but simple and often perfectly adequate, way to handle deletions without adopting a more complex structure."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Real-World Uses",
+          "text": "7. Real-World Uses"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Databases and storage engines:</strong> checking whether a key might exist in a specific data file before paying for a real disk read, covered in more depth below.\",\"<strong>Web crawlers:</strong> quickly checking whether a URL has already been visited, without storing every single visited URL in full.\",\"<strong>CDN and cache layers:</strong> checking whether a piece of content might already be cached somewhere before making a network call to find out for certain.\",\"<strong>Password breach checks:</strong> services that let you check if a password appears in a known breach list, without transmitting or storing the actual password.\"]",
+          "items": [
+            "<strong>Databases and storage engines:</strong> checking whether a key might exist in a specific data file before paying for a real disk read, covered in more depth below.",
+            "<strong>Web crawlers:</strong> quickly checking whether a URL has already been visited, without storing every single visited URL in full.",
+            "<strong>CDN and cache layers:</strong> checking whether a piece of content might already be cached somewhere before making a network call to find out for certain.",
+            "<strong>Password breach checks:</strong> services that let you check if a password appears in a known breach list, without transmitting or storing the actual password."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Across every one of these uses, the underlying pattern is identical, an expensive, authoritative check exists somewhere (a database, a network call, a full URL history), and the Bloom filter sits in front of it purely to absorb the volume of checks that would otherwise be wasted on items that were never going to be found anyway."
+        },
+        {
+          "type": "paragraph",
+          "content": "Distributed databases also use Bloom filters between nodes themselves, to cheaply check whether a remote node might hold a piece of data worth requesting over the network, before actually paying for that network round trip, extending the same disk-read-avoidance idea from a single machine to an entire cluster."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 What happens when the filter fills up beyond its planned capacity",
+          "text": "7.1 What happens when the filter fills up beyond its planned capacity"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521726-115658707.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521726-115658707.png",
+          "alt": "A scalable Bloom filter adds a fresh layer once the current one starts producing too many false positives, rather than degrading silently forever",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521726-115658707.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "For workloads where the total number of items is not known upfront, a <strong>scalable Bloom filter</strong> starts with one filter sized for an initial estimate, and adds an additional filter layer once the false-positive rate of the current layer degrades past an acceptable threshold, checking a lookup against every layer added so far. This avoids the alternative of either wildly over-provisioning the initial size just in case, or accepting a silently rising false-positive rate as the true item count grows past what was planned for."
+        },
+        {
+          "type": "paragraph",
+          "content": "This layered approach mirrors a pattern seen elsewhere in distributed systems design, rather than trying to perfectly predict capacity upfront, the structure is built to degrade gracefully and then extend itself once a threshold is crossed, similar in spirit to how auto-scaling adds capacity to a service under real load rather than requiring it to be perfectly sized on day one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Bloom Filters Inside LSM Trees",
+          "text": "8. Bloom Filters Inside LSM Trees"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283207027-248160759.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283207027-248160759.png",
+          "alt": "Before reading from disk, an LSM tree checks a Bloom filter for each data file, skipping the ones that definitely do not contain the key",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283207027-248160759.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is, in practice, one of the most important real-world uses of a Bloom filter, and it is covered in full under LSM Trees elsewhere in this section. An LSM tree storage engine can end up with many separate data files (SSTables) on disk, and looking up a single key naively could mean checking every one of them. Keeping a small Bloom filter for each file lets the engine skip the disk read entirely for any file the filter confidently says does not contain the key, only paying the real disk cost for files that might actually have it."
+        },
+        {
+          "type": "paragraph",
+          "content": "This single optimization is a large part of why LSM tree based databases remain fast for reads despite having to potentially check many separate files for a single key, without Bloom filters guarding each one, every read could mean many wasted disk seeks for files that never had the key in the first place."
+        },
+        {
+          "type": "paragraph",
+          "content": "Each SSTable in an LSM tree typically carries its own dedicated Bloom filter, sized for the number of keys that specific file holds, rather than one shared filter for the entire dataset, since files are created and eventually discarded through compaction independently of each other."
+        },
+        {
+          "type": "paragraph",
+          "content": "Keeping these per-file filters resident in memory, rather than on disk alongside the actual data, is what makes the whole optimization worthwhile, checking a small in-memory filter is orders of magnitude faster than the disk seek it exists specifically to avoid."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Common Mistakes",
+          "text": "9. Common Mistakes"
+        },
+        {
+          "type": "list",
+          "content": "[\"Sizing the filter for the wrong number of expected items, letting the false-positive rate silently climb as real usage exceeds the original estimate.\",\"Trying to delete from a standard Bloom filter directly, corrupting the guarantees for unrelated items sharing the same bit positions.\",\"Treating a \\\"maybe present\\\" answer as a definite yes, skipping the authoritative check it was only ever meant to guard, not replace.\",\"Forgetting that a Bloom filter needs to be rebuilt, not incrementally patched, if the underlying dataset changes so much that resizing becomes necessary.\"]",
+          "items": [
+            "Sizing the filter for the wrong number of expected items, letting the false-positive rate silently climb as real usage exceeds the original estimate.",
+            "Trying to delete from a standard Bloom filter directly, corrupting the guarantees for unrelated items sharing the same bit positions.",
+            "Treating a \"maybe present\" answer as a definite yes, skipping the authoritative check it was only ever meant to guard, not replace.",
+            "Forgetting that a Bloom filter needs to be rebuilt, not incrementally patched, if the underlying dataset changes so much that resizing becomes necessary."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "A subtler mistake worth naming: assuming a Bloom filter is inherently thread-safe just because setting a single bit seems like a simple operation. Concurrent inserts from multiple threads without proper synchronization can still race and lose an update, depending on the exact underlying implementation, this is worth verifying rather than assuming for any library actually used in production."
+        },
+        {
+          "type": "paragraph",
+          "content": "Another common mistake is choosing a Bloom filter for a use case where deletions are actually frequent and central to the workload, rather than rare, in that situation the overhead of a counting variant, or a different structure entirely, is usually worth it from the start rather than retrofitting it later."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is also worth double checking the false-positive rate empirically once real data is loaded, rather than trusting the theoretical formula blindly, real-world key distributions occasionally interact with a specific hash function in unexpected ways that a clean mathematical model does not fully capture."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. HLD Interview: How to Talk About This",
+          "text": "10. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "A strong answer leads with the specific guarantee, no false negatives, possible false positives, since that asymmetry is the entire reason this structure is useful and safe to deploy as a pre-check. Being able to name a concrete real-world use, especially the LSM tree read-path optimization, shows the concept is understood as a practical tool, not just an abstract probability exercise."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A Bloom filter never lies about what is missing, it only occasionally exaggerates about what might be there."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is also worth being ready to sketch the bit array and hash function mechanism on a whiteboard if asked, being able to actually walk through an insert and a lookup step by step, rather than only describing the high-level behavior, tends to separate a candidate who has internalized the structure from one who has only memorized its name and purpose."
+        },
+        {
+          "type": "paragraph",
+          "content": "A natural follow-up question to expect is how you would decide the right false-positive rate for a specific system, a good answer ties the decision back to the actual cost of a false positive downstream, a false positive that only triggers a slightly wasted cache check is cheap to tolerate, while one that triggers an expensive cross-region network call deserves a much lower target rate."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "Key Takeaways",
+          "text": "Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"A Bloom filter answers \\\"definitely not present\\\" or \\\"possibly present\\\", using a fixed, tiny amount of memory regardless of set size.\",\"It works via a bit array and multiple hash functions, setting bits on insert and checking them on lookup.\",\"False positives are possible; false negatives are not, that one-directional guarantee is what makes it safe to use as a cheap pre-check.\",\"The false-positive rate is tunable through the array size and number of hash functions, chosen based on the expected number of items.\",\"Standard Bloom filters cannot support deletion safely; counting Bloom filters trade extra memory for that capability.\",\"One of the most important real-world uses is inside LSM tree storage engines, skipping unnecessary disk reads for keys that are not present in a given file.\"]",
+          "items": [
+            "A Bloom filter answers \"definitely not present\" or \"possibly present\", using a fixed, tiny amount of memory regardless of set size.",
+            "It works via a bit array and multiple hash functions, setting bits on insert and checking them on lookup.",
+            "False positives are possible; false negatives are not, that one-directional guarantee is what makes it safe to use as a cheap pre-check.",
+            "The false-positive rate is tunable through the array size and number of hash functions, chosen based on the expected number of items.",
+            "Standard Bloom filters cannot support deletion safely; counting Bloom filters trade extra memory for that capability.",
+            "One of the most important real-world uses is inside LSM tree storage engines, skipping unnecessary disk reads for keys that are not present in a given file."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "This structure connects most directly to LSM Trees in this section, but the underlying trade, a small amount of inaccuracy in exchange for a large amount of space efficiency, shows up as a recurring theme across many probabilistic data structures used throughout large-scale systems, well beyond just membership testing."
+        },
+        {
+          "type": "paragraph",
+          "content": "Treat this structure as a small, reusable tool worth reaching for any time a system needs to cheaply rule out the vast majority of negative answers before paying for something expensive, rather than a niche trick specific to any single technology or use case."
+        }
+      ]
+    }
+  ]
+}

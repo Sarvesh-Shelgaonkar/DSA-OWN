@@ -1,0 +1,528 @@
+{
+  "slug": "authorization",
+  "title": "Authorization",
+  "content": [
+    {
+      "id": "authorization",
+      "title": "Authorization",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Knowing who someone is turns out to be the easy half of the problem. The harder half, the one that actually decides whether a request should succeed, is figuring out what that already identified caller is allowed to do."
+        },
+        {
+          "type": "paragraph",
+          "text": "Authorization is that decision layer, and for an MCP server it is arguably where most of the real risk lives, because a server that authenticates perfectly but authorizes carelessly still lets a fully verified user delete a database they should never have touched."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson is about building that decision layer deliberately rather than letting it default to everything is allowed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Authorization Is a Separate Question From Identity",
+          "id": "authz-separate-question"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173288737-380969101.png",
+          "alt": "Knowing who a caller is is compared against knowing what they can do",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173288737-380969101.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Authentication answers who is calling. Authorization answers a completely different question, given that we know who this is, should this particular request be allowed to proceed. Conflating the two is one of the most common design mistakes in MCP servers, a team builds solid token verification and then simply lets any verified caller invoke any tool with any arguments, because verification felt like the whole job."
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice these are two independent layers that happen to run back to back on every request. A server can have excellent authentication and terrible authorization, or the reverse, a server with no real identity check at all but a strict per action allowlist. Neither extreme is safe, but understanding that they are separate lets you actually test and reason about each one on its own terms."
+        },
+        {
+          "type": "paragraph",
+          "text": "A helpful way to keep the two straight while reviewing code is to ask, for any given check, whether it is looking at the request's credential or at the request's target. A check that only inspects the token is authentication, a check that inspects the token against a specific tool or resource is authorization."
+        },
+        {
+          "type": "note",
+          "title": "A simple framing",
+          "content": "Authentication proves identity once per session or per call, authorization is evaluated fresh for every single action that identity attempts to take."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The Principle of Least Privilege",
+          "id": "authz-least-privilege"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173290567-617721298.png",
+          "alt": "Minimum needed access is compared against broad default access",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173290567-617721298.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Least privilege means a caller should be granted the smallest set of permissions that lets it do its actual job, nothing more. For an MCP server this shows up very concretely, a tool that only ever needs to read a customer's order history should never be reachable by a credential that also happens to have write access to billing records, even if no legitimate request would ever combine the two."
+        },
+        {
+          "type": "paragraph",
+          "text": "The value of least privilege is not that it prevents an honest caller from making a mistake, it is that it shrinks the blast radius when something goes wrong, a leaked token, a compromised client, a bug in an agent's reasoning that causes it to call the wrong tool. A narrowly scoped credential can only cause narrow damage."
+        },
+        {
+          "type": "paragraph",
+          "text": "Least privilege also pays off in a quieter way, it forces a team to actually think through what each integration needs before granting it anything, rather than reaching for a broad admin style credential because it is the path of least resistance during initial development."
+        },
+        {
+          "type": "note",
+          "title": "Start narrow, widen deliberately",
+          "content": "It is far easier to grant an additional scope later when a real need shows up than to discover, after an incident, that a credential had far more reach than anyone intended."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a scope-checked tool call\nREQUIRED_SCOPE = \"orders:read\"\n\ndef call_tool(identity, tool_name, args):\n    if REQUIRED_SCOPE not in identity.scopes:\n        raise PermissionError(f\"missing scope {REQUIRED_SCOPE}\")\n    return tools[tool_name](args)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Scoping Permissions Per Tool",
+          "id": "authz-per-tool-scoping"
+        },
+        {
+          "type": "paragraph",
+          "text": "An MCP server typically exposes a handful of distinct tools, and each one deserves its own explicit permission rather than a single blanket yes or no for the whole server. A tool that reads a calendar and a tool that sends an email on the user's behalf are wildly different in risk, and treating them as equally sensitive either over restricts the safe one or under restricts the dangerous one."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Tool\",\"Risk level\",\"Typical scope\"],\"rows\":[[\"read_calendar\",\"Low\",\"calendar:read\"],[\"send_email\",\"High\",\"email:send\"],[\"delete_file\",\"High\",\"files:write\"],[\"search_docs\",\"Low\",\"docs:read\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Defining scopes at the tool level also makes the permission model self documenting, anyone reviewing the server's tool list can see at a glance which capabilities are gated behind which scope, without needing to read the implementation of every handler."
+        },
+        {
+          "type": "paragraph",
+          "text": "This documentation benefit compounds as a server grows, a new engineer joining the team can read the scope table and understand the server's risk surface in minutes, instead of tracing through every handler to figure out what could go wrong if a particular credential leaked."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Scoping Permissions Per Resource",
+          "id": "authz-per-resource-scoping"
+        },
+        {
+          "type": "paragraph",
+          "text": "Tool level scoping answers whether a caller can use a capability at all, resource level scoping answers which specific pieces of data that capability may touch. A support agent's token might legitimately have the read_ticket scope, but that alone does not mean it should be able to read every customer's tickets, it should very likely be limited to tickets assigned to that agent or their team."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def get_ticket(identity, ticket_id):\n    ticket = db.tickets.find_one({\"id\": ticket_id})\n    if ticket.owner_team not in identity.teams:\n        raise PermissionError(\"ticket not in caller's team\")\n    return ticket"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This distinction, capability versus data, is easy to skip early on because tool level checks are simpler to write and often look sufficient in a demo. It becomes a real gap the moment a server has more than one tenant, more than one team, or more than one customer sharing the same deployment."
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful test for whether resource level scoping is needed is asking whether two different callers with the identical tool level scope could legitimately see different results from the same tool. If the answer is yes, tool level scoping alone is not enough."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Where the Authorization Check Belongs",
+          "id": "authz-check-placement"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173292268-285637702.png",
+          "alt": "An authorization check sits between an authenticated caller and the requested action",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173292268-285637702.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Just like authentication, authorization checks are far safer when they run through one shared enforcement point rather than being reimplemented inside every tool handler. A single central function that every request passes through means a new tool added six months from now automatically inherits the same scrutiny, instead of relying on whoever writes that tool to remember to add a check."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def dispatch(identity, tool_name, args):\n    required = TOOL_SCOPES[tool_name]\n    if required not in identity.scopes:\n        deny(identity, tool_name)\n        raise PermissionError(f\"{tool_name} requires scope {required}\")\n    allow(identity, tool_name)\n    return TOOLS[tool_name](args)"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Centralize it",
+          "content": "A scattered authorization check that lives inside ten different tool handlers will eventually have an eleventh handler that forgets it entirely."
+        },
+        {
+          "type": "paragraph",
+          "text": "Centralizing the check also makes it dramatically easier to change the rules later, tightening a scope requirement or adding a new resource level restriction becomes a single code change instead of a hunt through every handler that might need updating."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Role Based and Attribute Based Models",
+          "id": "authz-role-attribute-models"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173293930-397966945.png",
+          "alt": "A role based model is compared against an attribute based model",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173293930-397966945.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two common patterns for organizing permissions are role based access control, where a caller is assigned one or more roles and each role carries a fixed bundle of scopes, and attribute based access control, where a decision is computed from attributes of the caller, the resource, and the context at request time. Role based models are simpler to reason about and audit, attribute based models are more flexible when access genuinely depends on situational detail."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Model\",\"Strength\",\"Weakness\"],\"rows\":[[\"Role based\",\"Simple, easy to audit\",\"Can get coarse if roles multiply\"],[\"Attribute based\",\"Flexible, context aware\",\"Harder to reason about and test\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most MCP servers do well starting with a small, clear set of roles, and only reaching for attribute based rules when a genuine business need demands it, such as restricting access based on time of day, geography, or the sensitivity of a particular record."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a small role based model is often enough to start\nROLES = {\n    \"viewer\": {\"read\"},\n    \"editor\": {\"read\", \"write\"},\n    \"admin\": {\"read\", \"write\", \"delete\"},\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Deny by Default",
+          "id": "authz-deny-by-default"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173295552-673515380.png",
+          "alt": "Deny by default is compared against allow by default",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173295552-673515380.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A safe authorization model treats every action as forbidden unless explicitly granted, rather than treating every action as allowed unless explicitly forbidden. This matters enormously the moment a new tool is added to a server, deny by default means a freshly added tool is unreachable until someone deliberately grants access to it, which is a far safer failure mode than a new tool being callable by everyone the instant it ships."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# deny by default\ndef is_allowed(identity, tool_name):\n    return tool_name in identity.scopes  # absence means denied, not allowed"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The opposite pattern, allow by default with an exclusion list, tends to accumulate silent gaps over time, because it is much easier to notice a permission that is missing than a permission that was never supposed to exist in the first place."
+        },
+        {
+          "type": "paragraph",
+          "text": "Deny by default also makes onboarding a new tool safer in a subtle way, the person adding the tool is forced to explicitly decide who should have access, rather than the tool silently inheriting whatever access happened to already exist."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Authorizing Autonomous Agents",
+          "id": "authz-autonomous-agents"
+        },
+        {
+          "type": "paragraph",
+          "text": "When the caller is an autonomous agent rather than a human clicking through a confirmation dialog, authorization has to work harder, because there is no person in the loop pausing to reconsider before a risky action fires. An agent that decides on its own to call delete_file needs the server to enforce the same scope check it would enforce for a human, the agent's own internal reasoning is not a substitute for a hard permission boundary."
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful pattern here is granting agents intentionally narrower scopes than the humans who deploy them, an agent tasked with summarizing a project should simply never receive a scope that would let it modify anything, regardless of how well it has behaved so far."
+        },
+        {
+          "type": "paragraph",
+          "text": "It also helps to distinguish between an agent's own credential and the credential of the human who launched it. If an agent inherits the full scope of the person running it, a single misjudged step by the agent has exactly the same reach as a mistake made directly by that person, which is rarely the intended tradeoff."
+        },
+        {
+          "type": "note",
+          "title": "Agents need tighter bounds, not looser ones",
+          "content": "An agent operating without a human reviewing every step should be granted the narrowest permission set that still lets it complete its task, since there is no pause for a second look before an action executes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Session Scoped Permissions",
+          "id": "authz-session-scoped"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173297113-396344742.png",
+          "alt": "A permission scoped to one session does not carry over to the next",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173297113-396344742.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Permissions do not have to be fixed for the lifetime of a credential, a server can narrow what is allowed for the duration of a single session based on context, such as granting only read access for a session that started from an unrecognized client, even if that same user's account would normally permit writes."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def session_scopes(identity, session):\n    if session.client_trusted:\n        return identity.scopes\n    return [s for s in identity.scopes if s.endswith(\":read\")]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This kind of dynamic narrowing is a good defense in depth measure, it does not replace the underlying permission model, but it shrinks what a compromised or unusual session can do without requiring a change to the user's actual account permissions."
+        },
+        {
+          "type": "paragraph",
+          "text": "Session scoping is particularly useful for MCP clients that connect from varied environments, a personal laptop, a shared kiosk, an unfamiliar network, since it lets a server react to context it can observe even when the underlying account permissions stay fixed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Returning Safe Denial Responses",
+          "id": "authz-safe-denials"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173298766-528582729.png",
+          "alt": "A denial response reveals nothing extra about why access was denied",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173298766-528582729.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a request is denied, the response a caller sees should say clearly that the action was not permitted, without revealing details that help someone probe for a gap, such as confirming that a specific resource exists but simply belongs to someone else. A denial for a resource that does not exist and a denial for a resource the caller cannot see should ideally look identical from the outside."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def get_ticket_safe(identity, ticket_id):\n    ticket = db.tickets.find_one({\"id\": ticket_id})\n    if not ticket or ticket.owner_team not in identity.teams:\n        raise NotFoundError(\"ticket not found\")  # same error either way\n    return ticket"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a small detail with a real payoff, it prevents an attacker from using denial messages as a map of what exists in a system, while still giving a legitimate caller a clear enough signal to know the request simply did not go through."
+        },
+        {
+          "type": "note",
+          "title": "Consistent denials",
+          "content": "A denial response should look the same whether a resource does not exist or simply is not visible to this caller, otherwise the error message itself becomes a way to enumerate what exists."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Logging Authorization Decisions",
+          "id": "authz-logging-decisions"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every allow and every deny is worth recording, not just denials. Knowing that a particular credential was granted access to a sensitive tool at a particular time is just as important for later review as knowing when access was refused, especially once you reach the auditing practices covered later in this module."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Which identity made the request",
+            "Which tool or resource was requested",
+            "Whether the request was allowed or denied",
+            "Which scope or rule made that decision",
+            "A timestamp precise enough to correlate with other logs"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Skipping this logging is understandable early on, it feels like overhead for a server that is not yet handling anything sensitive, but retrofitting it after an incident is far harder than building it in from the first version."
+        },
+        {
+          "type": "paragraph",
+          "text": "A log of allow decisions also has an everyday, non incident related use, it lets a team answer routine questions like which teams actually rely on a given tool before deprecating it, without needing to guess from support tickets or memory."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Testing Your Authorization Rules Directly",
+          "id": "authz-testing-rules"
+        },
+        {
+          "type": "paragraph",
+          "text": "Authorization logic deserves its own dedicated tests, separate from whatever tests exist for a tool's actual functionality. A test suite that only ever calls tools with a fully privileged identity will never notice that a scope check is missing, because it never exercises the denied path at all."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def test_read_only_scope_cannot_delete():\n    identity = Identity(scopes=[\"files:read\"])\n    with pytest.raises(PermissionError):\n        call_tool(identity, \"delete_file\", {\"path\": \"/data/report.csv\"})"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A good rule of thumb is that every scope defined in the system should have at least one test proving that a caller without it is actually rejected, not just one proving that a caller with it succeeds."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def test_viewer_role_cannot_write():\n    identity = Identity(role=\"viewer\")\n    with pytest.raises(PermissionError):\n        call_tool(identity, \"update_record\", {\"id\": 1, \"value\": \"x\"})"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Revisiting Permissions as a Server Grows",
+          "id": "authz-revisiting-permissions"
+        },
+        {
+          "type": "paragraph",
+          "text": "The right set of scopes for a server on day one is rarely the right set a year later, new tools get added, old ones get retired, and roles that made sense for a five person team can become far too coarse once fifty people depend on the same server. Authorization is not a one time design exercise, it needs a periodic review, the same way dependencies get updated and credentials get rotated."
+        },
+        {
+          "type": "paragraph",
+          "text": "A practical habit is reviewing the full scope list whenever a new tool ships, asking explicitly which existing roles should and should not receive access to it, rather than defaulting the new tool into every role that happened to exist already."
+        },
+        {
+          "type": "paragraph",
+          "text": "Treating this review as part of the normal release checklist, alongside things like updating documentation, keeps it from being skipped under deadline pressure, which is exactly when a hastily added tool is most likely to end up reachable by roles that were never meant to have it."
+        },
+        {
+          "type": "list",
+          "items": [
+            "List every tool and the scope it currently requires",
+            "Note which roles hold each scope today",
+            "Flag any role that holds a scope it no longer clearly needs",
+            "Confirm any newly added tool has a deliberately chosen scope, not a default one"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "authz-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider an MCP server for a small engineering team that exposes three tools, read_deploy_status, trigger_deploy, and rollback_deploy. The team defines two roles, viewer with only the read scope, and releaser with all three scopes, and issues tokens carrying one role or the other depending on who is requesting access."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "ROLE_SCOPES = {\n    \"viewer\": {\"deploy:read\"},\n    \"releaser\": {\"deploy:read\", \"deploy:trigger\", \"deploy:rollback\"},\n}\n\ndef authorize(identity, tool_name):\n    required = TOOL_SCOPE[tool_name]\n    if required not in ROLE_SCOPES.get(identity.role, set()):\n        log_denied(identity, tool_name)\n        raise PermissionError(f\"role {identity.role} cannot use {tool_name}\")\n    log_allowed(identity, tool_name)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A contractor who only needs visibility into deploy status is issued a viewer token, which means even if their credential were somehow misused, the worst outcome is an unauthorized read, not an unauthorized production rollback. That gap between what viewer and releaser can do is the entire value of scoping tools individually instead of granting blanket access to anyone who authenticates successfully."
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice too that this design keeps the tool implementations themselves completely unaware of roles, delete_file or trigger_deploy do not need to know anything about viewer or releaser, they simply run once the shared authorize function has already let the request through, which keeps the permission logic in one place instead of leaking into every handler."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "authz-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Treating a successful authentication check as proof the caller can do anything",
+            "Granting broad scopes because narrowing them felt like extra work early on",
+            "Checking permissions inside individual tool handlers instead of one shared enforcement point",
+            "Allowing by default and trying to remember to add exclusions for risky tools",
+            "Returning error messages that reveal whether a resource exists even when access is denied",
+            "Never revisiting roles and scopes as new tools are added to the server"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "authz-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take a small MCP server, real or one you sketch for this exercise, with at least three tools of varying risk. Define at least two roles, assign each tool a required scope, and write a central authorization function that every tool call passes through. Then write a test for each tool proving a caller lacking the right scope is rejected, and confirm the denial message does not leak whether the underlying resource exists."
+        },
+        {
+          "type": "paragraph",
+          "text": "As a stretch, add session scoped narrowing so that a session originating from an unrecognized client automatically loses write scopes, even for an identity that would normally hold them."
+        },
+        {
+          "type": "paragraph",
+          "text": "If you want to go further, add an authorization log for every attempt, allowed or denied, and write a short script that answers a realistic question from that log alone, such as which scope was denied most often last week, the kind of question a real security review would actually ask."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "authz-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Authorization is the decision that actually protects your system, authentication only tells you who is asking. Scope permissions per tool and per resource, default to denying anything not explicitly granted, and log every decision so a review months later can reconstruct exactly what happened and why."
+        },
+        {
+          "type": "paragraph",
+          "text": "With authorization in place, the next question is how a caller proves its identity in the first place using a simple long lived secret, which is exactly what the next lesson, API Keys, covers."
+        },
+        {
+          "type": "paragraph",
+          "text": "Whatever authentication mechanism a server ultimately chooses, the authorization rules described here stay the same, they operate on whatever identity comes out the other side, whether that identity was established with a shared secret, a short lived token, or a full delegated login flow."
+        }
+      ]
+    }
+  ]
+}

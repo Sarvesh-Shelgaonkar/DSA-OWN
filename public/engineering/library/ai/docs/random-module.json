@@ -1,0 +1,443 @@
+{
+  "slug": "random-module",
+  "title": "Random Module",
+  "content": [
+    {
+      "id": "random-module",
+      "title": "Random Module",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Every time you train a model, randomness is quietly doing a lot of the work. The starting weights of your network, the order your training examples get shuffled in, which rows end up in your test set, which neurons get dropped during training, all of it comes from calls into NumPy's random number generation tools. If you don't control that randomness on purpose, your experiments become impossible to repeat, and debugging turns into chasing a ghost. This lesson walks through <code>numpy.random</code> end to end: the modern recommended way to generate random numbers, why it replaced the old approach, how seeding gives you full reproducibility, and the handful of generator methods you will reach for constantly as an ML engineer."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606897934-783029618.png",
+          "alt": "A small flow showing randomness touching weight init, data shuffle, train test split, dropout, and data augmentation",
+          "caption": "Randomness shows up at almost every stage of a typical ML pipeline.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Introduction",
+          "id": "introduction"
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to name the exact places randomness shows up before diving into the API itself. Once you see the list, you'll notice that \"random\" in ML almost never means \"arbitrary.\" It means \"drawn from a controlled process so the model doesn't learn some accidental pattern in how the data happened to be ordered or initialized.\""
+        },
+        {
+          "type": "list",
+          "items": [
+            "Weight initialization: a network's weights start as small random numbers, usually drawn from a normal or uniform distribution, so different neurons don't all learn the exact same thing.",
+            "Shuffling datasets: rows get reshuffled before each training epoch so the model doesn't memorize the order examples happen to appear in.",
+            "Train and test splits: which rows land in training versus testing is a random decision, and it needs to be a decision you can repeat.",
+            "Dropout: during training, a random subset of neurons gets temporarily switched off on each pass, which helps prevent overfitting.",
+            "Data augmentation: random crops, rotations, and flips applied to images, or random word swaps in text, all rely on the same random number tools.",
+            "Sampling: picking a random batch from a large dataset, or sampling a subset of rows for a quick experiment, both come down to random selection."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "All of these rely on the same underlying toolkit: <code>numpy.random</code>. NumPy actually ships two different ways to reach for randomness, an older one built around global shared state, and a newer one built around an explicit generator object. Understanding the difference between them is not just trivia, it directly affects whether your experiments are reproducible."
+        },
+        {
+          "type": "note",
+          "title": "What this lesson covers",
+          "content": "You will see both the legacy global state API and the modern Generator API, understand exactly why the modern one is preferred, learn how seeding gives you reproducibility, and walk through the core generator methods you'll use constantly: <code>random</code>, <code>integers</code>, <code>normal</code>, <code>choice</code>, <code>shuffle</code>, and <code>permutation</code>."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Modern vs Legacy Random APIs",
+          "id": "modern-vs-legacy-random-apis"
+        },
+        {
+          "type": "paragraph",
+          "text": "NumPy has carried two parallel ways of generating random numbers for years. New code should almost always reach for the modern one, but you will still run into the legacy one constantly in older codebases, tutorials, and papers' reference implementations, so it's worth understanding both."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.1 The Legacy Global State API",
+          "id": "legacy-global-state-api"
+        },
+        {
+          "type": "paragraph",
+          "text": "The original NumPy random API works by calling functions directly on the <code>numpy.random</code> module, like <code>np.random.rand()</code> or <code>np.random.randint()</code>. Underneath, these functions all read from and write to one single, shared, global random state that lives inside the module itself. You seed that global state with <code>np.random.seed(42)</code>, and from that point on, every call anywhere in your program pulls the next number out of that same shared stream."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\nnp.random.seed(42)\nprint(np.random.rand())      # 0.3745401188473625\nprint(np.random.randint(10)) # 9\n\n# both calls above advanced the SAME global stream\nprint(np.random.rand())      # a different number again, drawn from that shared state"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606899733-373726438.png",
+          "alt": "A diagram showing two libraries both calling np.random.rand and both mutating one shared global state object",
+          "caption": "The legacy API funnels every call, from every part of your program, through one shared mutable object.",
+          "size": "medium"
+        },
+        {
+          "type": "paragraph",
+          "text": "The trouble is that this global state is shared by literally everything: your own code, any library you import that also happens to call NumPy's legacy random functions, even a testing framework running in the background. If two unrelated pieces of code both draw from that same global stream, the order in which they happen to run changes what numbers each one gets. Reorder an import, add an extra print statement that triggers a random call somewhere, or upgrade a dependency that now calls <code>np.random</code> once more than it used to, and your \"reproducible\" seeded run quietly stops being reproducible."
+        },
+        {
+          "type": "note",
+          "title": "Gotcha: the legacy API is a shared mutable singleton",
+          "content": "Calling <code>np.random.seed()</code> resets state that every other consumer of <code>numpy.random</code> also reads from. Two libraries, or even two unrelated modules in your own project, drawing from that same stream can silently interfere with each other. This is exactly the class of bug that the modern Generator API was built to eliminate."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.2 The Modern Generator API",
+          "id": "modern-generator-api"
+        },
+        {
+          "type": "paragraph",
+          "text": "The modern approach starts with <code>np.random.default_rng()</code>, which returns a <code>Generator</code> object. That object holds its own private random state, separate from the legacy global module state and separate from every other <code>Generator</code> you create. You call methods directly on that object, like <code>rng.random()</code> or <code>rng.integers()</code>, instead of calling functions on the module."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\nrng = np.random.default_rng(seed=42)\nprint(rng.random())      # 0.7739560485559633\nprint(rng.integers(10))  # 7\n\n# a second, independent generator, completely unaffected by the one above\nrng2 = np.random.default_rng(seed=123)\nprint(rng2.random())     # its own separate sequence"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606901152-339913577.png",
+          "alt": "Two separate default_rng generators, each with its own seed, each producing its own independent reproducible output",
+          "caption": "Each Generator instance owns its own state. Nothing outside it can disturb its sequence of draws.",
+          "size": "medium"
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice that <code>rng</code> and <code>rng2</code> above never touch each other. You can pass <code>rng</code> around your codebase, into a data loader, a model initializer, a shuffling function, and every one of those pieces of code shares that exact same, deliberately shared, generator instance if you want them to, or gets its own fresh one if you don't. Either way, it's an explicit choice you make, not an accident of import order."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.3 Why the Modern Generator Is Preferred",
+          "id": "why-generator-preferred"
+        },
+        {
+          "type": "paragraph",
+          "text": "The core difference comes down to state ownership. The legacy API forces every consumer of randomness in your program to share one object whether they want to or not. The modern API lets each part of your code hold its own isolated, independently seeded generator, so behavior in one place can never leak into another place by accident."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Legacy np.random module\",\"Modern Generator via default_rng\"],\"rows\":[[\"State ownership\",\"One shared global state for the whole process\",\"Each Generator instance owns its own private state\"],[\"Interference risk\",\"Any import or call anywhere can shift what you get next\",\"Completely isolated from other generators and libraries\"],[\"Reproducibility\",\"Fragile, breaks if call order changes anywhere in the process\",\"Robust, a given seed always produces the same sequence\"],[\"Typical call style\",\"np.random.seed then np.random.rand\",\"rng equals np.random.default_rng seed then rng.random\"],[\"Recommended for new code\",\"No, kept mainly for backward compatibility\",\"Yes, this is the officially recommended approach\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice this means new NumPy code, and any ML code you write today, should create a <code>Generator</code> with <code>default_rng()</code> right at the start and pass that single object wherever randomness is needed, rather than calling <code>np.random.seed()</code> once and hoping every downstream function behaves."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Reproducibility via Seeding",
+          "id": "reproducibility-via-seeding"
+        },
+        {
+          "type": "paragraph",
+          "text": "Reproducibility is the entire point of seeding. A <strong>seed</strong> is just a starting number you hand to <code>default_rng()</code>. Every \"random\" number that generator produces afterward is actually the output of a deterministic algorithm running on that starting number, so the exact same seed always produces the exact same sequence of draws, every single time, on every machine."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606902490-12475377.png",
+          "alt": "One seed value feeding two separate runs, both producing identical sequences of draws",
+          "caption": "The same seed, used the same way, always produces the same sequence, no matter how many times you run it.",
+          "size": "medium"
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\nrng = np.random.default_rng(seed=7)\nprint([rng.integers(100) for _ in range(5)])   # [26, 39, 78, 8, 30]\n\nrng_again = np.random.default_rng(seed=7)\nprint([rng_again.integers(100) for _ in range(5)])   # [26, 39, 78, 8, 30]  identical"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This matters enormously in ML work. When a model behaves oddly, being able to rerun the exact same training loop and get the exact same weight initialization, the exact same shuffle order, and the exact same dropout mask lets you actually isolate what changed. Without a fixed seed, every rerun is a different experiment, and you can never be fully sure whether a fix actually fixed anything or the result just got lucky this time. Seeding is also what lets a teammate, or a reviewer, or your future self six months from now, rerun your experiment and land on the same numbers you reported."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.1 What a Seed Actually Does",
+          "id": "what-a-seed-does"
+        },
+        {
+          "type": "paragraph",
+          "text": "A seed initializes the internal state of the generator's underlying algorithm. Nothing NumPy produces is truly random in the physical sense, it is <strong>pseudorandom</strong>: a long, well distributed sequence of numbers that looks random to any statistical test, but is fully determined by that one starting seed. Give the same seed to the same version of NumPy, and you get the same sequence back, guaranteed."
+        },
+        {
+          "type": "note",
+          "title": "Pseudorandom, not truly random",
+          "content": "This determinism is a feature, not a limitation. It is exactly what makes seeded random number generation useful for science and engineering: you get numbers that behave statistically like randomness, while still being fully reproducible whenever you need them to be."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.2 When to Avoid True Randomness",
+          "id": "avoid-true-randomness"
+        },
+        {
+          "type": "paragraph",
+          "text": "If you call <code>np.random.default_rng()</code> with no seed at all, NumPy pulls entropy from the operating system to seed itself, and you get a genuinely different sequence on every run. During active model development, that is almost always the wrong choice."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606913254-91903067.png",
+          "alt": "Two paths: no seed leads to different draws each run and an unreproducible bug, a fixed seed leads to identical draws and a fixable bug",
+          "caption": "Skipping the seed during development turns every bug into a moving target.",
+          "size": "medium"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture debugging a training run that occasionally produces exploding gradients. Without a fixed seed, every attempt to reproduce the failure uses a completely different weight initialization and a completely different shuffle order, so the bug shows up on some runs and vanishes on others for no reason you can pin down. With a fixed seed, you can rerun the exact same conditions as many times as you need, add print statements, step through with a debugger, and trust that any change in behavior came from your code change, not from a new roll of the dice."
+        },
+        {
+          "type": "note",
+          "title": "A practical rule of thumb",
+          "content": "Fix a seed for every experiment while you are developing and debugging. Once a model is fully validated and you are running final production training, it is reasonable to use a fresh, unseeded run, or a randomly chosen seed that you log and report alongside your results, so the final numbers reflect genuine variation rather than one lucky roll."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Core Distributions and Generator Methods",
+          "id": "core-distributions-generator-methods"
+        },
+        {
+          "type": "paragraph",
+          "text": "With a <code>Generator</code> object in hand, a handful of methods cover almost everything you'll need day to day as an ML engineer: drawing uniform floats, drawing random integers, drawing from a normal distribution, sampling from an existing array, and shuffling data. Each one is covered below with a small, focused example."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.1 Uniform Floats with rng.random",
+          "id": "rng-random"
+        },
+        {
+          "type": "paragraph",
+          "text": "<code>rng.random()</code> returns a float sampled uniformly from the half open interval zero to one, meaning zero is a possible result but one is not. Pass a shape to get back an entire array of them at once."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "rng = np.random.default_rng(seed=1)\n\nsingle = rng.random()          # 0.5118216247145734\nbatch = rng.random(size=5)     # array of 5 floats, each in [0.0, 1.0)"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606904106-234856058.png",
+          "alt": "rng.random producing one uniform float between zero and one, example shown as 0.37",
+          "caption": "rng.random gives you plain uniform floats, the building block behind most other distributions.",
+          "size": "small"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.2 Random Integers with rng.integers",
+          "id": "rng-integers"
+        },
+        {
+          "type": "paragraph",
+          "text": "<code>rng.integers(low, high)</code> returns a random integer from <code>low</code> up to but not including <code>high</code>. This is what you reach for whenever you need a random index, a random batch size, or a random count of anything."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "rng = np.random.default_rng(seed=1)\n\none_die_roll = rng.integers(1, 7)          # an integer from 1 through 6\nrandom_indices = rng.integers(0, 1000, size=8)   # 8 random integers, each from 0 up to 999"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606905472-763752578.png",
+          "alt": "rng.integers with a low and high bound producing one random integer, example shown as 7",
+          "caption": "rng.integers is the go to method whenever you need a random index or count.",
+          "size": "small"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.3 Normal Draws with rng.normal",
+          "id": "rng-normal"
+        },
+        {
+          "type": "paragraph",
+          "text": "<code>rng.normal(loc, scale)</code> draws from a normal, or Gaussian, distribution, where <code>loc</code> is the mean and <code>scale</code> is the standard deviation. This is the distribution behind most weight initialization schemes: you want a network's starting weights to be small random numbers clustered around zero, not wildly spread out, so training starts from a stable place."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "rng = np.random.default_rng(seed=1)\n\nweights = rng.normal(loc=0.0, scale=0.05, size=(4, 3))\n# a 4 by 3 matrix of weights, centered around 0.0, mostly within about 0.15 of it"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606906911-376281932.png",
+          "alt": "rng.normal with a mean and standard deviation producing a Gaussian distributed sample used for weight init",
+          "caption": "rng.normal is the distribution behind almost every weight initialization scheme in deep learning.",
+          "size": "small"
+        },
+        {
+          "type": "note",
+          "title": "Why normal, and why small",
+          "content": "Real initialization schemes like Xavier or He initialization are really just <code>rng.normal</code> with a carefully chosen scale that depends on the layer's size. The math behind choosing that scale is a topic of its own, but the underlying draw is exactly this method."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.4 Sampling with rng.choice",
+          "id": "rng-choice"
+        },
+        {
+          "type": "paragraph",
+          "text": "<code>rng.choice(array, size, replace)</code> picks random elements out of an existing array. With <code>replace=True</code>, the same element can be picked more than once. With <code>replace=False</code>, every picked element is unique, which is what you want for sampling a subset of rows without duplicating any of them."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "data = np.array(['cat', 'dog', 'fish', 'bird', 'lion'])\nrng = np.random.default_rng(seed=1)\n\nwith_dupes = rng.choice(data, size=8, replace=True)     # may repeat entries\nno_dupes = rng.choice(data, size=3, replace=False)      # 3 distinct entries, never repeated"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606908371-405836316.png",
+          "alt": "rng.choice with replace true allowing duplicates versus replace false forbidding duplicates",
+          "caption": "Whether replace is true or false decides if the same item can be picked twice.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.5 Shuffling In Place vs Permutation",
+          "id": "shuffle-vs-permutation"
+        },
+        {
+          "type": "paragraph",
+          "text": "<code>rng.shuffle(array)</code> reorders an array's elements randomly, but it does so <strong>in place</strong>: the original array itself gets modified, and the method returns nothing. <code>rng.permutation(array)</code> does the same kind of reordering, but instead returns a brand new shuffled array and leaves the original untouched."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "rng = np.random.default_rng(seed=1)\n\noriginal = np.array([0, 1, 2, 3, 4])\nrng.shuffle(original)\nprint(original)          # the original array, now reordered\n\nrng2 = np.random.default_rng(seed=1)\nsource = np.array([0, 1, 2, 3, 4])\nshuffled_copy = rng2.permutation(source)\nprint(source)            # unchanged: [0, 1, 2, 3, 4]\nprint(shuffled_copy)     # a new, separately reordered array"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606910073-879950154.png",
+          "alt": "rng.shuffle reordering an array in place versus rng.permutation returning a new shuffled copy",
+          "caption": "Same idea, different contracts: shuffle mutates, permutation returns something new.",
+          "size": "medium"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"rng.shuffle\",\"rng.permutation\"],\"rows\":[[\"Modifies original array\",\"Yes, in place\",\"No, original is left untouched\"],[\"Return value\",\"None\",\"A new shuffled array\"],[\"Typical use\",\"Reordering a dataset you already own and want to mutate directly\",\"Getting a shuffled order without disturbing the source array\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Worked Example: Reproducible Train Test Split",
+          "id": "worked-example-train-test-split"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is all of this put together in the exact shape you'll use it in practice: splitting a dataset into training and testing sets, in a way that is fully reproducible because it is driven by one seeded generator."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\n# pretend we have 1000 rows of training data\nnum_rows = 1000\nX = np.arange(num_rows)   # stand in for your actual feature rows\n\nrng = np.random.default_rng(seed=42)\n\n# shuffle a plain index array instead of shuffling X directly,\n# so we can apply the exact same order to labels later too\nindices = np.arange(num_rows)\nrng.shuffle(indices)\n\nsplit_point = int(num_rows * 0.8)\ntrain_indices = indices[:split_point]\ntest_indices = indices[split_point:]\n\nX_train = X[train_indices]\nX_test = X[test_indices]\n\nprint(len(X_train), len(X_test))   # 800 200\nprint(X_train[:5])                 # first 5 rows of the shuffled training set\n\n# rerun with the same seed, and you get the exact same split every time\nrng_repeat = np.random.default_rng(seed=42)\nindices_repeat = np.arange(num_rows)\nrng_repeat.shuffle(indices_repeat)\nprint(np.array_equal(indices, indices_repeat))   # True"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783606911534-221179812.png",
+          "alt": "An index array shuffled by a seeded generator then split eighty twenty into train and test sets",
+          "caption": "Shuffle the index array with a seeded generator, then slice it. Anyone with the same seed gets the same split.",
+          "size": "medium"
+        },
+        {
+          "type": "paragraph",
+          "text": "Shuffling the index array, rather than shuffling the feature array directly, is a small habit worth adopting. It means you can apply that exact same shuffled order to labels, to a second array of extra features, or to anything else tied row for row to your dataset, and everything stays perfectly aligned."
+        },
+        {
+          "type": "note",
+          "title": "Keep one generator, or one seed, per experiment",
+          "content": "Create a single <code>rng</code> at the top of your training script and pass it into every function that needs randomness: initialization, shuffling, splitting, augmentation. Log the seed value alongside your results. That combination is what makes an experiment fully reproducible from a bare script."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Wrap Up",
+          "id": "wrap-up"
+        },
+        {
+          "type": "paragraph",
+          "text": "Randomness in NumPy is not a side detail, it is load bearing infrastructure for almost everything you do in ML engineering. The modern <code>default_rng()</code> approach gives you an isolated, independently seeded <code>Generator</code> instance instead of a shared global state that anything in your process can quietly disturb. Seeding that generator is what turns \"random\" into \"reproducible,\" which is exactly what you need while developing, debugging, and sharing results with other people."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Prefer default_rng over the legacy np.random.seed plus module level functions for all new code.",
+            "A Generator instance owns its own state, so it cannot be disturbed by other libraries or other parts of your codebase.",
+            "The same seed always produces the same sequence of draws, which is essential for debugging and for others reproducing your results.",
+            "rng.random gives uniform floats, rng.integers gives random integers, rng.normal gives Gaussian draws used constantly for weight init.",
+            "rng.choice samples from an existing array, with or without replacement, depending on whether duplicates are acceptable.",
+            "rng.shuffle reorders in place and returns nothing, rng.permutation returns a new shuffled copy and leaves the original untouched.",
+            "Fix a seed during development. Consider an unseeded or logged random seed only for a final production run."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Once this becomes second nature, reproducibility stops being something you have to think hard about. It just falls out of always creating one seeded generator per experiment and threading it through every place your code needs a random number."
+        }
+      ]
+    }
+  ]
+}

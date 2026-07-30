@@ -1,0 +1,510 @@
+{
+  "slug": "multi-tool-ai-assistant",
+  "title": "Multi Tool AI Assistant",
+  "content": [
+    {
+      "id": "multi-tool-ai-assistant",
+      "title": "Multi Tool AI Assistant",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "This is where everything from this module comes together. One assistant, three MCP servers, one real request."
+        },
+        {
+          "type": "paragraph",
+          "text": "We will connect a database server, a search server, and a calendar server to the same host, and watch one user ask get handled end to end."
+        },
+        {
+          "type": "paragraph",
+          "text": "Along the way we revisit how the assistant picks the right tool for each step, and what it takes to keep three live connections healthy."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. The Request We Are Building Toward",
+          "id": "mta-the-request"
+        },
+        {
+          "type": "paragraph",
+          "text": "Say a user asks: schedule a follow up with our top customer and email me a summary before the meeting."
+        },
+        {
+          "type": "paragraph",
+          "text": "No single tool answers that. It needs a database lookup, a bit of web context, and a calendar action, in order."
+        },
+        {
+          "type": "paragraph",
+          "text": "That is exactly the shape of task this module has been building toward all along."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Three Servers, One Host",
+          "id": "mta-three-servers-one-host"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580753985-850478958.png",
+          "alt": "A user request flows through a host into a database server, a search server, and a calendar server",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The host is the single program the user talks to. It is not the database server or the calendar server itself."
+        },
+        {
+          "type": "paragraph",
+          "text": "Instead, the host holds three separate MCP client connections, one to each server, and merges what they offer."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Database server, exposes tools like query_customers and get_order_history.",
+            "Search server, exposes a web_search tool for fresh outside context.",
+            "Calendar server, exposes find_free_slot and create_event."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Aggregating the Tool List",
+          "id": "mta-aggregating-tools"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580758770-716407326.png",
+          "alt": "Tools from three servers aggregate into one combined list for the model",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Before the assistant can act, the host asks each server what it can do, using tools/list on every connection."
+        },
+        {
+          "type": "paragraph",
+          "text": "The three answers get merged into one combined list that the model sees as a single menu of options."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function buildAggregatedToolList(clients) {\n  const all = [];\n  for (const [serverName, client] of Object.entries(clients)) {\n    const { tools } = await client.listTools();\n    for (const t of tools) {\n      all.push({ ...t, serverName, qualifiedName: serverName + \".\" + t.name });\n    }\n  }\n  return all;\n}\n\nconst clients = {\n  database: databaseClient,\n  search: searchClient,\n  calendar: calendarClient\n};\n\nconst toolList = await buildAggregatedToolList(clients);\n// toolList now has entries like database.query_customers, search.web_search, calendar.create_event"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Prefixing each tool name with its server name avoids collisions if two servers ever expose a tool with the same short name."
+        },
+        {
+          "type": "paragraph",
+          "text": "This merge step happens once per session, or whenever a server connects or disconnects, not on every single user message."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Deciding Which Tool Handles Which Part",
+          "id": "mta-routing-decision"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is dynamic tool routing in practice. The model looks at the aggregated list and the current step of the plan."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is not told in code to use the database server first, it infers that from the tool descriptions and the user request."
+        },
+        {
+          "type": "paragraph",
+          "text": "A request naming a customer routes toward query_customers. A request needing outside facts routes toward web_search."
+        },
+        {
+          "type": "note",
+          "title": "Ties back to Dynamic Tool Routing",
+          "content": "The routing logic here is the same idea covered earlier in this module, just applied across three live servers instead of one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Step One: Finding the Top Customer",
+          "id": "mta-step-one-database"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580760376-79880295.png",
+          "alt": "Step one finds the top customer, step two pulls context, step three books the meeting",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The assistant first needs to know who the top customer actually is, so it reaches for the database server."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const customerResult = await mcpClient.callTool({\n  serverName: \"database\",\n  name: \"query_customers\",\n  arguments: { sortBy: \"lifetimeValue\", order: \"desc\", limit: 1 }\n});\n\n// customerResult.rows[0] = { id: \"cus_882\", name: \"Acme Corp\", lifetimeValue: 482000 }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The model never wrote raw SQL. It called a named tool and got back a clean row of data to reason over."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Step Two: Pulling Fresh Context",
+          "id": "mta-step-two-search"
+        },
+        {
+          "type": "paragraph",
+          "text": "Knowing the customer is Acme Corp, the assistant now wants something current to mention in the follow up."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const searchResult = await mcpClient.callTool({\n  serverName: \"search\",\n  name: \"web_search\",\n  arguments: { query: \"Acme Corp recent news\", maxResults: 3 }\n});\n\n// searchResult.results[0].snippet = \"Acme Corp announced a new product line last week.\""
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This step exists purely because the database server cannot know what happened in the news today, only the search server can."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Step Three: Booking the Meeting",
+          "id": "mta-step-three-calendar"
+        },
+        {
+          "type": "paragraph",
+          "text": "With a customer name and a talking point in hand, the assistant now checks the calendar for an open slot."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const slot = await mcpClient.callTool({\n  serverName: \"calendar\",\n  name: \"find_free_slot\",\n  arguments: { durationMinutes: 30, after: \"2026-07-08T09:00:00Z\" }\n});\n\nconst event = await mcpClient.callTool({\n  serverName: \"calendar\",\n  name: \"create_event\",\n  arguments: {\n    title: \"Follow up with Acme Corp\",\n    start: slot.start,\n    end: slot.end,\n    notes: \"Mention their new product line announcement.\"\n  }\n});"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Combining Results Into One Answer",
+          "id": "mta-combining-results"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580761972-441175679.png",
+          "alt": "Results from three separate steps combine into one final answer",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "None of the three tool results alone answers the user. The host has to stitch them into one reply."
+        },
+        {
+          "type": "paragraph",
+          "text": "The model takes the customer name, the news snippet, and the booked event, and writes a short human summary."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "Meeting booked with Acme Corp for Tuesday 10am.\nThey recently announced a new product line, worth mentioning\nas a conversation opener. Calendar invite sent."
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Why Order Matters Here",
+          "id": "mta-why-order-matters"
+        },
+        {
+          "type": "paragraph",
+          "text": "Each step in this chain depends on the output of the one before it, so the assistant cannot run them all at once."
+        },
+        {
+          "type": "paragraph",
+          "text": "It needs the customer name before it can search, and it needs the search result before the calendar note makes sense."
+        },
+        {
+          "type": "paragraph",
+          "text": "Recognizing which steps are sequential and which could run in parallel is part of good routing, not just picking a tool name."
+        },
+        {
+          "type": "paragraph",
+          "text": "Independent steps, like checking two different database tables, can run at the same time to shave real seconds off the reply."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Keeping Track of Which Server Did What",
+          "id": "mta-tracking-provenance"
+        },
+        {
+          "type": "paragraph",
+          "text": "With three servers in play, it helps to log which server answered which part of the request."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Step\",\"Server\",\"Tool called\",\"Result used for\"],\"rows\":[[\"1\",\"database\",\"query_customers\",\"Identifying the top customer\"],[\"2\",\"search\",\"web_search\",\"Finding a talking point\"],[\"3\",\"calendar\",\"find_free_slot, create_event\",\"Booking the meeting\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This kind of trail makes debugging far easier when a user asks why the assistant said what it said."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Health Checks Across Three Connections",
+          "id": "mta-health-checks"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580763581-76808866.png",
+          "alt": "A health check runs across all three server connections at once",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Running three live connections means three things that can silently die mid conversation."
+        },
+        {
+          "type": "paragraph",
+          "text": "The host should ping each server periodically and mark a connection unhealthy before the model tries to use it."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Database server down, block query_customers and warn the user data may be stale.",
+            "Search server down, skip the news step rather than fail the whole request.",
+            "Calendar server down, hold off scheduling and tell the user to try again shortly."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Permissions When Three Servers Share One User",
+          "id": "mta-permissions"
+        },
+        {
+          "type": "paragraph",
+          "text": "Each server was built with its own idea of what a caller is allowed to do, and that does not automatically line up."
+        },
+        {
+          "type": "paragraph",
+          "text": "The database server might allow read only queries for this user, while the calendar server allows creating events but not deleting them."
+        },
+        {
+          "type": "note",
+          "title": "Least privilege across servers",
+          "content": "Grant the assistant only the scopes each server actually needs for this workflow, not the widest permission each server happens to offer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Cost of Running Three Servers at Once",
+          "id": "mta-cost"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every tool call has a cost, both the API call itself and the tokens spent describing tools and results to the model."
+        },
+        {
+          "type": "paragraph",
+          "text": "Three servers means three sets of tool descriptions competing for context space on every single turn."
+        },
+        {
+          "type": "paragraph",
+          "text": "Trimming unused tools from the aggregated list before it reaches the model keeps both cost and confusion down."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. What Happens When One Server Fails Mid Request",
+          "id": "mta-partial-failure"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580765284-385883690.png",
+          "alt": "One server failing mid request should not take down the other two",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Suppose the calendar server times out right after the search step finished successfully."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well built assistant does not throw away the customer name and news snippet it already gathered."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "try {\n  const event = await mcpClient.callTool({ serverName: \"calendar\", name: \"create_event\", arguments: eventArgs });\n} catch (err) {\n  return {\n    partial: true,\n    summary: \"Found Acme Corp and a talking point, but could not reach the calendar server. Try booking again shortly.\",\n    gathered: { customer: customerResult.rows[0], newsSnippet: searchResult.results[0].snippet }\n  };\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Reporting partial progress is more useful to the user than a bare error message."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Monitoring the Whole Assistant, Not Just One Server",
+          "id": "mta-monitoring"
+        },
+        {
+          "type": "paragraph",
+          "text": "Watching one server in isolation misses problems that only show up when three are combined."
+        },
+        {
+          "type": "paragraph",
+          "text": "Track end to end latency for the full request, not just each individual tool call, so a slow chain gets noticed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Scaling Beyond Three Servers",
+          "id": "mta-scaling-beyond-three"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580769476-25992688.png",
+          "alt": "Three servers scaling up toward many more servers over time",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Nothing about this pattern is capped at three servers, the same host logic works with five or ten."
+        },
+        {
+          "type": "paragraph",
+          "text": "What changes is the size of the aggregated tool list, and how much trimming and grouping it needs before reaching the model."
+        },
+        {
+          "type": "paragraph",
+          "text": "A good rule is to only connect the servers a given conversation is likely to need, rather than every server the user has access to."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "mta-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is the whole flow as one function, from user request to final reply."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function handleFollowUpRequest(userText) {\n  const customer = await mcpClient.callTool({\n    serverName: \"database\", name: \"query_customers\",\n    arguments: { sortBy: \"lifetimeValue\", order: \"desc\", limit: 1 }\n  });\n  const news = await mcpClient.callTool({\n    serverName: \"search\", name: \"web_search\",\n    arguments: { query: customer.rows[0].name + \" recent news\", maxResults: 3 }\n  });\n  const slot = await mcpClient.callTool({\n    serverName: \"calendar\", name: \"find_free_slot\",\n    arguments: { durationMinutes: 30, after: new Date().toISOString() }\n  });\n  const event = await mcpClient.callTool({\n    serverName: \"calendar\", name: \"create_event\",\n    arguments: {\n      title: \"Follow up with \" + customer.rows[0].name,\n      start: slot.start, end: slot.end,\n      notes: news.results[0].snippet\n    }\n  });\n  return summarizeForUser(customer, news, event);\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Three servers, three tool calls, one coherent answer handed back to the user."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "mta-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Letting one slow server block the whole reply instead of returning partial results.",
+            "Giving the assistant the widest permission each server offers, instead of the least it actually needs.",
+            "Sending every tool from every server to the model on every turn, wasting context and money.",
+            "Not tagging which server produced which result, making failures hard to trace.",
+            "Assuming all three servers are always healthy and skipping any kind of connection check.",
+            "Running independent steps sequentially when they could safely run in parallel."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "mta-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sketch the tool call sequence for a request that needs an order history lookup, a shipping policy search, and a calendar reminder."
+        },
+        {
+          "type": "paragraph",
+          "text": "Then decide which of those three steps, if any, could safely run at the same time instead of one after another."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "mta-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A multi tool assistant is not one big trick, it is the same small ideas from this module, aggregated tools, careful routing, health checks, permissions, and cost awareness, all running together."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next and final module, System Design and Interview Topics, takes everything covered so far and reframes it for interview style questions."
+        }
+      ]
+    }
+  ]
+}

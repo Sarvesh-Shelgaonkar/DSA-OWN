@@ -1,0 +1,527 @@
+{
+  "slug": "websockets",
+  "title": "WebSockets",
+  "content": [
+    {
+      "id": "websockets",
+      "title": "WebSockets",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "If you have ever kept a phone call open instead of sending a string of text messages back and forth, you already understand the appeal of a WebSocket. Instead of the client asking a question and the server answering once, both sides keep a single connection open and can speak whenever they have something to say. For an MCP client and server that need to have a fast, ongoing conversation, that difference in shape matters a great deal."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What a WebSocket Connection Actually Is",
+          "id": "ws-what-is"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173072485-702802102.png",
+          "alt": "Client and server hold one persistent full duplex connection",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173072485-702802102.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A WebSocket is a long lived, full duplex connection between a client and a server that starts life as an ordinary HTTP request. Once the two sides agree to upgrade, the underlying TCP socket is kept open and both ends can write to it at any time, independent of each other. There is no more request, then response, then connection closed. There is just a pipe that stays open until one side decides to close it or the network drops it."
+        },
+        {
+          "type": "paragraph",
+          "text": "This matters for MCP because a lot of useful interactions are not naturally one shot. A host application might want to stream partial results from a long running tool call, or a server might want to push a notification the moment something changes, without the client having to ask again and again. A WebSocket gives both parties a shared channel where either one can speak first."
+        },
+        {
+          "type": "note",
+          "title": "Full duplex, not just streaming",
+          "content": "Full duplex means both sides can send at the same time, independently. A one way stream from server to client, like Server-Sent Events, is not the same thing, even though both feel \"always on\" from the outside."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The Upgrade Handshake",
+          "id": "ws-handshake"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173074270-62583831.png",
+          "alt": "An HTTP request upgrades into a WebSocket connection",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173074270-62583831.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A WebSocket connection is born as a normal HTTP GET request that carries a few special headers asking the server to switch protocols. The client sends an Upgrade header set to websocket, a Connection header set to Upgrade, and a randomly generated key. If the server is willing and able, it replies with a 101 Switching Protocols status and a computed accept value derived from that key, proving it actually understood the request rather than just echoing it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "GET /mcp HTTP/1.1\nHost: tools.example.com\nUpgrade: websocket\nConnection: Upgrade\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\nSec-WebSocket-Version: 13\n\nHTTP/1.1 101 Switching Protocols\nUpgrade: websocket\nConnection: Upgrade\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "After that 101 response, the socket is no longer speaking HTTP. Every byte from then on is framed according to the WebSocket protocol, not parsed as HTTP headers and bodies. This is the one and only handshake for the lifetime of the connection; there is no repeated negotiation for each message."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Full Duplex Communication in Practice",
+          "id": "ws-full-duplex"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173076081-46670277.png",
+          "alt": "Client can send while server sends at the same time",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173076081-46670277.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because either side can send a frame whenever it wants, the mental model shifts from question and answer to something closer to two people on a phone line. An MCP client might send a tool call, and while waiting for the final result it might also receive a handful of progress notifications the server decided to push. Nothing about the protocol forces strict alternation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport websockets\n\nasync def talk_to_server():\n    async with websockets.connect(\"wss://tools.example.com/mcp\") as ws:\n        await ws.send('{\"method\": \"tools/call\", \"params\": {\"name\": \"search\"}}')\n\n        async def listen():\n            async for message in ws:\n                print(\"received:\", message)\n\n        listener = asyncio.create_task(listen())\n        await ws.send('{\"method\": \"ping\"}')\n        await listener"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice that sending and receiving happen concurrently through two separate pieces of code running on the same connection. That concurrency is the whole point, and it is also why a WebSocket client needs a bit more care than a simple HTTP client that just waits for one response at a time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Framing and Message Types",
+          "id": "ws-framing"
+        },
+        {
+          "type": "paragraph",
+          "text": "Underneath the API you use in your favorite language, WebSocket traffic is broken into frames. Each frame carries a small header describing its type, whether it is the final fragment of a message, and how long the payload is. The main types you will encounter as an application developer are text frames, binary frames, and three control frames: ping, pong, and close."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Frame type\",\"Purpose\"],\"rows\":[[\"Text\",\"UTF-8 payload, typically JSON for MCP messages\"],[\"Binary\",\"Raw bytes, useful for attachments or compressed payloads\"],[\"Ping\",\"A liveness check the receiver should answer with a pong\"],[\"Pong\",\"The reply to a ping, or sometimes sent unsolicited as a heartbeat\"],[\"Close\",\"A signal that one side wants to end the connection, with a reason code\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most WebSocket libraries hide the framing details from you and just hand you complete messages, but knowing that ping and pong exist as first class frame types explains a lot about how these connections stay healthy over time, which we will come back to later in this topic."
+        },
+        {
+          "type": "note",
+          "title": "Watch your message size",
+          "content": "Large JSON-RPC payloads, such as a tool result containing a big file, can be split across multiple continuation frames automatically by the library, but very large single messages still consume memory on both ends. Many servers set an explicit maximum message size and close the connection if a client exceeds it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Why MCP Sometimes Wants Bidirectional Transport",
+          "id": "ws-mcp-bidirectional"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP servers can do more than answer a single request. They can send log messages, progress updates, and change notifications, and in some designs the server can even ask the client for something, like a user confirmation. All of that becomes far more natural over a transport where either side can write at any time, which is exactly the shape a WebSocket provides."
+        },
+        {
+          "type": "paragraph",
+          "text": "That said, WebSockets are not the only way to get this. Local MCP servers typically use stdio, and remote servers commonly use Server-Sent Events layered over regular HTTP requests. WebSockets tend to show up when you specifically need frequent, low latency, two way traffic, such as an interactive coding assistant that streams tokens while also accepting cancellation requests mid-stream."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"MCP transport\",\"Direction\",\"Typical use\"],\"rows\":[[\"stdio\",\"Bidirectional, local process\",\"Local MCP servers run as a subprocess\"],[\"Server-Sent Events\",\"Server to client stream\",\"Remote servers pushing updates over HTTP\"],[\"WebSocket\",\"Bidirectional, network\",\"Interactive, low latency, two way traffic\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Building a Minimal WebSocket Client",
+          "id": "ws-client-code"
+        },
+        {
+          "type": "paragraph",
+          "text": "A production MCP client wraps a WebSocket in a small abstraction that knows how to serialize and deserialize JSON-RPC messages, but the raw mechanics are refreshingly small. You open a connection, you send strings or bytes, and you iterate over incoming messages as they arrive."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport json\nimport websockets\n\nasync def call_tool(name, arguments):\n    async with websockets.connect(\"wss://tools.example.com/mcp\") as ws:\n        request = {\n            \"jsonrpc\": \"2.0\",\n            \"id\": 1,\n            \"method\": \"tools/call\",\n            \"params\": {\"name\": name, \"arguments\": arguments},\n        }\n        await ws.send(json.dumps(request))\n\n        async for raw in ws:\n            message = json.loads(raw)\n            if message.get(\"id\") == 1:\n                return message[\"result\"]\n\nasyncio.run(call_tool(\"search\", {\"query\": \"mcp transports\"}))"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Building a Minimal WebSocket Server",
+          "id": "ws-server-code"
+        },
+        {
+          "type": "paragraph",
+          "text": "On the server side, an MCP host exposes a handler that runs once per connected client, reads incoming JSON-RPC messages, and writes responses and notifications back onto the same socket. Because the connection stays open, the same handler function can keep running for as long as the client is connected."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport json\nimport websockets\n\nasync def handle_client(ws):\n    async for raw in ws:\n        request = json.loads(raw)\n        if request[\"method\"] == \"tools/call\":\n            result = {\"jsonrpc\": \"2.0\", \"id\": request[\"id\"], \"result\": {\"content\": \"done\"}}\n            await ws.send(json.dumps(result))\n\n            notification = {\"jsonrpc\": \"2.0\", \"method\": \"notifications/progress\", \"params\": {\"progress\": 1.0}}\n            await ws.send(json.dumps(notification))\n\nasync def main():\n    async with websockets.serve(handle_client, \"0.0.0.0\", 8765):\n        await asyncio.Future()\n\nasyncio.run(main())"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Ping, Pong, and Liveness",
+          "id": "ws-ping-pong"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173078198-721963482.png",
+          "alt": "A ping frame is answered by a pong frame confirming liveness",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173078198-721963482.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because a WebSocket can sit idle for long stretches, both sides need a way to check that the other end is still there without waiting for application data. That is what ping and pong control frames are for. Either side can send a ping, and a well behaved peer answers automatically with a pong carrying the same payload, usually handled by the library itself rather than your application code."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import websockets\n\nasync def connect_with_heartbeat():\n    async with websockets.connect(\n        \"wss://tools.example.com/mcp\",\n        ping_interval=20,\n        ping_timeout=20,\n    ) as ws:\n        async for message in ws:\n            handle(message)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "If a certain number of pings go unanswered, most libraries will close the connection on your behalf and raise an exception, which is your cue to start a reconnection attempt rather than assuming the server vanished for good."
+        },
+        {
+          "type": "note",
+          "title": "Application level heartbeats",
+          "content": "Some MCP implementations add their own lightweight heartbeat message on top of protocol level ping and pong, mostly so that intermediate proxies which strip control frames still see regular traffic and do not classify the connection as idle."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Closing a Connection Gracefully",
+          "id": "ws-closing"
+        },
+        {
+          "type": "paragraph",
+          "text": "A well behaved close is itself a small handshake. One side sends a close frame carrying a numeric status code and an optional human readable reason, and the other side is expected to send its own close frame back before the underlying TCP socket is torn down. This gives both parties a chance to finish writing anything already in flight instead of losing bytes mid-stream."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Code\",\"Meaning\"],\"rows\":[[\"1000\",\"Normal closure, everything finished as expected\"],[\"1001\",\"Going away, such as a server restarting or a browser tab closing\"],[\"1006\",\"Abnormal closure, the connection dropped without a close frame\"],[\"1011\",\"Server error while handling a message\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "That 1006 code is worth remembering. It is what you see when the network just disappears, a load balancer times out an idle connection, or a process crashes, and it is precisely the case your reconnection logic needs to handle without treating it as a deliberate shutdown."
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to log the close code and reason whenever a connection ends, even in production. A cluster of 1006 closures at the same time of day often points to an infrastructure issue, such as a proxy with an aggressive idle timeout, rather than anything wrong with your application code."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Error Handling and Abnormal Closures",
+          "id": "ws-errors"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173079729-55450408.png",
+          "alt": "A normal close is compared against an abnormal closure",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173079729-55450408.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Real networks misbehave. Wifi drops, laptops go to sleep, proxies time out idle connections, and servers get redeployed mid-conversation. A robust MCP client wraps its WebSocket usage in exception handling that distinguishes between an orderly close, which usually means stop, and an abnormal one, which usually means retry."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import websockets\n\nasync def run_client():\n    while True:\n        try:\n            async with websockets.connect(\"wss://tools.example.com/mcp\") as ws:\n                async for message in ws:\n                    handle(message)\n        except websockets.exceptions.ConnectionClosedOK:\n            break\n        except websockets.exceptions.ConnectionClosedError:\n            await asyncio.sleep(2)\n            continue"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Scaling a WebSocket Server",
+          "id": "ws-scaling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Unlike a stateless HTTP endpoint that can hand off each request to any available worker, a WebSocket server holds a live connection tied to one specific process. If that process restarts, every client on it disconnects at once. This pushes real operational questions to the front: how many idle connections can one machine hold, how do you route a reconnecting client back to state it needs, and how do you deploy new code without dropping every client simultaneously."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Use a load balancer that supports long lived connections and sticky routing where needed",
+            "Keep per-connection memory small, since thousands of idle sockets add up quickly",
+            "Externalize session state to a shared store so any server instance can pick up a reconnecting client",
+            "Roll deployments gradually so only a fraction of clients reconnect at once"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Security Considerations",
+          "id": "ws-security"
+        },
+        {
+          "type": "paragraph",
+          "text": "Always use wss, the encrypted variant of the WebSocket scheme, over an untrusted network, exactly as you would insist on https for a regular API. Because the initial handshake is just an HTTP request, you can carry an authentication token in a header or a query parameter the same way you would for a normal API call, and validate it before ever upgrading the connection."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is also worth checking the Origin header on the server side when the WebSocket endpoint is reachable from browser contexts, since browsers do not restrict which origins can open a WebSocket to your server the way they restrict fetch requests without CORS. For MCP servers accessed only by trusted local tooling this matters less, but for anything exposed to the open internet it is a real gap to close."
+        },
+        {
+          "type": "note",
+          "title": "Token in the handshake, not after",
+          "content": "Authenticate during the upgrade request itself. Once the socket is open, there is no clean equivalent of a per-request header, so retrofitting authentication later usually means designing a custom first message just to carry credentials."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. WebSockets Versus Plain HTTP Polling",
+          "id": "ws-vs-polling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Before WebSockets were common, applications that wanted near real time updates would poll, sending a request every few seconds just to ask if anything new had happened. That works, but it wastes bandwidth on empty responses and introduces a delay equal to however long you wait between polls. A WebSocket removes both problems: the server can push the moment something happens, and there is no repeated request overhead once the connection is open."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Latency\",\"Overhead when idle\"],\"rows\":[[\"Polling\",\"Up to one poll interval\",\"A full request and response every interval\"],[\"WebSocket\",\"Near immediate\",\"Occasional ping and pong frames only\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. WebSockets Versus Server-Sent Events",
+          "id": "ws-vs-sse"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173081229-556064871.png",
+          "alt": "WebSockets are bidirectional while server sent events are one way",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173081229-556064871.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Server-Sent Events, covered in depth in the next topic, give you a one way stream from server to client over a plain HTTP connection. If your MCP server mostly needs to push notifications and stream results, and the client rarely needs to send anything back once the initial request is made, SSE is simpler to deploy and plays more nicely with existing HTTP infrastructure like proxies and load balancers."
+        },
+        {
+          "type": "paragraph",
+          "text": "WebSockets earn their extra complexity when the client also needs to send frequent messages back, such as cancelling an in-flight tool call, sending follow up input mid-stream, or supporting a chat-like exchange where both sides genuinely take turns speaking without a full request round trip each time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. When to Choose WebSockets for MCP Transport",
+          "id": "ws-when-to-choose"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173083126-94068956.png",
+          "alt": "Needing bidirectional streaming points toward choosing WebSockets",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173083126-94068956.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Reach for a WebSocket when your MCP integration genuinely needs frequent, low latency traffic in both directions, such as an interactive session where the client and server are both regularly initiating messages rather than one side simply asking and the other simply answering."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Compression and Bandwidth",
+          "id": "ws-compression"
+        },
+        {
+          "type": "paragraph",
+          "text": "WebSocket connections can negotiate per-message compression during the handshake, most commonly using a deflate based extension. For MCP traffic, which is largely JSON text, compression can meaningfully shrink larger payloads such as tool results containing structured data, at the cost of a small amount of CPU time on both sides."
+        },
+        {
+          "type": "paragraph",
+          "text": "Compression is negotiated once, during the upgrade handshake, using an extension header rather than being decided per message. If either side does not support it, the connection simply falls back to uncompressed frames, so it is safe to request without breaking compatibility with older peers."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import websockets\n\nasync def connect_compressed():\n    async with websockets.connect(\n        \"wss://tools.example.com/mcp\",\n        compression=\"deflate\",\n    ) as ws:\n        await ws.send(large_json_payload)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Testing WebSocket Integrations",
+          "id": "ws-testing"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because WebSocket handlers are concurrent and stateful, testing them well means more than checking a single response body. A good test harness spins up a real server on a local port, connects a real client, and asserts on the sequence of messages received rather than just the final one, since intermediate notifications are often the entire point of choosing this transport."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport websockets\nimport pytest\n\n@pytest.mark.asyncio\nasync def test_progress_notifications():\n    received = []\n    async with websockets.connect(\"ws://localhost:8765\") as ws:\n        await ws.send('{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/call\", \"params\": {\"name\": \"analyze_repository\"}}')\n        async for raw in ws:\n            received.append(raw)\n            if '\"id\": 1' in raw:\n                break\n    assert len(received) >= 2  # at least one progress notification plus the final result"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Running these tests against a real local server, rather than mocking the socket entirely, catches a whole class of bugs around message ordering, task cancellation, and connection cleanup that pure unit tests tend to miss."
+        },
+        {
+          "type": "list",
+          "items": [
+            "The client needs to send messages while a previous request is still being processed, such as cancellation",
+            "Updates need to reach the client with minimal delay, on the order of tens of milliseconds rather than seconds",
+            "The interaction pattern is closer to a conversation than a series of independent requests",
+            "You control both ends well enough to handle the operational cost of long lived connections"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "ws-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Imagine an MCP server that exposes a long running \"analyze_repository\" tool. Over plain HTTP you would either block until it finishes or poll a status endpoint. Over a WebSocket, the server can stream progress the moment it happens, and the client can cancel partway through if the user changes their mind."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio, json, websockets\n\nasync def handle_client(ws):\n    async for raw in ws:\n        request = json.loads(raw)\n        if request[\"method\"] == \"tools/call\" and request[\"params\"][\"name\"] == \"analyze_repository\":\n            task = asyncio.create_task(analyze(ws, request[\"id\"]))\n        elif request[\"method\"] == \"cancel\":\n            task.cancel()\n\nasync def analyze(ws, request_id):\n    for pct in (10, 40, 75, 100):\n        await asyncio.sleep(1)\n        await ws.send(json.dumps({\n            \"jsonrpc\": \"2.0\",\n            \"method\": \"notifications/progress\",\n            \"params\": {\"progress\": pct / 100},\n        }))\n    await ws.send(json.dumps({\"jsonrpc\": \"2.0\", \"id\": request_id, \"result\": {\"status\": \"complete\"}}))"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The client task listening for messages sees each progress notification as it arrives and can update a progress bar in real time, then finally sees the result message carrying the same id it originally sent, letting it match the response to the request."
+        },
+        {
+          "type": "paragraph",
+          "text": "This pattern, matching responses to requests by id while also handling unsolicited notifications on the same socket, is the core skill needed to build any bidirectional MCP transport well, and it transfers directly to the reconnection and connection management topics later in this module."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "ws-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Treating a WebSocket like a single request/response call and closing it right after the first message, throwing away the benefit of keeping it open",
+            "Never sending or checking ping and pong frames, so a half dead connection looks alive until an application message finally times out",
+            "Forgetting to authenticate during the upgrade handshake and trying to bolt on credentials after the socket is already open",
+            "Not handling ConnectionClosedError separately from a clean close, so a dropped network looks the same as a deliberate shutdown",
+            "Blocking the event loop with synchronous work inside a message handler, which stalls every other message on that connection",
+            "Assuming a single server process can hold every client forever, without planning for restarts or horizontal scaling"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "ws-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Write a small WebSocket client that connects to an echo server, sends five messages one second apart, and prints each response as it is received. Then modify it to simulate a dropped connection by closing the socket after the third message and add logic to reconnect and resume sending the remaining messages."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Confirm the client correctly resumes from the fourth message rather than resending the first three",
+            "Add a counter that logs how many times the connection had to be reestablished",
+            "Extend the exercise so the server randomly closes the connection with code 1006 partway through, and verify your client treats that differently from a normal close"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport websockets\n\nasync def resilient_client(messages):\n    i = 0\n    while i < len(messages):\n        try:\n            async with websockets.connect(\"wss://echo.example.com\") as ws:\n                while i < len(messages):\n                    await ws.send(messages[i])\n                    print(await ws.recv())\n                    i += 1\n                    await asyncio.sleep(1)\n        except websockets.exceptions.ConnectionClosed:\n            print(\"connection dropped, reconnecting...\")\n            await asyncio.sleep(1)\n\nasyncio.run(resilient_client([f\"message {n}\" for n in range(5)]))"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "ws-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A WebSocket turns a single HTTP request into a long lived, full duplex channel, giving an MCP client and server the ability to speak whenever they need to rather than waiting for strict turns. That makes it a strong fit for interactive, low latency exchanges, at the cost of extra operational responsibility around liveness checks, reconnection, and scaling long lived connections."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next topic looks at Server-Sent Events, a lighter weight alternative that gives up bidirectional traffic in exchange for simplicity, and is the transport many remote MCP servers reach for when the client mostly needs to receive a stream rather than talk back."
+        }
+      ]
+    }
+  ]
+}

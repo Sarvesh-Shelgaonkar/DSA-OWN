@@ -1,0 +1,550 @@
+{
+  "slug": "circuit-breaker-pattern",
+  "title": "Circuit Breaker Pattern",
+  "content": [
+    {
+      "id": "circuit-breaker-pattern",
+      "title": "Circuit Breaker Pattern",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Picture a busy restaurant kitchen with three stations: grill, salad, and dessert. One night the grill catches fire and stops taking tickets. A good kitchen manager pulls tickets away from the grill immediately, but the salad and dessert stations keep firing normally. Nobody shuts down the whole kitchen just because one station is out."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is the instinct a microservice needs when it talks to several other services. One dependency choking should never mean the whole service grinds to a halt, and it definitely should not mean a perfectly healthy dependency gets treated like it is broken too."
+        },
+        {
+          "type": "paragraph",
+          "content": "If you have already read the dedicated circuit breaker topic, you know the closed, open, and half open mechanics in depth. This topic assumes that and goes somewhere different: what circuit breakers look like once a single service is calling five, ten, or thirty downstream dependencies, which is the normal shape of a real microservices system."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A circuit breaker protects a service from itself when a dependency misbehaves. At microservices scale, the question stops being whether you have a breaker and becomes whether you have the right number of them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "A single service rarely calls just one other service. A checkout flow might call payments, inventory, a recommendation engine, a tax calculator, and a shipping estimator, all in the same request. Each of those calls can fail independently, and each failure deserves its own response, not a blanket reaction that punishes every other call in flight."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 A quick recap of closed, open, and half open",
+          "text": "1.1 A quick recap of closed, open, and half open"
+        },
+        {
+          "type": "paragraph",
+          "content": "A circuit breaker wraps a risky call and watches its outcomes. While things look healthy it stays closed and lets calls through as normal. Once failures cross a threshold it flips open and starts rejecting calls immediately, without even attempting the real request, giving the struggling dependency room to recover. After a cooldown it moves to half open, lets a small number of test calls through, and either closes again on success or trips back open on failure."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313951-702666167.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313951-702666167.png",
+          "alt": "Circuit breaker moving between closed, open, and half open states"
+        },
+        {
+          "type": "note",
+          "title": "Want the deep dive",
+          "content": "The separate circuit breaker topic in the Failure Handling module covers thresholds, timers, and the half open probe logic in much more detail. This topic will not repeat that, it builds on top of it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.2 Why this matters more inside microservices",
+          "text": "1.2 Why this matters more inside microservices"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a small system with one downstream dependency, one breaker is the whole story. In a real microservices architecture, a single service can easily depend on a dozen others, each with its own failure profile, its own latency, and its own blast radius. The design question this topic cares about is simple to state and easy to get wrong in practice: how many breakers do you actually need, and where do you put them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The trap of one global breaker",
+          "text": "2. The trap of one global breaker"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most common mistake teams make when they first wire up circuit breakers at scale is wrapping every outbound call with the same shared breaker instance. It feels simpler to build, and it is completely wrong once you think through what happens during a partial outage."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 What one shared breaker actually does",
+          "text": "2.1 What one shared breaker actually does"
+        },
+        {
+          "type": "paragraph",
+          "content": "A single breaker tracks one combined success and failure count across every dependency it guards. If payments starts timing out, those failures pile onto the same counter that inventory calls also feed into. Cross the threshold and the breaker trips open for everything behind it, payments and inventory alike, even though inventory never had a single failed call."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313952-470552721.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313952-470552721.png",
+          "alt": "One shared breaker tripping open and blocking calls to both a failing and a healthy dependency"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Why a healthy dependency gets punished too",
+          "text": "2.2 Why a healthy dependency gets punished too"
+        },
+        {
+          "type": "paragraph",
+          "content": "From the caller side this looks like a total outage even though only one downstream service is actually struggling. Users who only needed inventory data, which was working fine the whole time, get failures anyway. That is the opposite of what a circuit breaker is supposed to buy you."
+        },
+        {
+          "type": "list",
+          "content": "[\"A slow or failing payments call trips the shared breaker\",\"The breaker rejects calls to inventory too, even though inventory never failed\",\"Recovery is confused, since the breaker only sees payments recovering, not a clean signal per dependency\",\"On call engineers see a wide outage that is actually a narrow one, which slows down diagnosis\"]",
+          "items": [
+            "A slow or failing payments call trips the shared breaker",
+            "The breaker rejects calls to inventory too, even though inventory never failed",
+            "Recovery is confused, since the breaker only sees payments recovering, not a clean signal per dependency",
+            "On call engineers see a wide outage that is actually a narrow one, which slows down diagnosis"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "This bug hides well in staging",
+          "content": "A shared breaker looks fine in any test that only exercises one dependency at a time. It only reveals itself once two dependencies are under load together in production, which is exactly when you can least afford the surprise."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Per dependency circuit breakers",
+          "text": "3. Per dependency circuit breakers"
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix is not a smarter shared breaker, it is simply more breakers. Give every downstream dependency its own breaker instance, tracking its own success and failure counts, tripping and recovering entirely on its own."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 One breaker per downstream call",
+          "text": "3.1 One breaker per downstream call"
+        },
+        {
+          "type": "paragraph",
+          "content": "Each dependency, payments, inventory, recommendations, shipping, gets a breaker keyed to that dependency alone. When payments fails repeatedly, only the payments breaker trips. Calls to inventory keep flowing through their own breaker, which never saw a failure and has no reason to open."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313952-923540492.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313952-923540492.png",
+          "alt": "Separate breakers isolating a failing dependency while a healthy dependency keeps serving traffic"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 What changes in practice",
+          "text": "3.2 What changes in practice"
+        },
+        {
+          "type": "list",
+          "content": "[\"Failures in one dependency stay contained to calls against that dependency\",\"Each breaker can use thresholds and timeouts tuned to that specific dependency, a slow analytics call is not the same risk profile as a payments call\",\"Monitoring becomes precise, you can see exactly which dependency is unhealthy from the breaker metrics alone\",\"Recovery of one dependency does not depend on another dependency also recovering\"]",
+          "items": [
+            "Failures in one dependency stay contained to calls against that dependency",
+            "Each breaker can use thresholds and timeouts tuned to that specific dependency, a slow analytics call is not the same risk profile as a payments call",
+            "Monitoring becomes precise, you can see exactly which dependency is unhealthy from the breaker metrics alone",
+            "Recovery of one dependency does not depend on another dependency also recovering"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Key per dependency",
+          "content": "The identifying key for a breaker should usually be the downstream service, not the endpoint or the caller. Two different endpoints on the same flaky payments service should probably share one breaker, since they likely fail together."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Pairing with bulkheading",
+          "text": "4. Pairing with bulkheading"
+        },
+        {
+          "type": "paragraph",
+          "content": "Separate breakers solve the decision of when to stop calling a dependency. They do not, by themselves, stop a slow dependency from quietly starving the resources every other call needs while it is still closed and still being tried. That second problem is what bulkheading solves, and the two patterns are almost always deployed together."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Isolating thread and connection pools per dependency",
+          "text": "4.1 Isolating thread and connection pools per dependency"
+        },
+        {
+          "type": "paragraph",
+          "content": "Bulkheading gives each downstream dependency its own dedicated pool of threads or connections, sized for that dependency alone. If payments starts responding slowly, only the payments pool fills up and blocks. The inventory pool, sitting in its own compartment, has threads free and keeps serving inventory calls without any contention."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313953-289302929.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313953-289302929.png",
+          "alt": "Payments and inventory each isolated in their own thread pool so one slow dependency cannot starve the other"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Why breaker and bulkhead pair naturally",
+          "text": "4.2 Why breaker and bulkhead pair naturally"
+        },
+        {
+          "type": "paragraph",
+          "content": "Think of the bulkhead as the compartment and the breaker as the door to that compartment. The bulkhead keeps a slow dependency from flooding resources meant for others. The breaker decides when to stop opening that compartment door at all, once failures cross a threshold, saving the pool from filling up with doomed calls in the first place."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Isolates resource exhaustion to one dependency\",\"More pools to size and tune correctly\"],[\"A slow dependency cannot starve calls to healthy ones\",\"More configuration surface per dependency\"],[\"Pairs naturally with per dependency breaker metrics\",\"Under provisioning a pool can trip its breaker too early\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Fallback strategies when a breaker is open",
+          "text": "5. Fallback strategies when a breaker is open"
+        },
+        {
+          "type": "paragraph",
+          "content": "An open breaker rejects a call instantly, but rejecting is not the same as doing nothing useful for the caller. What you do the moment a breaker is open is often the difference between a graceful degradation and a broken page."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Returning cached or default data",
+          "text": "5.1 Returning cached or default data"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most common fallback is serving the last known good response from a cache instead of the live call. A recommendations breaker that trips can fall back to yesterday's cached recommendations. Stale recommendations are a far better user experience than a spinner that never resolves."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313954-984881920.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313954-984881920.png",
+          "alt": "A tripped breaker falling back to a cached response so the user still gets an answer"
+        },
+        {
+          "type": "example-box",
+          "title": "When there is nothing to cache",
+          "text": "For dependencies with no sensible cached value, like a real time fraud check, a reasonable default is often a conservative fixed answer, such as flag for manual review rather than auto approve, chosen deliberately by whoever owns the business risk."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Fail fast versus fail silent",
+          "text": "5.2 Fail fast versus fail silent"
+        },
+        {
+          "type": "paragraph",
+          "content": "The other decision is whether the caller should even know a fallback happened. Failing fast means returning a clear error immediately so the caller, human or service, can react right away. Failing silent means quietly substituting a default and letting the request continue as if nothing happened. Both are valid, and picking wrong in either direction causes real damage."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313954-692596916.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313954-692596916.png",
+          "alt": "A tripped breaker choosing between a fast visible error and a silent default response"
+        },
+        {
+          "type": "list",
+          "content": "[\"Fail fast fits payments and anything financial, silently guessing is worse than an honest error\",\"Fail silent fits recommendations, personalization, and anything cosmetic where a generic default barely hurts the experience\",\"Whichever you choose, log it, silent failures that also go unlogged turn into invisible outages\"]",
+          "items": [
+            "Fail fast fits payments and anything financial, silently guessing is worse than an honest error",
+            "Fail silent fits recommendations, personalization, and anything cosmetic where a generic default barely hurts the experience",
+            "Whichever you choose, log it, silent failures that also go unlogged turn into invisible outages"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Real library usage",
+          "text": "6. Real library usage"
+        },
+        {
+          "type": "paragraph",
+          "content": "You rarely hand roll this from scratch. A handful of libraries and infrastructure layers have made per dependency circuit breaking a solved problem across most stacks."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Hystrix, the library that popularized this",
+          "text": "6.1 Hystrix, the library that popularized this"
+        },
+        {
+          "type": "paragraph",
+          "content": "Netflix built Hystrix specifically to isolate calls between the hundreds of microservices in its own architecture, and it is the reason per dependency breakers plus bulkheads became a standard pattern rather than a niche idea. Netflix has since retired active development on it, but the model it proved out lives on in everything that followed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 resilience4j for JVM services",
+          "text": "6.2 resilience4j for JVM services"
+        },
+        {
+          "type": "paragraph",
+          "content": "resilience4j is the modern default for Java and Kotlin services, and it was explicitly designed as a lighter successor to Hystrix. You register a separate CircuitBreaker and Bulkhead instance per dependency name, annotate the method that makes the call, and point it at a fallback method."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.3 Polly for dot net services",
+          "text": "6.3 Polly for dot net services"
+        },
+        {
+          "type": "paragraph",
+          "content": "Polly gives dot net services the same idea through a fluent policy API. You build a circuit breaker policy per downstream client, often wrapped together with a bulkhead policy and a fallback policy, and apply that policy wherever the client makes calls to that specific dependency."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.4 Envoy and service mesh level breaking",
+          "text": "6.4 Envoy and service mesh level breaking"
+        },
+        {
+          "type": "paragraph",
+          "content": "If your services run behind a service mesh, circuit breaking can live entirely outside your application code. Envoy, the proxy most meshes are built on, tracks per upstream cluster connection and request limits and trips automatically, all configured declaratively rather than coded per language."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313954-796111646.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313954-796111646.png",
+          "alt": "An Envoy sidecar tripping a circuit breaker in front of a downstream service without any app code involved"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313955-255133299.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396313955-255133299.png",
+          "alt": "Different service stacks reaching for resilience4j, Polly, or a mesh proxy for the same underlying pattern"
+        },
+        {
+          "type": "note",
+          "title": "Mesh level breaking is coarser",
+          "content": "Envoy trips based on connection and pending request counts per upstream cluster, not custom business logic. It is fantastic for infrastructure level protection, but application level fallback logic, like serving cached data, still needs to live in your code."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Worked example: the checkout service",
+          "text": "7. Worked example: the checkout service"
+        },
+        {
+          "type": "paragraph",
+          "content": "Let us make all of this concrete with a checkout service that calls payments, inventory, and a recommendations service on the same request."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Three dependencies, three breakers",
+          "text": "7.1 Three dependencies, three breakers"
+        },
+        {
+          "type": "paragraph",
+          "content": "Checkout wires up three independent breakers, one per dependency, each with its own thread pool behind it. Payments gets a strict breaker since a failure there blocks the whole order. Recommendations gets a looser breaker since it is only cosmetic content on the page."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396866289-608522657.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396866289-608522657.png",
+          "alt": "A checkout service with three separate circuit breakers guarding payment, inventory, and recommendation calls"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Only the payment breaker trips",
+          "text": "7.2 Only the payment breaker trips"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say the payments provider has an incident and starts timing out. The payments breaker sees the failure spike, crosses its threshold, and opens. Checkout immediately starts fast failing payment calls and shows the user a clear retry message. Meanwhile inventory checks and recommendation lookups keep working exactly as before, because their breakers never saw a single failure."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396317276-219011348.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396317276-219011348.png",
+          "alt": "Only the payment breaker tripping open while inventory and recommendation breakers stay closed"
+        },
+        {
+          "type": "blockQuote",
+          "content": "The whole point of the pattern shows up right here. One provider having a bad day degrades one part of the page, not the entire checkout experience."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Implementation: per dependency breakers with resilience4j",
+          "text": "8. Implementation: per dependency breakers with resilience4j"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is roughly what that checkout example looks like as real configuration and code, using resilience4j as the concrete library."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Configuring one breaker and bulkhead per dependency",
+          "text": "8.1 Configuring one breaker and bulkhead per dependency"
+        },
+        {
+          "type": "code",
+          "content": "resilience4j.circuitbreaker:\n  instances:\n    payments:\n      failureRateThreshold: 40\n      waitDurationInOpenState: 15s\n      slidingWindowSize: 20\n    inventory:\n      failureRateThreshold: 50\n      waitDurationInOpenState: 10s\n      slidingWindowSize: 20\n    recommendations:\n      failureRateThreshold: 60\n      waitDurationInOpenState: 5s\n      slidingWindowSize: 20\n\nresilience4j.bulkhead:\n  instances:\n    payments:\n      maxConcurrentCalls: 10\n    inventory:\n      maxConcurrentCalls: 20\n    recommendations:\n      maxConcurrentCalls: 15",
+          "code": {
+            "language": "yaml",
+            "content": "resilience4j.circuitbreaker:\n  instances:\n    payments:\n      failureRateThreshold: 40\n      waitDurationInOpenState: 15s\n      slidingWindowSize: 20\n    inventory:\n      failureRateThreshold: 50\n      waitDurationInOpenState: 10s\n      slidingWindowSize: 20\n    recommendations:\n      failureRateThreshold: 60\n      waitDurationInOpenState: 5s\n      slidingWindowSize: 20\n\nresilience4j.bulkhead:\n  instances:\n    payments:\n      maxConcurrentCalls: 10\n    inventory:\n      maxConcurrentCalls: 20\n    recommendations:\n      maxConcurrentCalls: 15"
+          },
+          "codes": {
+            "yaml": "resilience4j.circuitbreaker:\n  instances:\n    payments:\n      failureRateThreshold: 40\n      waitDurationInOpenState: 15s\n      slidingWindowSize: 20\n    inventory:\n      failureRateThreshold: 50\n      waitDurationInOpenState: 10s\n      slidingWindowSize: 20\n    recommendations:\n      failureRateThreshold: 60\n      waitDurationInOpenState: 5s\n      slidingWindowSize: 20\n\nresilience4j.bulkhead:\n  instances:\n    payments:\n      maxConcurrentCalls: 10\n    inventory:\n      maxConcurrentCalls: 20\n    recommendations:\n      maxConcurrentCalls: 15"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Every dependency gets its own named instance, its own thresholds, and its own concurrency limit. Payments is deliberately strict, it trips faster and recovers slower, since a bad payments call is expensive to get wrong."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Wiring fallback methods",
+          "text": "8.2 Wiring fallback methods"
+        },
+        {
+          "type": "code",
+          "content": "@CircuitBreaker(name = \"payments\", fallbackMethod = \"paymentFallback\")\n@Bulkhead(name = \"payments\")\npublic PaymentResult chargeCustomer(Order order) {\n    return paymentClient.charge(order);\n}\n\nprivate PaymentResult paymentFallback(Order order, Throwable t) {\n    return PaymentResult.failFast(\"payment provider unavailable, please retry\");\n}\n\n@CircuitBreaker(name = \"recommendations\", fallbackMethod = \"recFallback\")\n@Bulkhead(name = \"recommendations\")\npublic List<Item> getRecommendations(String userId) {\n    return recommendationClient.fetch(userId);\n}\n\nprivate List<Item> recFallback(String userId, Throwable t) {\n    return cache.getLastKnownRecommendations(userId);\n}",
+          "code": {
+            "language": "java",
+            "content": "@CircuitBreaker(name = \"payments\", fallbackMethod = \"paymentFallback\")\n@Bulkhead(name = \"payments\")\npublic PaymentResult chargeCustomer(Order order) {\n    return paymentClient.charge(order);\n}\n\nprivate PaymentResult paymentFallback(Order order, Throwable t) {\n    return PaymentResult.failFast(\"payment provider unavailable, please retry\");\n}\n\n@CircuitBreaker(name = \"recommendations\", fallbackMethod = \"recFallback\")\n@Bulkhead(name = \"recommendations\")\npublic List<Item> getRecommendations(String userId) {\n    return recommendationClient.fetch(userId);\n}\n\nprivate List<Item> recFallback(String userId, Throwable t) {\n    return cache.getLastKnownRecommendations(userId);\n}"
+          },
+          "codes": {
+            "java": "@CircuitBreaker(name = \"payments\", fallbackMethod = \"paymentFallback\")\n@Bulkhead(name = \"payments\")\npublic PaymentResult chargeCustomer(Order order) {\n    return paymentClient.charge(order);\n}\n\nprivate PaymentResult paymentFallback(Order order, Throwable t) {\n    return PaymentResult.failFast(\"payment provider unavailable, please retry\");\n}\n\n@CircuitBreaker(name = \"recommendations\", fallbackMethod = \"recFallback\")\n@Bulkhead(name = \"recommendations\")\npublic List<Item> getRecommendations(String userId) {\n    return recommendationClient.fetch(userId);\n}\n\nprivate List<Item> recFallback(String userId, Throwable t) {\n    return cache.getLastKnownRecommendations(userId);\n}"
+          }
+        },
+        {
+          "type": "list",
+          "content": "[\"The payments fallback fails fast with a clear message, matching the earlier decision that payments should never fail silently\",\"The recommendations fallback fails silent by quietly serving a cached list, matching the decision that recommendations are cosmetic\",\"Each annotation pair names its own breaker and bulkhead instance, so payments failures never touch the recommendations pool\"]",
+          "items": [
+            "The payments fallback fails fast with a clear message, matching the earlier decision that payments should never fail silently",
+            "The recommendations fallback fails silent by quietly serving a cached list, matching the decision that recommendations are cosmetic",
+            "Each annotation pair names its own breaker and bulkhead instance, so payments failures never touch the recommendations pool"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "A common bug to watch for",
+          "content": "Copy pasting these annotations across methods and forgetting to change the instance name is the single most common mistake teams make. It silently recreates the one shared breaker problem this whole topic exists to avoid, just with extra steps."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. The interview angle",
+          "text": "9. The interview angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "Plenty of candidates can describe closed, open, and half open. Far fewer bring up per dependency isolation without being prompted, which is exactly why it is the detail that separates a surface level answer from a strong one."
+        },
+        {
+          "type": "list",
+          "content": "[\"State the mechanism briefly, then move straight to per dependency isolation as the real design decision at scale\",\"Explain why one shared breaker punishes healthy dependencies, using a concrete example like payments versus inventory\",\"Bring up bulkheading in the same breath, interviewers notice when you connect the two patterns instead of listing them separately\",\"Mention a real library, resilience4j, Polly, or Envoy, to show you know this ships in production, not just in theory\"]",
+          "items": [
+            "State the mechanism briefly, then move straight to per dependency isolation as the real design decision at scale",
+            "Explain why one shared breaker punishes healthy dependencies, using a concrete example like payments versus inventory",
+            "Bring up bulkheading in the same breath, interviewers notice when you connect the two patterns instead of listing them separately",
+            "Mention a real library, resilience4j, Polly, or Envoy, to show you know this ships in production, not just in theory"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "When an interviewer hears you say every dependency needs its own breaker and its own pool, that is the line that signals you have actually operated a system like this, not just read about it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Summary",
+          "text": "10. Summary"
+        },
+        {
+          "type": "paragraph",
+          "content": "A circuit breaker is only doing its job at microservices scale if it fails narrowly. One breaker shared across every dependency fails wide, taking healthy calls down with the sick one. Give each dependency its own breaker and its own resource pool, and pick a fallback strategy that matches how much that dependency actually matters."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396317278-171241188.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396317278-171241188.png",
+          "alt": "One shared breaker compared against one breaker per dependency as the key design decision"
+        },
+        {
+          "type": "list",
+          "content": "[\"Recap the state machine quickly, then spend your time on isolation, that is where the real design thinking lives\",\"Pair every breaker with a bulkhead so a slow dependency cannot starve resources meant for others\",\"Choose fail fast or fail silent per dependency based on how much a wrong guess actually costs\",\"Reach for resilience4j, Polly, or your service mesh rather than building this from scratch\"]",
+          "items": [
+            "Recap the state machine quickly, then spend your time on isolation, that is where the real design thinking lives",
+            "Pair every breaker with a bulkhead so a slow dependency cannot starve resources meant for others",
+            "Choose fail fast or fail silent per dependency based on how much a wrong guess actually costs",
+            "Reach for resilience4j, Polly, or your service mesh rather than building this from scratch"
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

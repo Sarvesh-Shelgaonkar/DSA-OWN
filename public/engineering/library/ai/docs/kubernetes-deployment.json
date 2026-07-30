@@ -1,0 +1,519 @@
+{
+  "slug": "kubernetes-deployment",
+  "title": "Kubernetes Deployment",
+  "content": [
+    {
+      "id": "kubernetes-deployment",
+      "title": "Kubernetes Deployment",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "An MCP server that only runs on your laptop is not much use to a team."
+        },
+        {
+          "type": "paragraph",
+          "text": "Kubernetes takes a packaged container and keeps it running reliably, at scale, across machines."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson covers packaging, deploying, health checks, and safe rolling updates for an MCP server."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why Kubernetes for an MCP Server",
+          "id": "k8s-why"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579756908-268190767.png",
+          "alt": "A Deployment manages three Pods behind a single stable Service",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "An MCP server is just a process that talks to clients over HTTP or another transport."
+        },
+        {
+          "type": "paragraph",
+          "text": "Kubernetes takes care of restarting it when it crashes, running several copies, and rolling out new versions."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of that is MCP specific. Kubernetes only sees a container, not what is inside it."
+        },
+        {
+          "type": "paragraph",
+          "text": "You describe the desired state, and Kubernetes continuously works to make reality match it."
+        },
+        {
+          "type": "note",
+          "title": "One requirement first",
+          "content": "Kubernetes runs containers, so your MCP server needs a container image before any of this applies."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Packaging the Server as a Container",
+          "id": "k8s-packaging"
+        },
+        {
+          "type": "paragraph",
+          "text": "The starting point is a normal container image, built with a Dockerfile, same as any other service."
+        },
+        {
+          "type": "paragraph",
+          "text": "The image should expose an HTTP port and read configuration from environment variables, not from files baked into it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "dockerfile",
+            "content": "FROM node:20-slim\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci --omit=dev\nCOPY . .\nEXPOSE 8080\nCMD [\"node\", \"server.js\"]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Once this builds and runs locally with docker run, it is ready to push to a registry Kubernetes can pull from."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Pods, the Smallest Deployable Unit",
+          "id": "k8s-pods"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579758971-910432476.png",
+          "alt": "A Pod is the smallest deployable unit running a container",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A Pod is the smallest thing Kubernetes schedules, and it usually wraps a single container."
+        },
+        {
+          "type": "paragraph",
+          "text": "Pods are disposable. Kubernetes can kill one and start a fresh one at any time."
+        },
+        {
+          "type": "paragraph",
+          "text": "Because of this, your MCP server should not keep important state only inside its own Pod."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. The Deployment Manifest",
+          "id": "k8s-deployment-manifest"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579760721-46245772.png",
+          "alt": "A Deployment manifest defines Pods while a Service manifest defines how to reach them",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A Deployment describes how many copies of your Pod should exist and how to roll out changes to them."
+        },
+        {
+          "type": "paragraph",
+          "text": "You rarely write a bare Pod by hand. A Deployment manages Pods for you instead."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "yaml",
+            "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: weather-mcp\nspec:\n  replicas: 3\n  selector:\n    matchLabels:\n      app: weather-mcp\n  template:\n    metadata:\n      labels:\n        app: weather-mcp\n    spec:\n      containers:\n        - name: weather-mcp\n          image: registry.example.com/weather-mcp:1.4.0\n          ports:\n            - containerPort: 8080\n          resources:\n            requests:\n              cpu: \"250m\"\n              memory: \"256Mi\"\n            limits:\n              cpu: \"500m\"\n              memory: \"512Mi\""
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The replicas field is the whole mechanism behind running more than one copy of your server."
+        },
+        {
+          "type": "paragraph",
+          "text": "Changing it from one to three is the entire act of horizontal scaling, no code changes needed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. The Service Manifest",
+          "id": "k8s-service-manifest"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every time a Pod restarts, it gets a new internal address, so nothing can depend on that address directly."
+        },
+        {
+          "type": "paragraph",
+          "text": "A Service gives a single, stable address that always points at whichever Pods are currently healthy."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "yaml",
+            "content": "apiVersion: v1\nkind: Service\nmetadata:\n  name: weather-mcp\nspec:\n  selector:\n    app: weather-mcp\n  ports:\n    - port: 80\n      targetPort: 8080\n  type: ClusterIP"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A ClusterIP Service is only reachable inside the cluster, which fits an internal MCP server well."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Labels Tie Everything Together",
+          "id": "k8s-labels"
+        },
+        {
+          "type": "paragraph",
+          "text": "A Service does not know how a Pod was created. It only matches Pods by their labels."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is why the Deployment and the Service both use app: weather-mcp in the manifests above."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Object\",\"Has labels\",\"Matches on\"],\"rows\":[[\"Pod\",\"Yes, from the Deployment template\",\"Not applicable\"],[\"Deployment\",\"Applies labels to its Pods\",\"Its own Pods, via selector\"],[\"Service\",\"No labels of its own\",\"Any Pod matching its selector\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Liveness Probes",
+          "id": "k8s-liveness"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579762287-600901899.png",
+          "alt": "A liveness probe is compared against a readiness probe",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A liveness probe answers one question, is this container stuck and should it be restarted."
+        },
+        {
+          "type": "paragraph",
+          "text": "If it keeps failing, Kubernetes kills the container and starts a new one in its place."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "yaml",
+            "content": "livenessProbe:\n  httpGet:\n    path: /health\n    port: 8080\n  initialDelaySeconds: 5\n  periodSeconds: 10"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The health endpoint should be cheap and simple, just confirming the process is alive, nothing more."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Readiness Probes",
+          "id": "k8s-readiness"
+        },
+        {
+          "type": "paragraph",
+          "text": "A readiness probe answers a different question, is this container ready to receive real traffic right now."
+        },
+        {
+          "type": "paragraph",
+          "text": "A failed readiness probe removes the Pod from the Service, no restart happens."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "yaml",
+            "content": "readinessProbe:\n  httpGet:\n    path: /ready\n    port: 8080\n  initialDelaySeconds: 2\n  periodSeconds: 5"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Readiness and liveness are not the same",
+          "content": "Readiness controls traffic routing. Liveness controls restarts. Mixing them up causes confusing outages."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Combining Probes in One Manifest",
+          "id": "k8s-probes-combined"
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice both probes live together inside the same container spec, right next to resources."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "yaml",
+            "content": "containers:\n  - name: weather-mcp\n    image: registry.example.com/weather-mcp:1.4.0\n    ports:\n      - containerPort: 8080\n    readinessProbe:\n      httpGet:\n        path: /ready\n        port: 8080\n      initialDelaySeconds: 2\n      periodSeconds: 5\n    livenessProbe:\n      httpGet:\n        path: /health\n        port: 8080\n      initialDelaySeconds: 5\n      periodSeconds: 10"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "With both in place, Kubernetes finally knows the difference between running and actually ready to serve."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Rolling Updates",
+          "id": "k8s-rolling-updates"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579763835-673942237.png",
+          "alt": "A rolling update replaces old Pods with new ones a few at a time",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Updating the image field on a Deployment triggers a rolling update automatically, no extra command needed."
+        },
+        {
+          "type": "paragraph",
+          "text": "Kubernetes starts new Pods, waits for each to pass its readiness probe, then retires an old Pod."
+        },
+        {
+          "type": "paragraph",
+          "text": "This repeats until every Pod runs the new version, and the Service never drops to zero ready Pods."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "kubectl set image deployment/weather-mcp weather-mcp=registry.example.com/weather-mcp:1.5.0\nkubectl rollout status deployment/weather-mcp"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Controlling the Pace of a Rollout",
+          "id": "k8s-rollout-strategy"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two settings control exactly how a rolling update proceeds, maxSurge and maxUnavailable."
+        },
+        {
+          "type": "paragraph",
+          "text": "maxSurge allows extra Pods above the replica count during the update. maxUnavailable allows some to be down."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "yaml",
+            "content": "spec:\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxSurge: 1\n      maxUnavailable: 0"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Setting maxUnavailable to zero guarantees full capacity is kept throughout the whole update."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Rolling Back a Bad Deploy",
+          "id": "k8s-rollback"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579765450-563413697.png",
+          "alt": "A bad rollout is rolled back to the previous Deployment revision",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "If a new version turns out to be broken, undoing it is just as mechanical as rolling it out."
+        },
+        {
+          "type": "paragraph",
+          "text": "Kubernetes keeps a history of previous Deployment revisions specifically for this purpose."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "kubectl rollout undo deployment/weather-mcp\nkubectl rollout history deployment/weather-mcp"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A rollback is itself just another rolling update, moving back to the last known good image."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Watching a Deployment in Practice",
+          "id": "k8s-observing"
+        },
+        {
+          "type": "paragraph",
+          "text": "A handful of commands answer almost every question about whether a rollout is actually healthy."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "kubectl get pods -l app=weather-mcp\nkubectl describe pod weather-mcp-7d9f8c6b5-xk2pl\nkubectl logs weather-mcp-7d9f8c6b5-xk2pl --previous"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The previous flag on logs shows output from before a crash, often the only place the real error is visible."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Resource Requests and Limits",
+          "id": "k8s-resources"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579766976-929094054.png",
+          "alt": "A resource request is compared against a resource limit",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Requests tell the scheduler how much CPU and memory a Pod needs, to decide which node has room."
+        },
+        {
+          "type": "paragraph",
+          "text": "Limits cap how much a Pod can actually use, so one runaway process cannot starve its neighbors."
+        },
+        {
+          "type": "list",
+          "items": [
+            "requests set the minimum a Pod is guaranteed for scheduling purposes.",
+            "limits.memory being exceeded gets a Pod killed with an out of memory error.",
+            "limits.cpu being exceeded only throttles the Pod, it is not killed."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: A Complete Deployment",
+          "id": "k8s-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is everything from this lesson combined into one minimal, working set of manifests."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "yaml",
+            "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: kb-mcp\nspec:\n  replicas: 3\n  selector:\n    matchLabels: { app: kb-mcp }\n  template:\n    metadata:\n      labels: { app: kb-mcp }\n    spec:\n      containers:\n        - name: kb-mcp\n          image: registry.example.com/kb-mcp:1.0.0\n          ports: [{ containerPort: 8080 }]\n          resources:\n            requests: { cpu: \"250m\", memory: \"256Mi\" }\n            limits: { cpu: \"500m\", memory: \"512Mi\" }\n          readinessProbe:\n            httpGet: { path: /ready, port: 8080 }\n          livenessProbe:\n            httpGet: { path: /health, port: 8080 }\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: kb-mcp\nspec:\n  selector: { app: kb-mcp }\n  ports: [{ port: 80, targetPort: 8080 }]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Applying this and watching kubectl get pods confirms the whole chain works end to end."
+        },
+        {
+          "type": "paragraph",
+          "text": "Once all three Pods show Running and Ready, the Service is already load balancing across them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "k8s-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Deploying without resource requests or limits, leaving one bad Pod free to starve a whole node.",
+            "Confusing readiness and liveness, causing Kubernetes to restart Pods that are just busy, not broken.",
+            "Running only one replica, so a single Pod restart becomes a full outage.",
+            "Skipping kubectl rollout status and assuming a deploy worked the moment apply returns.",
+            "Setting maxUnavailable too high, letting a bad rollout take down most of your capacity at once."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "k8s-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take a container you have already built and write a Deployment and Service for it, using this lesson as a template."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "kubectl apply -f deployment.yaml\nkubectl apply -f service.yaml\nkubectl scale deployment kb-mcp --replicas=4\nkubectl get pods -l app=kb-mcp -w"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Then deploy an intentionally broken image and watch the Service keep routing only to still healthy Pods."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "k8s-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A Deployment and Service turn a single container image into a self healing, updatable service."
+        },
+        {
+          "type": "paragraph",
+          "text": "Health probes tell Kubernetes when a Pod is truly ready, and rolling updates use that to deploy safely with zero downtime."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,590 @@
+{
+  "slug": "ssl-tls-deep-dive",
+  "title": "SSL/TLS Deep Dive",
+  "content": [
+    {
+      "id": "ssl-tls-deep-dive",
+      "title": "SSL/TLS Deep Dive",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "You already know TLS encrypts the connection between your browser and a server. That story usually stops right there, which leaves out the parts that actually bite you in production."
+        },
+        {
+          "type": "paragraph",
+          "content": "Where does the browser's trust actually come from? Who terminates that encryption in your architecture, the load balancer, the CDN, or the origin server itself? And what happens on a random Tuesday when a certificate quietly expires and your entire site starts throwing errors?"
+        },
+        {
+          "type": "blockQuote",
+          "content": "TLS in a real system is not just a yes or no answer to \"is the connection encrypted\". It is a set of decisions about where trust is established, where encryption actually ends, and who is on the hook for renewing a piece of paper before it expires."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "This doc assumes you already know what a TLS handshake looks like step by step, that ground is covered in the TLS Handshake topic. Here we go one level up, into the decisions a system designer actually makes around TLS: how trust is chained together, why the crypto changes mid handshake, where termination happens, and how certificates get managed operationally at scale."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 What this doc covers",
+          "text": "1.1 What this doc covers"
+        },
+        {
+          "type": "list",
+          "content": "[\"Certificate chains and why your browser trusts a certificate it has never seen before\",\"How certificate authorities validate a domain before issuing a certificate\",\"Why TLS uses slow asymmetric crypto for a few milliseconds and fast symmetric crypto for everything else\",\"Where TLS gets terminated in a real architecture, and the trade offs of each choice\",\"Mutual TLS and why it shows up in service mesh and zero trust designs\",\"Certificate rotation and expiry as an operational hazard, not just a cryptography topic\"]",
+          "items": [
+            "Certificate chains and why your browser trusts a certificate it has never seen before",
+            "How certificate authorities validate a domain before issuing a certificate",
+            "Why TLS uses slow asymmetric crypto for a few milliseconds and fast symmetric crypto for everything else",
+            "Where TLS gets terminated in a real architecture, and the trade offs of each choice",
+            "Mutual TLS and why it shows up in service mesh and zero trust designs",
+            "Certificate rotation and expiry as an operational hazard, not just a cryptography topic"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.2 What it deliberately skips",
+          "text": "1.2 What it deliberately skips"
+        },
+        {
+          "type": "paragraph",
+          "content": "You will not find a step by step walkthrough of ClientHello, ServerHello, or the exact bytes on the wire here. This doc is about the system design layer sitting on top of that handshake, the decisions that show up in an architecture diagram and in a senior engineer's postmortem, not the protocol internals."
+        },
+        {
+          "type": "note",
+          "title": "If you need the handshake itself",
+          "content": "Read the TLS Handshake topic first. It walks through the TCP handshake, the TLS 1.2 and 1.3 flows, session resumption, and SNI in detail. This doc builds on top of that instead of repeating it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Certificate chains and the chain of trust",
+          "text": "2. Certificate chains and the chain of trust"
+        },
+        {
+          "type": "paragraph",
+          "content": "Your browser has never met yourapp.com before, yet it trusts the certificate that server presents in under a second. That trust does not come from magic, it comes from a chain of signatures that eventually lands on an authority your operating system already trusts."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Leaf, intermediate, and root certificates",
+          "text": "2.1 Leaf, intermediate, and root certificates"
+        },
+        {
+          "type": "paragraph",
+          "content": "A leaf certificate is the one issued for your actual domain, the thing your server presents during the handshake. It is signed by an intermediate certificate authority, not directly by the root. The intermediate is in turn signed by a root certificate authority, and root certificates are the ones baked into your operating system or browser as inherently trusted."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358745-306969258.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358745-306969258.png",
+          "alt": "Leaf certificate signed by an intermediate CA, signed by a trusted root CA"
+        },
+        {
+          "type": "paragraph",
+          "content": "This three tier structure exists for a practical reason. Root CA private keys are treated like crown jewels, kept offline, used as rarely as possible, because if a root key ever leaks every certificate that traces back to it becomes suspect. Intermediates take on the day to day signing work so the root almost never has to be touched."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Why your OS and browser ship a root store",
+          "text": "2.2 Why your OS and browser ship a root store"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every operating system and every major browser ships with a preinstalled list of root certificates it trusts natively, usually a few hundred of them from CAs around the world. When your server sends its leaf and intermediate certificates during the handshake, your browser walks the chain upward. Leaf was signed by this intermediate, was this intermediate signed by a root I already trust? If it lands on something in that root store, the whole chain is trusted."
+        },
+        {
+          "type": "note",
+          "title": "Your server usually sends the intermediate too",
+          "content": "A correctly configured server sends the leaf certificate plus the intermediate certificate together. It almost never needs to send the root, because the client already has that root locally. Forgetting to include the intermediate is one of the most common TLS misconfigurations in the wild."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.3 What a broken chain looks like",
+          "text": "2.3 What a broken chain looks like"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the server only sends the leaf certificate and skips the intermediate, the browser cannot walk the chain up to a trusted root. It has no idea who vouches for this leaf, so it refuses the connection and shows a certificate error, even though the leaf certificate itself is perfectly valid."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358746-689782452.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358746-689782452.png",
+          "alt": "A missing intermediate certificate breaks the chain and produces a browser trust error"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is one of those bugs that looks terrifying and is almost always the same fix: bundle the intermediate certificate along with the leaf on the server. Most outages that look like \"our certificate broke\" are actually this."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Certificate authorities and domain validation",
+          "text": "3. Certificate authorities and domain validation"
+        },
+        {
+          "type": "paragraph",
+          "content": "A certificate authority is not vouching for how trustworthy your company is. In the vast majority of certificates issued today, it is vouching for exactly one narrow fact: whoever requested this certificate controls this domain."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 What a CA is actually attesting to",
+          "text": "3.1 What a CA is actually attesting to"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a CA signs your leaf certificate, it is putting its own reputation behind a single claim, that the public key in this certificate belongs to whoever legitimately controls the domain named in it. That is it. It says nothing about whether the business behind that domain is honest, well funded, or safe to buy from. Phishing sites get valid certificates for their own domains all the time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 How domain validation actually works",
+          "text": "3.2 How domain validation actually works"
+        },
+        {
+          "type": "paragraph",
+          "content": "Before issuing a certificate, the CA has to prove you actually control the domain you are requesting one for. The two common ways to do that are an HTTP challenge and a DNS challenge."
+        },
+        {
+          "type": "list",
+          "content": "[\"HTTP challenge, the CA asks you to place a specific random file at a specific path on your web server, then it fetches that file over plain HTTP to confirm you control the server answering for that domain\",\"DNS challenge, the CA asks you to create a specific TXT record under your domain's DNS zone, then it queries DNS to confirm you control the zone itself\"]",
+          "items": [
+            "HTTP challenge, the CA asks you to place a specific random file at a specific path on your web server, then it fetches that file over plain HTTP to confirm you control the server answering for that domain",
+            "DNS challenge, the CA asks you to create a specific TXT record under your domain's DNS zone, then it queries DNS to confirm you control the zone itself"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358747-22518871.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358747-22518871.png",
+          "alt": "A CA issuing a DNS or HTTP challenge, the owner responding, and the certificate being issued"
+        },
+        {
+          "type": "example-box",
+          "title": "A DNS challenge in practice",
+          "text": "Let's Encrypt asks you to publish a TXT record like _acme-challenge.yourapp.com with a specific token value. Once its servers query DNS and see that exact token, it knows only someone with control over yourapp.com's DNS zone could have put it there, and it issues the certificate. This whole exchange typically finishes in a few seconds and needs zero human review."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.3 DV, OV, and EV certificates",
+          "text": "3.3 DV, OV, and EV certificates"
+        },
+        {
+          "type": "paragraph",
+          "content": "Domain validated certificates, the kind described above, only check domain control and are the overwhelming majority of certificates on the internet today, often issued for free and renewed automatically. Organization validated certificates add a manual check that the requesting company actually exists as a legal entity. Extended validation certificates add an even deeper manual review of that company's identity. Browsers mostly stopped visually distinguishing these tiers years ago, so in practice almost everyone reaches for domain validated certificates and automates them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Symmetric vs asymmetric encryption, and why TLS uses both",
+          "text": "4. Symmetric vs asymmetric encryption, and why TLS uses both"
+        },
+        {
+          "type": "paragraph",
+          "content": "Asymmetric encryption, the kind built on public and private key pairs, solves a real problem: two strangers can agree on a secret without ever having met before. The catch is that it is computationally expensive, slow relative to symmetric encryption, and that cost scales with every byte you encrypt."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Why asymmetric crypto is not used for the whole connection",
+          "text": "4.1 Why asymmetric crypto is not used for the whole connection"
+        },
+        {
+          "type": "paragraph",
+          "content": "Symmetric encryption uses a single shared key to both encrypt and decrypt, and it is fast enough to encrypt a video stream in real time. The problem symmetric encryption cannot solve on its own is how two parties who have never spoken before agree on that shared key without an eavesdropper capturing it in transit. That is exactly what asymmetric crypto is good at, and exactly where its cost is affordable, because it only has to run once, briefly, at the start of the connection."
+        },
+        {
+          "type": "note",
+          "title": "The core trade off in one line",
+          "content": "Asymmetric crypto is great at solving \"how do two strangers agree on a secret\", symmetric crypto is great at \"encrypt gigabytes of data fast\". TLS uses each one for the job it is actually good at."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 The handoff, from asymmetric to symmetric",
+          "text": "4.2 The handoff, from asymmetric to symmetric"
+        },
+        {
+          "type": "paragraph",
+          "content": "During the handshake, the client and server use asymmetric operations, tied to the server's certificate, to agree on a shared secret without ever sending that secret in the clear. Once both sides have derived the same symmetric session key from that exchange, every byte of the actual request and response traffic gets encrypted with fast symmetric algorithms like AES. The expensive asymmetric math happens once per connection, the cheap symmetric math happens for every single byte after that."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358748-207019151.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358748-207019151.png",
+          "alt": "Asymmetric handshake establishing a shared key, then handing off to fast symmetric encryption"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is also why session resumption matters so much for performance, covered in the handshake topic. Skipping the asymmetric step entirely on a repeat connection is a much bigger win than optimizing the symmetric part, because the asymmetric step is where almost all the cost lives."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. TLS termination in system design",
+          "text": "5. TLS termination in system design"
+        },
+        {
+          "type": "paragraph",
+          "content": "Somewhere in your architecture, encrypted traffic has to become plaintext so your application code can actually read it. Where that happens is a real design decision with real trade offs, not an implementation detail."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Terminating at the edge",
+          "text": "5.1 Terminating at the edge"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most common setup terminates TLS at a load balancer or CDN edge, the point closest to the user. The edge holds the certificate, does the expensive handshake work, and then talks to your origin servers over a separate connection, often plain HTTP inside a private network."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358748-147193918.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358748-147193918.png",
+          "alt": "TLS terminated at the CDN edge, traffic to the origin flows in plaintext internally"
+        },
+        {
+          "type": "code",
+          "content": "server {\n    listen 443 ssl;\n    server_name yourapp.com;\n\n    ssl_certificate     /etc/letsencrypt/live/yourapp.com/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/yourapp.com/privkey.pem;\n    ssl_protocols       TLSv1.2 TLSv1.3;\n    ssl_ciphers         HIGH:!aNULL:!MD5;\n\n    location / {\n        # traffic to the origin runs over plain HTTP on a private network\n        proxy_pass http://origin-internal:8080;\n        proxy_set_header X-Forwarded-Proto https;\n    }\n}",
+          "code": {
+            "language": "nginx",
+            "content": "server {\n    listen 443 ssl;\n    server_name yourapp.com;\n\n    ssl_certificate     /etc/letsencrypt/live/yourapp.com/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/yourapp.com/privkey.pem;\n    ssl_protocols       TLSv1.2 TLSv1.3;\n    ssl_ciphers         HIGH:!aNULL:!MD5;\n\n    location / {\n        # traffic to the origin runs over plain HTTP on a private network\n        proxy_pass http://origin-internal:8080;\n        proxy_set_header X-Forwarded-Proto https;\n    }\n}"
+          },
+          "codes": {
+            "nginx": "server {\n    listen 443 ssl;\n    server_name yourapp.com;\n\n    ssl_certificate     /etc/letsencrypt/live/yourapp.com/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/yourapp.com/privkey.pem;\n    ssl_protocols       TLSv1.2 TLSv1.3;\n    ssl_ciphers         HIGH:!aNULL:!MD5;\n\n    location / {\n        # traffic to the origin runs over plain HTTP on a private network\n        proxy_pass http://origin-internal:8080;\n        proxy_set_header X-Forwarded-Proto https;\n    }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This keeps certificate management in one place, a handful of edge nodes instead of every backend instance, and it takes the CPU cost of decryption off your application servers entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Passing through to the origin",
+          "text": "5.2 Passing through to the origin"
+        },
+        {
+          "type": "paragraph",
+          "content": "An alternative setup has the load balancer forward encrypted bytes untouched, letting the origin server terminate TLS itself. Here the load balancer never sees plaintext at all, it just routes encrypted TCP connections to the right backend."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358749-245545886.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358749-245545886.png",
+          "alt": "A load balancer passing encrypted traffic through, TLS only terminates at the origin"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is real end to end encryption, the data stays encrypted for the entire trip from client to the exact server that processes it. The cost is that every origin instance now needs a valid certificate and needs the CPU budget to handle its own decryption, and load balancing decisions like routing by URL path become harder since the load balancer cannot read encrypted content."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.3 End to end encryption trade offs",
+          "text": "5.3 End to end encryption trade offs"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Origin servers never expose a plaintext hop over the internal network\",\"Every origin instance needs a valid certificate and renewal process, not just the edge\"],[\"A compromised internal network segment cannot read live traffic\",\"Origin servers spend real CPU on TLS handshakes instead of just serving requests\"],[\"Satisfies stricter compliance requirements around data in transit\",\"Layer 7 routing decisions, like inspecting a URL path, get harder without decrypting first\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most systems land on a middle ground: terminate at the edge for public traffic, since that traffic crosses the untrusted public internet, then re encrypt or rely on a private network and mutual TLS for the internal hop, which is exactly the pattern section 9 works through."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Mutual TLS and zero trust",
+          "text": "6. Mutual TLS and zero trust"
+        },
+        {
+          "type": "paragraph",
+          "content": "Regular TLS only proves one side's identity, the server's. Your browser knows it is talking to the real yourapp.com, but yourapp.com has no cryptographic proof of who is calling it beyond whatever it asks for at the application layer, a password or a token."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 What mTLS adds",
+          "text": "6.1 What mTLS adds"
+        },
+        {
+          "type": "paragraph",
+          "content": "Mutual TLS flips that around. Both sides present a certificate during the handshake, and both sides verify the other's certificate before any data flows. The client proves its identity cryptographically, the same way a server normally does, instead of relying only on an application level credential."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358749-670362793.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358749-670362793.png",
+          "alt": "Both sides of a mutual TLS connection present a certificate and verify each other"
+        },
+        {
+          "type": "paragraph",
+          "content": "This matters most between services that trust each other by default today just because they happen to be on the same internal network. mTLS forces every service to prove who it is on every single call, which is the core idea behind a zero trust architecture, never trust a connection just because of where it came from."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 mTLS in service mesh architectures",
+          "text": "6.2 mTLS in service mesh architectures"
+        },
+        {
+          "type": "paragraph",
+          "content": "Rolling out mTLS by hand across dozens of services, in different languages, each managing its own certificates, is exactly the kind of repetitive infrastructure work a service mesh exists to absorb. A sidecar proxy sits next to every service instance and handles the mTLS handshake transparently, the application code just makes what looks like a normal call."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358749-175458160.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358749-175458160.png",
+          "alt": "Sidecar proxies handling mutual TLS transparently between two services"
+        },
+        {
+          "type": "note",
+          "title": "Tied to two other topics",
+          "content": "This is the same idea covered in the sidecar pattern and service mesh topics, applied specifically to certificates and encryption instead of retries or observability. If mTLS across a large system sounds painful to manage by hand, a service mesh is usually the answer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Certificate rotation and expiry",
+          "text": "7. Certificate rotation and expiry"
+        },
+        {
+          "type": "paragraph",
+          "content": "Certificates are deliberately built to expire. A shorter lifetime limits the damage if a private key ever leaks, since an attacker only has a limited window before that certificate stops being trusted anyway. The trade off is that someone, or something, has to renew every certificate before it runs out."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Why this is a very common real world outage",
+          "text": "7.1 Why this is a very common real world outage"
+        },
+        {
+          "type": "paragraph",
+          "content": "An expired certificate does not degrade gracefully. One second before midnight the handshake works fine, one second after, every single client rejects the connection outright. There is no partial failure here, the whole service looks down to anyone trying to connect over TLS, even though every backend server is perfectly healthy."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358750-12055578.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396358750-12055578.png",
+          "alt": "A certificate expiring instantly turns a healthy service into a full outage"
+        },
+        {
+          "type": "note",
+          "title": "This has taken down major companies",
+          "content": "Certificate expiry has caused very public outages at large, well resourced companies, not just small teams. It is rarely a cryptography failure, it is almost always a process failure, nobody was watching the expiry date closely enough, or the renewal automation silently broke months earlier and nobody noticed until the certificate actually expired."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Automating renewal",
+          "text": "7.2 Automating renewal"
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix that has actually worked at scale is removing humans from the loop entirely. Automated certificate authorities like Let's Encrypt issue short lived certificates, often ninety days, specifically to force automation, a certificate you have to renew every ninety days cannot survive on a manual process someone remembers to run once a year."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396365400-480767513.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396365400-480767513.png",
+          "alt": "An automated job checking certificate expiry and renewing well before the deadline"
+        },
+        {
+          "type": "code",
+          "content": "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata:\n  name: yourapp-tls\n  namespace: production\nspec:\n  secretName: yourapp-tls-secret\n  duration: 2160h        # 90 days\n  renewBefore: 720h       # renew 30 days before expiry\n  dnsNames:\n    - yourapp.com\n  issuerRef:\n    name: letsencrypt-prod\n    kind: ClusterIssuer",
+          "code": {
+            "language": "yaml",
+            "content": "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata:\n  name: yourapp-tls\n  namespace: production\nspec:\n  secretName: yourapp-tls-secret\n  duration: 2160h        # 90 days\n  renewBefore: 720h       # renew 30 days before expiry\n  dnsNames:\n    - yourapp.com\n  issuerRef:\n    name: letsencrypt-prod\n    kind: ClusterIssuer"
+          },
+          "codes": {
+            "yaml": "apiVersion: cert-manager.io/v1\nkind: Certificate\nmetadata:\n  name: yourapp-tls\n  namespace: production\nspec:\n  secretName: yourapp-tls-secret\n  duration: 2160h        # 90 days\n  renewBefore: 720h       # renew 30 days before expiry\n  dnsNames:\n    - yourapp.com\n  issuerRef:\n    name: letsencrypt-prod\n    kind: ClusterIssuer"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "cert-manager watches that expiry date continuously and kicks off a renewal well before the deadline, then hot swaps the new certificate into the running service without anyone touching a config file. The renewBefore window matters here, it needs enough slack to survive a failed renewal attempt or two and still retry successfully before the old certificate actually runs out."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. TLS versions and cipher suites at a system design level",
+          "text": "8. TLS versions and cipher suites at a system design level"
+        },
+        {
+          "type": "paragraph",
+          "content": "You do not need to memorize every cipher suite to make good decisions here. What matters at a system design level is knowing that old protocol versions and weak ciphers get deprecated on purpose, and that this deprecation is a compliance requirement as much as a technical one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Deprecating old protocol versions",
+          "text": "8.1 Deprecating old protocol versions"
+        },
+        {
+          "type": "paragraph",
+          "content": "TLS 1.0 and TLS 1.1 are considered broken enough today that major browsers refuse to negotiate them at all, and PCI DSS, the payment card industry's security standard, explicitly forbids them for handling card data. A system design decision here looks like configuring your load balancer or origin to only accept TLS 1.2 and TLS 1.3, and rejecting anything older outright rather than trying to stay backward compatible with ancient clients."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Why this matters for compliance",
+          "text": "8.2 Why this matters for compliance"
+        },
+        {
+          "type": "paragraph",
+          "content": "Auditors checking PCI DSS, HIPAA, or SOC 2 compliance will specifically scan your public endpoints for weak protocol versions and weak cipher suites. Failing that scan is not a minor note, it can block a certification your business actually needs to close deals. This is one of the rare cases where a security detail like an nginx config line, ssl_protocols TLSv1.2 TLSv1.3, has a direct line to a business outcome."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Worked example, edge termination plus internal mTLS",
+          "text": "9. Worked example, edge termination plus internal mTLS"
+        },
+        {
+          "type": "paragraph",
+          "content": "Put the last few sections together and you get a pattern that shows up constantly in real architectures."
+        },
+        {
+          "type": "example-box",
+          "title": "The full picture",
+          "text": "A user hits yourapp.com. Their browser negotiates TLS with a CDN edge node, which holds a certificate automatically renewed by an ACME client every ninety days. The CDN terminates that connection, then forwards the request into your private network toward an internal API gateway. From the gateway inward, every service to service call runs through sidecar proxies that negotiate mutual TLS automatically, each service presenting its own short lived certificate issued by an internal certificate authority instead of a public one."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396365403-180853855.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396365403-180853855.png",
+          "alt": "Client to CDN edge TLS, then an internal gateway, then mutual TLS between backend services"
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice what each layer is actually protecting against. Edge TLS protects the public internet hop, the one an attacker can most easily sit on. Internal mTLS protects against a compromised service or a misconfigured network segment inside your own infrastructure, treating your own data center with the same suspicion as the open internet. Neither layer alone covers both risks."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. The interview angle",
+          "text": "10. The interview angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a system design interview brings up HTTPS or TLS, most candidates say \"we use TLS\" and stop there. A stronger answer names exactly where in the architecture TLS terminates and explains why."
+        },
+        {
+          "type": "list",
+          "content": "[\"State whether TLS terminates at the CDN, the load balancer, or the origin, and justify the choice against the trade offs in section 5\",\"Mention mTLS specifically when the design includes internal microservices talking to each other, especially in a zero trust framing\",\"Bring up certificate rotation as an operational concern, not just a cryptography detail, it shows you have thought about running the system, not just designing it on a whiteboard\"]",
+          "items": [
+            "State whether TLS terminates at the CDN, the load balancer, or the origin, and justify the choice against the trade offs in section 5",
+            "Mention mTLS specifically when the design includes internal microservices talking to each other, especially in a zero trust framing",
+            "Bring up certificate rotation as an operational concern, not just a cryptography detail, it shows you have thought about running the system, not just designing it on a whiteboard"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Why this detail lands well",
+          "content": "Knowing where encryption starts and stops in your own design, and why, is a concrete signal of real production experience. It is a small detail that is easy to skip and very easy for an interviewer to notice when it is missing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Summary",
+          "text": "11. Summary"
+        },
+        {
+          "type": "list",
+          "content": "[\"Trust flows down a chain from a root CA your OS already trusts, through an intermediate, to the leaf certificate your server presents\",\"A certificate authority mainly attests to domain control, verified automatically through an HTTP or DNS challenge\",\"TLS uses asymmetric crypto briefly to agree on a shared key, then switches to fast symmetric encryption for the actual data\",\"TLS termination can happen at the edge, at the origin, or both, and each choice trades performance and simplicity against how far encryption actually reaches\",\"Mutual TLS verifies both sides of a connection and underpins zero trust and service mesh designs\",\"Certificate expiry is a leading real world cause of outages, and the fix is automated renewal, not a calendar reminder\",\"Deprecating old TLS versions and weak ciphers is as much a compliance requirement as a technical one\"]",
+          "items": [
+            "Trust flows down a chain from a root CA your OS already trusts, through an intermediate, to the leaf certificate your server presents",
+            "A certificate authority mainly attests to domain control, verified automatically through an HTTP or DNS challenge",
+            "TLS uses asymmetric crypto briefly to agree on a shared key, then switches to fast symmetric encryption for the actual data",
+            "TLS termination can happen at the edge, at the origin, or both, and each choice trades performance and simplicity against how far encryption actually reaches",
+            "Mutual TLS verifies both sides of a connection and underpins zero trust and service mesh designs",
+            "Certificate expiry is a leading real world cause of outages, and the fix is automated renewal, not a calendar reminder",
+            "Deprecating old TLS versions and weak ciphers is as much a compliance requirement as a technical one"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "Anyone can say a connection is encrypted. Knowing where that encryption actually starts, where it ends, and who renews the certificate before it expires is what separates a diagram from a system that survives production."
+        }
+      ]
+    }
+  ]
+}

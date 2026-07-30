@@ -1,0 +1,544 @@
+{
+  "slug": "client-server-communication",
+  "title": "Client-Server Communication",
+  "content": [
+    {
+      "id": "client-server-communication",
+      "title": "Client-Server Communication",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "A client and a server do not talk in neat, one-at-a-time turns the way a printed transcript might suggest."
+        },
+        {
+          "type": "paragraph",
+          "text": "In a real session several requests can be traveling at once, replies can arrive out of order, and either side might need to send something the other did not explicitly ask for."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson looks past the individual message shapes covered elsewhere and focuses purely on the mechanics that keep an entire session coherent, how requests and responses are paired up, and how order and concurrency are actually handled."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. A Session Is a Conversation, Not a Single Message",
+          "id": "csc-session-is-conversation"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172687777-378465126.png",
+          "alt": "A single message is compared against an ongoing conversation",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172687777-378465126.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once a client and server have completed initialization, they share what is best thought of as an open conversation rather than a single question and a single answer. Over the life of that conversation, dozens or hundreds of individual messages might travel in both directions, tool calls, resource reads, notifications, and their corresponding replies."
+        },
+        {
+          "type": "paragraph",
+          "text": "Treating a session as one ongoing conversation rather than a sequence of isolated request-reply pairs is what makes concepts like concurrent in-flight requests and out-of-order responses make sense at all, both sides need a way to keep track of which reply belongs to which question across that entire stretch of time."
+        },
+        {
+          "type": "note",
+          "title": "Why this matters in practice",
+          "content": "A host application often has a user waiting on a response while several tool calls and resource reads are quietly in flight underneath. None of that would be possible if a session were modeled as one blocking question and answer instead of an open, ongoing conversation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Every Request Carries an Id",
+          "id": "csc-request-carries-id"
+        },
+        {
+          "type": "paragraph",
+          "text": "Any JSON-RPC message that expects a reply, in MCP terms this means any request, includes an id field, a number or string chosen by whichever side sent the request. This id has no meaning of its own, it is not a timestamp or a sequence guarantee, it exists purely so a later response can be tied back to the exact request that produced it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{ \"jsonrpc\": \"2.0\", \"id\": 7, \"method\": \"tools/call\", \"params\": { \"name\": \"search\", \"arguments\": { \"query\": \"Q3 revenue\" } } }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The id field is deliberately opaque to everyone except the side that generated it. A server does not try to interpret what a client's id means, it simply copies the value back verbatim onto the matching response, treating it as an unstructured token rather than something with any internal meaning."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Field\",\"Present on\",\"Purpose\"],\"rows\":[[\"id\",\"Requests and responses\",\"Correlates a response to the request that produced it\"],[\"method\",\"Requests and notifications\",\"Names the operation being invoked\"],[\"params\",\"Requests and notifications\",\"Carries the arguments for that operation\"],[\"result or error\",\"Responses only\",\"Carries the outcome of a completed request\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Matching a Response Back to Its Request",
+          "id": "csc-matching-response"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172689903-607673983.png",
+          "alt": "A request with id 7 matches a response with the same id 7",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172689903-607673983.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a response arrives, it carries the identical id that was on the request it answers, nothing more. The side that sent the original request keeps a small table mapping outstanding ids to whatever it needs to do once a reply shows up, resolve a pending promise, call back into waiting code, update a UI element."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "pending_requests = {}\n\ndef send_request(method, params):\n    request_id = next_id()\n    pending_requests[request_id] = create_pending_future()\n    transport.send({\"jsonrpc\": \"2.0\", \"id\": request_id, \"method\": method, \"params\": params})\n    return pending_requests[request_id]\n\ndef on_message(message):\n    if \"id\" in message and message[\"id\"] in pending_requests:\n        future = pending_requests.pop(message[\"id\"])\n        future.resolve(message)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This table, often called a pending-requests map, is the single most important piece of client-server communication mechanics, without it, a side receiving several responses close together would have no way to know which question each one was actually answering."
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to think of the pending-requests map as a claim ticket system. Sending a request is like handing over your coat and getting a numbered ticket, the id. When a response comes back with that same number, you know exactly which coat, which request, it belongs to, regardless of how many other tickets are currently outstanding at the counter."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Notifications: Messages With No Id and No Reply",
+          "id": "csc-notifications-no-id"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172691482-216841793.png",
+          "alt": "A notification has no id and no reply",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172691482-216841793.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Not every message expects an answer. A notification carries a method and optional params but no id at all, and the receiving side is not expected to send anything back. Progress updates during a long tool call and the initialized confirmation sent after the handshake are both notifications."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{ \"jsonrpc\": \"2.0\", \"method\": \"notifications/progress\", \"params\": { \"progressToken\": \"job-9\", \"progress\": 40, \"total\": 100 } }"
+          }
+        },
+        {
+          "type": "note",
+          "title": "An easy way to tell them apart",
+          "content": "If a message has an id, it is a request or a response, and something is expected to happen with it. If it has no id, it is a notification, informational only, fire and forget."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Notification\",\"Direction\",\"Purpose\"],\"rows\":[[\"notifications/initialized\",\"Client to server\",\"Confirms the handshake is complete\"],[\"notifications/progress\",\"Server to client\",\"Reports incremental progress on a long call\"],[\"notifications/cancelled\",\"Either direction\",\"Signals that an in-flight request should be abandoned\"],[\"notifications/message\",\"Server to client\",\"Delivers a log line without expecting acknowledgement\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "None of these expect a reply, and a well-behaved implementation never adds an id to them, doing so would incorrectly suggest to the other side that a response is owed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Sequencing: Order Within a Single Direction",
+          "id": "csc-sequencing-order"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most transports, a subprocess's standard input and output being the clearest example, guarantee that bytes sent in a particular order arrive in that same order. This means messages sent by one side, in the order that side sent them, are read by the other side in that same order, a useful guarantee, but a narrower one than it first sounds."
+        },
+        {
+          "type": "paragraph",
+          "text": "That guarantee only covers the order messages were sent in, it says nothing about how quickly each one gets answered. A client might send three requests back to back, in order, and still receive their three responses in a completely different order, because the server processed them at different speeds."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth separating two different kinds of order that are easy to conflate. Send order is the order one side wrote messages onto the wire, and that order is preserved by the transport. Completion order is the order responses come back, and that order depends entirely on how long each request takes the receiving side to handle, which has nothing to do with the transport at all."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Send order is preserved, completion order is not\nsend(id=1, method=\"slow_tool\")\nsend(id=2, method=\"fast_tool\")\n# Wire guarantees id=1's bytes precede id=2's bytes in transit,\n# but nothing guarantees which response arrives first"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Concurrent In-Flight Requests",
+          "id": "csc-concurrent-inflight"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172693005-938232465.png",
+          "alt": "Request A, request B, and request C run concurrently",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172693005-938232465.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Nothing in MCP requires a client to wait for one request's response before sending the next one. A client is free to send several requests in a row, each with its own id, and let them all sit outstanding at once, this is exactly what lets a host call two different tools on two different servers without one blocking the other, exactly as covered in MCP Host Architecture."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Time\",\"Sent\",\"Received\"],\"rows\":[[\"t0\",\"request id 1\",\"\"],[\"t0 + 1ms\",\"request id 2\",\"\"],[\"t0 + 30ms\",\"\",\"response id 2\"],[\"t0 + 45ms\",\"\",\"response id 1\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice request 1 was sent first but its response arrives second, this is completely normal and expected, and it is exactly why matching by id, rather than assuming replies arrive in send order, is not an optional detail but a hard requirement for correct behavior."
+        },
+        {
+          "type": "paragraph",
+          "text": "Concurrency at this layer is not something a client opts into with a special flag, it falls out naturally from the fact that sending a request and waiting for its response are two separate steps. As long as a side does not deliberately block itself waiting on one future before sending the next request, several requests end up outstanding at once by default."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Why Ids Must Be Unique Within a Session",
+          "id": "csc-ids-unique"
+        },
+        {
+          "type": "paragraph",
+          "text": "An id only needs to be unique among currently outstanding requests from the side that generated it, once a request has been answered, its id can, in principle, be reused later. In practice most implementations simply keep incrementing a counter for the life of the session, which is simpler to reason about and avoids any risk of accidental reuse while an old request might still somehow be in flight."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "class IdGenerator:\n    def __init__(self):\n        self._next = 1\n\n    def next_id(self):\n        current = self._next\n        self._next += 1\n        return current"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Integers versus strings",
+          "content": "The MCP specification allows an id to be either a number or a string, both are valid JSON-RPC id types. Most SDKs default to incrementing integers purely because a counter is the simplest thing that reliably avoids collisions, not because the spec requires it."
+        },
+        {
+          "type": "paragraph",
+          "text": "There is no requirement that ids be sequential either, a side could generate random tokens for every request and stay perfectly correct, the only rule that actually matters is that two currently outstanding requests from the same side never share the same id at the same time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Timeouts and Abandoned Requests",
+          "id": "csc-timeouts-abandoned"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172694492-209039682.png",
+          "alt": "A request times out and becomes abandoned",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172694492-209039682.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A request that never receives a response, because a server hung, crashed, or the transport dropped, would otherwise sit in the pending-requests map forever. Real implementations attach a timeout to every outstanding request, and if that timeout elapses first, the pending entry is resolved with a synthetic timeout error instead of waiting indefinitely."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def send_request_with_timeout(method, params, timeout_seconds=30):\n    future = send_request(method, params)\n    if not future.wait(timeout_seconds):\n        pending_requests.pop(future.id, None)\n        return timeout_error(method)\n    return future.result"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Choosing a timeout value is a real design decision, not an afterthought. Too short, and a slow but healthy tool call, say a search that legitimately takes eight seconds, gets killed before it had a chance to finish."
+        },
+        {
+          "type": "paragraph",
+          "text": "Too long, and a genuinely hung server leaves a user staring at a spinner far longer than necessary."
+        },
+        {
+          "type": "paragraph",
+          "text": "Many implementations use a fairly generous default and let individual long-running tools request extra time through progress notifications instead of a single fixed cutoff."
+        },
+        {
+          "type": "note",
+          "title": "Cancellation is not the same as a timeout",
+          "content": "A timeout is a purely local decision, one side simply gives up waiting. A cancellation notification is an explicit message telling the other side to stop working on a specific request altogether. A well-behaved client often does both, sends a cancellation and also stops waiting locally, so the server is not left burning resources on a call nobody wants the answer to anymore."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Both Sides Can Initiate Requests",
+          "id": "csc-both-sides-initiate"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172696187-246345756.png",
+          "alt": "Both the client and server can initiate requests",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172696187-246345756.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is easy to assume only the client ever sends requests, but MCP explicitly allows a server to send requests of its own, most commonly a sampling request, asking the client to run a completion through its connected model on the server's behalf. When this happens, the roles simply flip, the server is the requester and generates the id, the client is the responder and echoes it back."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{ \"jsonrpc\": \"2.0\", \"id\": \"srv-3\", \"method\": \"sampling/createMessage\", \"params\": { \"messages\": [{\"role\": \"user\", \"content\": {\"type\": \"text\", \"text\": \"Summarize this\"}}] } }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Both sides therefore need their own id generator and their own pending-requests map, since a client and a server can each have outstanding requests waiting on the other at the same time, on the very same connection."
+        },
+        {
+          "type": "paragraph",
+          "text": "This bidirectional property is easy to miss if you have only worked with simpler client and server systems where the server is purely reactive. In MCP, a persistent session means either party can be the one asking, and the mechanics for id generation and matching are completely symmetric, there is no special case in the protocol for a server-initiated request."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A client sends a tools/call request, id 1, to run a long report.",
+            "While that is outstanding, the server sends its own request, id srv-1, a sampling call asking the client to generate a short summary.",
+            "The client answers the sampling request first, its own local model call finishes quickly.",
+            "The server finishes the long report afterward and sends the response for id 1.",
+            "Two independent request and response pairs overlapped on the same connection, one initiated by each side, with no confusion about which id belonged to which side."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Correlating Requests Across Multiple Concurrent Calls",
+          "id": "csc-correlating-multiple"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172697828-864306431.png",
+          "alt": "A pending requests map correlates to a matching response",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172697828-864306431.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "When several requests are in flight from the same side at once, the pending-requests map is what makes correlating them trivial, a response arrives, its id is looked up, and exactly one pending entry is resolved, regardless of how many other requests are also still outstanding at that same moment."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is precisely the mechanism a host relies on when it fans a single user turn out to several tool calls across several client instances at once, described in MCP Host Architecture, each client instance runs its own independent id-to-pending-callback bookkeeping for its one connection."
+        },
+        {
+          "type": "paragraph",
+          "text": "One subtlety worth calling out, correlation by id only works within a single connection. If a host has three separate client instances talking to three separate servers, an id of 1 on one connection has no relationship whatsoever to an id of 1 on another, each connection keeps its own independent id space and its own pending-requests map."
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful sanity check when debugging a misbehaving integration is to log every id the moment it is generated and again the moment its response resolves. If an id ever resolves twice, or a response arrives for an id that was never sent, that almost always points to a bug in the pending-requests bookkeeping rather than anything wrong with the server."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. What Happens When a Response Never Arrives",
+          "id": "csc-response-never-arrives"
+        },
+        {
+          "type": "paragraph",
+          "text": "Beyond a plain timeout, a transport can close entirely while requests are still outstanding, a subprocess crashes, a network connection drops. When this happens, every pending entry for that connection needs to be resolved immediately with a connection-closed error, rather than left to expire one by one on their individual timeouts."
+        },
+        {
+          "type": "note",
+          "title": "A clean shutdown checklist",
+          "content": "On transport closure: reject every pending request with a clear error, stop accepting new requests on that connection, and notify whatever higher-level component, the session manager described in MCP Host Architecture, needs to know the connection is gone."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def on_transport_closed(pending_requests, reason):\n    for request_id, future in list(pending_requests.items()):\n        future.reject(connection_closed_error(reason))\n        pending_requests.pop(request_id, None)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. The Client and Server Do Not Need to Agree on Id Format",
+          "id": "csc-id-format-independent"
+        },
+        {
+          "type": "paragraph",
+          "text": "Ids are scoped to whichever side generated them, a client using simple incrementing integers and a server using short string tokens for its own sampling requests can coexist on the same connection without any conflict, since a response is only ever matched against the pending-requests map belonging to the side that originally sent that request."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Side\",\"Id style used\",\"Matched against\"],\"rows\":[[\"Client requests\",\"Incrementing integers\",\"Client's own pending-requests map\"],[\"Server requests\",\"Short string tokens\",\"Server's own pending-requests map\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This independence is a deliberate simplicity in the design, if ids had to be coordinated across both sides, initialization would need an extra negotiation step just to agree on a numbering scheme. Instead, each side simply owns its own id space outright, and correctness only ever depends on a side not reusing one of its own ids while that id is still outstanding."
+        },
+        {
+          "type": "paragraph",
+          "text": "This same independence extends to id types mixed within one side too, nothing stops a single client from using integers for most requests and occasionally a string id for a special case, as long as uniqueness among that side's outstanding requests holds."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. What a Client Sees on the Wire",
+          "id": "csc-wire-view"
+        },
+        {
+          "type": "paragraph",
+          "text": "It can help to picture the raw sequence of bytes a client actually writes and reads during a burst of activity, stripped of any framing detail, to see how little structure the transport itself needs to provide beyond ordered delivery."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "SEND  {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"search\"}}\nSEND  {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"resources/read\",\"params\":{\"uri\":\"file:///a.txt\"}}\nRECV  {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"contents\":\"...\"}}\nRECV  {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progress\":80,\"total\":100}}\nRECV  {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"...\"}]}}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the notification sitting in between the two responses, with no id at all, a receiving implementation has to be ready for any message shape to show up at any point in this stream, not just responses to its own outstanding requests."
+        },
+        {
+          "type": "paragraph",
+          "text": "A common mistake when first reading a trace like this is to assume messages must alternate strictly between the two sides, one from the client, one from the server, and so on. Real traffic is far messier, a fast burst of sends from one side, a scattering of notifications, and responses trickling back whenever the corresponding work actually completes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Worked Example: Three Requests, Out of Order",
+          "id": "csc-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "A client sends tools/call with id 1 for a slow search, then immediately sends resources/read with id 2 for a small, fast file. Here is the full trace of what happens."
+        },
+        {
+          "type": "list",
+          "items": [
+            "1. Client sends request id 1 (slow search).",
+            "2. Client sends request id 2 (fast file read), without waiting for id 1.",
+            "3. Server finishes the fast file read first, sends response id 2.",
+            "4. Client looks up id 2 in its pending-requests map, resolves that one call.",
+            "5. Server finishes the slow search later, sends response id 1.",
+            "6. Client looks up id 1, resolves that call, completely unaffected by the earlier out-of-order response id 2."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Common Mistakes in Client-Server Communication",
+          "id": "csc-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Assuming responses arrive in the same order requests were sent, and matching them positionally instead of by id.",
+            "Reusing an id while an earlier request with that same id is still outstanding, making correct matching impossible.",
+            "Forgetting that a server can also send requests, and only building a pending-requests map on the client side.",
+            "Leaving no timeout on outstanding requests, so a hung server leaves calling code waiting forever.",
+            "Not cleaning up the pending-requests map when a transport closes, leaving dangling entries that will never resolve.",
+            "Treating a notification as if it needed a matching response, and waiting on an id that was never sent in the first place."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Practice: Build a Tiny Pending-Requests Map",
+          "id": "csc-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Write a small pending-requests map from scratch, in whatever language you prefer, that supports sending a request with an auto-incrementing id, registering a callback for that id, and resolving the correct callback when a response with a matching id comes in, out of order relative to when it was sent."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Simulate two requests, respond to the second one first\nsend_request(\"slow_search\", {})   # id 1\nsend_request(\"fast_read\", {})     # id 2\nreceive_response({\"id\": 2, \"result\": \"fast file contents\"})\nreceive_response({\"id\": 1, \"result\": \"slow search results\"})\n# Confirm each callback fires with the correct result despite the order"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Then extend it to add a timeout, simulate a request that never receives a response, and confirm your code resolves it with a timeout error instead of hanging indefinitely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. A Quick Mental Model",
+          "id": "csc-mental-model"
+        },
+        {
+          "type": "paragraph",
+          "text": "If a single mental model helps more than any of the details above, picture two people passing numbered claim tickets back and forth across a counter, either person can hand over a ticket at any time, either person can be handed a ticket back at any time, and nobody ever has to guess which conversation a ticket belongs to because the number says so directly."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A request is a ticket handed over, expecting something back eventually.",
+            "A response is that same numbered ticket, returned with the requested item attached.",
+            "A notification is a note left on the counter, no ticket, no expectation of a reply.",
+            "Both people at the counter can hand over tickets, not just one designated requester."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "csc-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A client and server communicate through ids, not through assumed ordering, every request carries one, every response echoes it back, and a pending-requests map on whichever side sent the request is what ties the two together correctly even when several calls are in flight and answers arrive out of order."
+        },
+        {
+          "type": "paragraph",
+          "text": "These mechanics assume messages can actually travel back and forth reliably in the first place, which is exactly the job of the next lesson, Transport Layer, covering the abstraction that carries these messages regardless of what the underlying connection actually is."
+        }
+      ]
+    }
+  ]
+}

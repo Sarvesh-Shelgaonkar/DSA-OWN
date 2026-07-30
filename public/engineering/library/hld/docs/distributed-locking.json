@@ -1,0 +1,689 @@
+{
+  "slug": "distributed-locking",
+  "title": "Distributed Locking",
+  "content": [
+    {
+      "id": "distributed-locking",
+      "title": "Distributed Locking",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Picture a single Node.js server handling a book this seat button. You wrap a mutex around the booking code, and two requests for the same seat can never both get through. One waits, the other proceeds. Clean and simple."
+        },
+        {
+          "type": "paragraph",
+          "content": "Now picture three copies of that same server running behind a load balancer, because one server was never going to survive a flash sale. Your mutex is still there, but it only knows about the process it lives inside. Server one has no idea what server two is doing. Two customers can book the exact same seat at the exact same moment, one on each server, and your in process mutex happily lets both through."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is the entire problem in one sentence. A mutex protects a critical section inside one process. The moment your system spans multiple processes, multiple servers, or multiple machines, you need a lock that all of them can see and respect together. That is a distributed lock."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304563910-448535962.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304563910-448535962.png",
+          "alt": "Two servers each holding their own local mutex both let a booking through, resulting in the same seat being booked twice",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304563910-448535962.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "A distributed lock is not a new kind of lock. It is the same old idea, mutual exclusion so only one worker touches a shared resource at a time, except the lock now lives somewhere every worker can reach: a Redis instance, a Zookeeper cluster, a database row, anything all your processes can talk to over the network."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A distributed lock is a coordination mechanism that lets multiple independent processes agree on who currently owns the right to touch a shared resource, even though none of them share memory."
+        },
+        {
+          "type": "paragraph",
+          "content": "The moment you run more than one instance of a service, or more than one machine doing background work, you run into situations where only one of these should happen needs to be enforced across process boundaries, not inside one. A few examples that come up constantly:"
+        },
+        {
+          "type": "list",
+          "content": "[\"Two cron workers on two different machines both wake up at midnight and both try to run the same daily billing job.\",\"Two API server instances both receive a retried webhook for the same order and both try to charge the customer.\",\"A pool of workers pulling from a job queue, where the same job accidentally gets picked up twice because a visibility timeout expired too early.\",\"A scenario where you want exactly one instance of a service doing something, like sending a scheduled digest email.\"]",
+          "items": [
+            "Two cron workers on two different machines both wake up at midnight and both try to run the same daily billing job.",
+            "Two API server instances both receive a retried webhook for the same order and both try to charge the customer.",
+            "A pool of workers pulling from a job queue, where the same job accidentally gets picked up twice because a visibility timeout expired too early.",
+            "A scenario where you want exactly one instance of a service doing something, like sending a scheduled digest email."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 Why An In Process Mutex Is Not Enough",
+          "text": "1.1 Why An In Process Mutex Is Not Enough"
+        },
+        {
+          "type": "paragraph",
+          "content": "A mutex lives in the memory of one running process. It coordinates threads inside that process, and it has absolutely no way of reaching across the network to tell a mutex on a different machine anything. Two servers are, as far as their mutexes are concerned, two entirely separate universes."
+        },
+        {
+          "type": "paragraph",
+          "content": "Scale a service horizontally, which is the whole point of running multiple instances, and every guarantee your in process mutex used to give you quietly stops applying the moment two requests land on two different instances at once."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.2 What Breaks Without Coordination",
+          "text": "1.2 What Breaks Without Coordination"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every one of the examples from the introduction breaks if you assume an in process mutex is enough. You need something external that every process can check and agree on. And that something needs a few properties an ordinary mutex never had to worry about, because a mutex never had to think about a process crashing mid critical section while holding the lock forever."
+        },
+        {
+          "type": "note",
+          "title": "The core shift",
+          "content": "A regular mutex assumes the holder is always reachable and always eventually calls unlock. A distributed lock cannot assume either of those things, because the holder might be a process on a machine that just lost power."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. What A Distributed Lock Must Guarantee",
+          "text": "2. What A Distributed Lock Must Guarantee"
+        },
+        {
+          "type": "paragraph",
+          "content": "Think about handing out the one spare key to a shared office bathroom. If whoever borrows the key never comes back, and there is no spare, everyone else is stuck outside forever. That is exactly the failure mode a naive distributed lock falls into: a worker grabs the lock, crashes before releasing it, and nobody can ever acquire that lock again."
+        },
+        {
+          "type": "paragraph",
+          "content": "A real distributed lock design has to answer four questions, and the fourth one is where almost every homegrown implementation quietly gets it wrong."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Mutual Exclusion",
+          "text": "2.1 Mutual Exclusion"
+        },
+        {
+          "type": "paragraph",
+          "content": "At any given instant, at most one process holds the lock. This is the baseline requirement, the same guarantee a regular mutex gives you, just enforced across the network instead of inside one process."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Automatic Release On Crash",
+          "text": "2.2 Automatic Release On Crash"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the process holding the lock dies, gets killed by an out of memory reaper, or its host loses power, the lock has to eventually free itself. Nobody is coming to call unlock on behalf of a dead process. This is usually solved with a lease, a time bound expiry attached to the lock, so even a silently dead holder loses the lock automatically once the lease runs out."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030682-467423871.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030682-467423871.png",
+          "alt": "A worker crashes while holding a lock with no expiry set, so the lock is held forever and every other worker is stuck",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030682-467423871.png"
+        },
+        {
+          "type": "note",
+          "title": "Deadlock risk",
+          "content": "A distributed lock with no expiry is a ticking time bomb. One crashed worker and your entire pipeline is stuck forever, because nothing will ever call unlock. Always attach a TTL or lease to a distributed lock."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.3 Fault Tolerance",
+          "text": "2.3 Fault Tolerance"
+        },
+        {
+          "type": "paragraph",
+          "content": "The lock service itself should survive the failure of a node or two. If your lock lives on a single Redis instance with no replica and that instance goes down, every worker in your fleet is now unable to acquire or release locks, which usually means your whole background processing layer grinds to a halt."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.4 Correctness Under Delay",
+          "text": "2.4 Correctness Under Delay"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the subtle one. A worker can pause for reasons completely outside its control: a garbage collection sweep, the OS scheduler deciding to run something else first, a slow disk write. If that pause lasts long enough for the lock to expire and get handed to someone else, the original worker can wake up still believing it owns the lock."
+        },
+        {
+          "type": "paragraph",
+          "content": "A correct design has to make sure a late, stale holder cannot cause damage even if it acts like it still owns the lock. Keep this one in mind, it is the whole reason fencing tokens exist, and we will come back to it in detail."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. A Simple Distributed Lock With Redis",
+          "text": "3. A Simple Distributed Lock With Redis"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say you already run Redis for caching. It turns out Redis gives you almost everything you need for a basic distributed lock in a single command, because SET can be told to only succeed if the key does not already exist, and to expire automatically after a fixed time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 The SET NX EX Command",
+          "text": "3.1 The SET NX EX Command"
+        },
+        {
+          "type": "paragraph",
+          "content": "The command is SET lock_key worker_id NX EX 30. Read it piece by piece."
+        },
+        {
+          "type": "list",
+          "content": "[\"NX means only set this key if it does not already exist. If another worker already holds the lock, this command simply fails, telling you the lock is taken.\",\"EX 30 attaches a thirty second expiry to the key. Even if the worker holding it crashes, Redis deletes the key on its own after thirty seconds.\",\"worker_id as the value matters, it is a unique token identifying who currently owns the lock, and you need it again when releasing.\"]",
+          "items": [
+            "NX means only set this key if it does not already exist. If another worker already holds the lock, this command simply fails, telling you the lock is taken.",
+            "EX 30 attaches a thirty second expiry to the key. Even if the worker holding it crashes, Redis deletes the key on its own after thirty seconds.",
+            "worker_id as the value matters, it is a unique token identifying who currently owns the lock, and you need it again when releasing."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304567264-264966543.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304567264-264966543.png",
+          "alt": "Two workers race to run SET NX on Redis, only one gets the lock and the other backs off",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304567264-264966543.png"
+        },
+        {
+          "type": "code",
+          "content": "# Worker tries to acquire the lock, expires automatically after 30s\nSET order:42:lock worker-abc123 NX EX 30\n\n# Redis replies OK only if the key did not already exist\n# If someone else holds it, Redis replies nil, meaning acquire failed",
+          "code": {
+            "language": "text",
+            "content": "# Worker tries to acquire the lock, expires automatically after 30s\nSET order:42:lock worker-abc123 NX EX 30\n\n# Redis replies OK only if the key did not already exist\n# If someone else holds it, Redis replies nil, meaning acquire failed"
+          },
+          "codes": {
+            "text": "# Worker tries to acquire the lock, expires automatically after 30s\nSET order:42:lock worker-abc123 NX EX 30\n\n# Redis replies OK only if the key did not already exist\n# If someone else holds it, Redis replies nil, meaning acquire failed"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "If the command succeeds, you own the lock and have thirty seconds to do your work before Redis considers it expired. If it fails, someone else got there first, and you back off, maybe retrying after a short random delay."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304568761-802197073.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304568761-802197073.png",
+          "alt": "Sequence diagram of a worker acquiring a Redis lock with SET NX EX and releasing it with a compare and delete",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304568761-802197073.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Releasing The Lock Safely",
+          "text": "3.2 Releasing The Lock Safely"
+        },
+        {
+          "type": "paragraph",
+          "content": "You cannot just blindly DEL the key when you finish. Here is the trap. Your worker acquires the lock, gets paused for twenty five seconds by an unlucky GC cycle, wakes up after the lock already expired and was handed to a different worker, then runs DEL anyway, deleting the new owner lock instead of its own. That is a self inflicted split brain bug."
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix is to only delete the key if the value still matches your own worker id, done atomically with a small Lua script so the check and the delete happen as one indivisible step."
+        },
+        {
+          "type": "code",
+          "content": "-- Lua script run atomically inside Redis\nif redis.call(\"GET\", KEYS[1]) == ARGV[1] then\n  return redis.call(\"DEL\", KEYS[1])\nelse\n  return 0\nend\n-- KEYS[1] = order:42:lock, ARGV[1] = worker-abc123",
+          "code": {
+            "language": "lua",
+            "content": "-- Lua script run atomically inside Redis\nif redis.call(\"GET\", KEYS[1]) == ARGV[1] then\n  return redis.call(\"DEL\", KEYS[1])\nelse\n  return 0\nend\n-- KEYS[1] = order:42:lock, ARGV[1] = worker-abc123"
+          },
+          "codes": {
+            "lua": "-- Lua script run atomically inside Redis\nif redis.call(\"GET\", KEYS[1]) == ARGV[1] then\n  return redis.call(\"DEL\", KEYS[1])\nelse\n  return 0\nend\n-- KEYS[1] = order:42:lock, ARGV[1] = worker-abc123"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Why not just DEL",
+          "content": "A plain DEL does not check ownership. If your lease already expired and someone else grabbed the lock, a bare DEL from the old holder deletes the new holder lock by mistake. Always compare the token before deleting."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Why Naive Redis Locks Can Fail",
+          "text": "4. Why Naive Redis Locks Can Fail"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is a scenario that trips up almost everyone the first time they build this. Worker A acquires the lock with a thirty second expiry and starts processing. Right after, its process pauses for a full forty seconds doing a big garbage collection sweep, or the container gets throttled by the CPU scheduler, or the machine clock quietly jumps forward because of an NTP correction."
+        },
+        {
+          "type": "paragraph",
+          "content": "While worker A is frozen, its lock silently expires. Worker B comes along, acquires the same lock, and starts processing the same job. Then worker A wakes back up, completely unaware time has passed, and keeps working as if it still owns the lock. Now two workers are touching the same resource at once, the exact failure a lock was supposed to prevent in the first place."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304570512-794893059.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304570512-794893059.png",
+          "alt": "A worker pauses for a long GC, its lock expires while it is paused, a second worker acquires the lock, and the first worker wakes up still believing it owns it",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304570512-794893059.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 The Usual Culprits",
+          "text": "4.1 The Usual Culprits"
+        },
+        {
+          "type": "list",
+          "content": "[\"Clock drift: expiry is time based, and clocks across machines are never perfectly in sync, so thirty seconds does not mean the same instant everywhere.\",\"GC or scheduler pauses: a process can be frozen by its own runtime for longer than the lease, with zero warning.\",\"Network delays: a slow network can make a worker SET or DEL arrive at Redis much later than the worker thinks it did.\"]",
+          "items": [
+            "Clock drift: expiry is time based, and clocks across machines are never perfectly in sync, so thirty seconds does not mean the same instant everywhere.",
+            "GC or scheduler pauses: a process can be frozen by its own runtime for longer than the lease, with zero warning.",
+            "Network delays: a slow network can make a worker SET or DEL arrive at Redis much later than the worker thinks it did."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396031001-949362480.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396031001-949362480.png",
+          "alt": "A lock holder crashes, the TTL timer keeps running, the key expires on its own, and the next worker acquires the lock",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396031001-949362480.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 The Redlock Debate",
+          "text": "4.2 The Redlock Debate"
+        },
+        {
+          "type": "paragraph",
+          "content": "To make single node Redis locks more robust, the Redis community proposed Redlock, which acquires the same lock across several independent Redis nodes and only counts it as acquired if a majority agree, all within a tight time budget. A single node crashing or lagging cannot silently break your lock, because a majority still has to agree."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304573884-205077282.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304573884-205077282.png",
+          "alt": "A client requests a lock across three independent Redis nodes and a majority of two agreeing counts as the lock being acquired",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304573884-205077282.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Redlock has been debated heavily by distributed systems folks for years. The short version, without getting lost in the argument: Redlock still fundamentally trusts wall clock timing to decide when a lease is valid, and clocks and pauses are exactly the thing that can betray you. Some engineers consider it good enough for most practical purposes, others argue it does not give you the airtight guarantees a system like Zookeeper does."
+        },
+        {
+          "type": "note",
+          "title": "Practical takeaway",
+          "content": "You do not need to pick a side in the Redlock debate to build something solid. Know that a single Redis lock is a fast, pragmatic, best effort tool, and if you need a stronger guarantee, either add fencing tokens on top of it, or reach for a consensus backed system like Zookeeper."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Distributed Locking With Zookeeper",
+          "text": "5. Distributed Locking With Zookeeper"
+        },
+        {
+          "type": "paragraph",
+          "content": "Think of a deli counter with a ticket machine. Everyone who walks in takes a numbered ticket, tickets are always handed out in strictly increasing order, and whoever holds the lowest active ticket gets served next. Nobody needs to shout over each other to figure out whose turn it is, the ticket number settles it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Zookeeper implements a distributed lock using a very similar idea, built out of two primitives it is uniquely good at: sequential nodes and ephemeral nodes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Ephemeral Sequential Nodes",
+          "text": "5.1 Ephemeral Sequential Nodes"
+        },
+        {
+          "type": "list",
+          "content": "[\"Sequential means every node you create under a parent path gets an automatically increasing suffix, so the order in which workers showed up is baked into the node name itself.\",\"Ephemeral means the node only exists while the client session is alive. The moment that client disconnects or crashes, Zookeeper deletes the node for you, no manual cleanup required.\"]",
+          "items": [
+            "Sequential means every node you create under a parent path gets an automatically increasing suffix, so the order in which workers showed up is baked into the node name itself.",
+            "Ephemeral means the node only exists while the client session is alive. The moment that client disconnects or crashes, Zookeeper deletes the node for you, no manual cleanup required."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304575513-797536482.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304575513-797536482.png",
+          "alt": "Three clients each create an ephemeral sequential node under a shared lock path, and the client holding the lowest sequence number owns the lock",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304575513-797536482.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 The Acquire Algorithm",
+          "text": "5.2 The Acquire Algorithm"
+        },
+        {
+          "type": "code",
+          "content": "1. Create an ephemeral sequential node under /locks/order-42/lock-\n   Zookeeper returns something like /locks/order-42/lock-0000000007\n\n2. List all children under /locks/order-42\n\n3. If your node has the lowest sequence number, you hold the lock\n\n4. Otherwise, watch the node with the next lower sequence number\n   When it disappears, released or crashed, re-check step 3",
+          "code": {
+            "language": "text",
+            "content": "1. Create an ephemeral sequential node under /locks/order-42/lock-\n   Zookeeper returns something like /locks/order-42/lock-0000000007\n\n2. List all children under /locks/order-42\n\n3. If your node has the lowest sequence number, you hold the lock\n\n4. Otherwise, watch the node with the next lower sequence number\n   When it disappears, released or crashed, re-check step 3"
+          },
+          "codes": {
+            "text": "1. Create an ephemeral sequential node under /locks/order-42/lock-\n   Zookeeper returns something like /locks/order-42/lock-0000000007\n\n2. List all children under /locks/order-42\n\n3. If your node has the lowest sequence number, you hold the lock\n\n4. Otherwise, watch the node with the next lower sequence number\n   When it disappears, released or crashed, re-check step 3"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Because every worker only watches the node immediately before it in line, you avoid a thundering herd where everyone wakes up and re-checks at once whenever any node changes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.3 Why Ephemeral Nodes Solve The Crash Problem",
+          "text": "5.3 Why Ephemeral Nodes Solve The Crash Problem"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the part that makes Zookeeper locks feel sturdier than a bare Redis SET NX. There is no manual expiry timer to guess at. If a worker holding the lock crashes, or its network connection to Zookeeper drops, Zookeeper own session mechanism notices the client is gone and deletes its ephemeral node immediately. The next worker in line is notified through its watch and takes over."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030679-965343451.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030679-965343451.png",
+          "alt": "A client holding the lock crashes, its Zookeeper session ends, its ephemeral node is deleted automatically, and the next client in the queue is notified",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030679-965343451.png"
+        },
+        {
+          "type": "blockQuote",
+          "content": "Zookeeper locks trade a bit of setup complexity for a stronger guarantee: cleanup happens because the session is provably gone, not because a timer happened to run out."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Split Brain And Fencing Tokens",
+          "text": "6. Split Brain And Fencing Tokens"
+        },
+        {
+          "type": "paragraph",
+          "content": "Even a well built lock can run into the paused process problem described earlier. Worker A holds the lock, pauses for way too long, the lock expires and worker B takes over, then worker A wakes up and, believing nothing has changed, sends its write to the shared resource anyway. Both the lock system and worker A behaved exactly as designed, and you still get two writers touching the same data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 The Paused Process Problem",
+          "text": "6.1 The Paused Process Problem"
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix does not live in the lock itself, it lives in the resource being protected. Every time a worker acquires the lock, hand it a fencing token, a number that only ever increases, say 33, then 34, then 35 for each successive lock holder. The worker includes this token with every write it sends to the protected resource."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304578576-547298758.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304578576-547298758.png",
+          "alt": "A paused process wakes up late and sends a stale fencing token while a second process has already acquired the lock with a newer token, and the storage layer rejects the stale write",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304578576-547298758.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 How A Fencing Token Fixes It",
+          "text": "6.2 How A Fencing Token Fixes It"
+        },
+        {
+          "type": "paragraph",
+          "content": "The resource itself, the database, the file store, whatever is being protected, remembers the highest fencing token it has seen so far. If a write comes in with a token lower than the highest one already seen, the resource rejects it outright, no matter how confident the sender is that it still owns the lock."
+        },
+        {
+          "type": "code",
+          "content": "// Storage layer keeps track of the highest fencing token it has accepted\nfunction applyWrite(resourceId, fencingToken, payload) {\n  const lastSeenToken = getLastToken(resourceId);\n  if (fencingToken <= lastSeenToken) {\n    throw new Error('stale fencing token, write rejected');\n  }\n  setLastToken(resourceId, fencingToken);\n  persist(resourceId, payload);\n}",
+          "code": {
+            "language": "javascript",
+            "content": "// Storage layer keeps track of the highest fencing token it has accepted\nfunction applyWrite(resourceId, fencingToken, payload) {\n  const lastSeenToken = getLastToken(resourceId);\n  if (fencingToken <= lastSeenToken) {\n    throw new Error('stale fencing token, write rejected');\n  }\n  setLastToken(resourceId, fencingToken);\n  persist(resourceId, payload);\n}"
+          },
+          "codes": {
+            "javascript": "// Storage layer keeps track of the highest fencing token it has accepted\nfunction applyWrite(resourceId, fencingToken, payload) {\n  const lastSeenToken = getLastToken(resourceId);\n  if (fencingToken <= lastSeenToken) {\n    throw new Error('stale fencing token, write rejected');\n  }\n  setLastToken(resourceId, fencingToken);\n  persist(resourceId, payload);\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice what this fixes and what it does not. It does not stop the paused worker from waking up and trying to write, it still tries. What it stops is that stale write from actually landing. The responsibility moves from trusting the lock holder to behave, to letting the resource itself be the final judge."
+        },
+        {
+          "type": "list",
+          "content": "[\"The lock service hands out a strictly increasing token with every successful acquire.\",\"Every write to the protected resource must carry the token it was issued.\",\"The resource compares the incoming token against the highest one it has already accepted.\",\"Anything older than the highest seen token is rejected, even if the sender genuinely believes it still holds the lock.\"]",
+          "items": [
+            "The lock service hands out a strictly increasing token with every successful acquire.",
+            "Every write to the protected resource must carry the token it was issued.",
+            "The resource compares the incoming token against the highest one it has already accepted.",
+            "Anything older than the highest seen token is rejected, even if the sender genuinely believes it still holds the lock."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.3 Where The Token Comes From",
+          "text": "6.3 Where The Token Comes From"
+        },
+        {
+          "type": "paragraph",
+          "content": "A monotonically increasing counter is easy to get from Zookeeper, the sequence number on your ephemeral node already is one. With Redis you can get the same effect using INCR on a dedicated counter key every time the lock is acquired."
+        },
+        {
+          "type": "note",
+          "title": "Not a nice to have",
+          "content": "This is why fencing tokens are considered the real fix for split brain locking, not an optional extra. A lock alone only tells you who is supposed to be in charge. A fencing token lets the resource enforce that, even when the lock system and the worker disagree about reality."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Worked Example: Two Workers Racing For A Scheduled Job",
+          "text": "7. Worked Example: Two Workers Racing For A Scheduled Job"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say you run a nightly report generation job at 2 AM. You run three worker instances for redundancy, and all three wake up at 2 AM sharp because they all read the same cron schedule. Without coordination, all three would generate and email the same report three times."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Without A Lock",
+          "text": "7.1 Without A Lock"
+        },
+        {
+          "type": "example-box",
+          "title": "Without a lock",
+          "text": "Worker A, Worker B, and Worker C all wake up at 2 AM. All three query the jobs table, all three see the report job is due, and all three start generating and sending it. The customer gets the same email three times, and your report generation service does three times the necessary work for nothing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 With A Redis Lock In Place",
+          "text": "7.2 With A Redis Lock In Place"
+        },
+        {
+          "type": "paragraph",
+          "content": "With a distributed lock in place, the flow changes completely."
+        },
+        {
+          "type": "code",
+          "content": "async function runNightlyReport(workerId) {\n  const acquired = await redis.set(\n    'lock:nightly-report:2026-07-08',\n    workerId,\n    'NX', 'EX', 120\n  );\n\n  if (!acquired) {\n    console.log(workerId + ' did not get the lock, skipping');\n    return;\n  }\n\n  try {\n    await generateAndSendReport();\n  } finally {\n    await releaseLockIfOwner('lock:nightly-report:2026-07-08', workerId);\n  }\n}",
+          "code": {
+            "language": "javascript",
+            "content": "async function runNightlyReport(workerId) {\n  const acquired = await redis.set(\n    'lock:nightly-report:2026-07-08',\n    workerId,\n    'NX', 'EX', 120\n  );\n\n  if (!acquired) {\n    console.log(workerId + ' did not get the lock, skipping');\n    return;\n  }\n\n  try {\n    await generateAndSendReport();\n  } finally {\n    await releaseLockIfOwner('lock:nightly-report:2026-07-08', workerId);\n  }\n}"
+          },
+          "codes": {
+            "javascript": "async function runNightlyReport(workerId) {\n  const acquired = await redis.set(\n    'lock:nightly-report:2026-07-08',\n    workerId,\n    'NX', 'EX', 120\n  );\n\n  if (!acquired) {\n    console.log(workerId + ' did not get the lock, skipping');\n    return;\n  }\n\n  try {\n    await generateAndSendReport();\n  } finally {\n    await releaseLockIfOwner('lock:nightly-report:2026-07-08', workerId);\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "All three workers race to run SET NX at 2 AM. Redis, being single threaded for this operation, resolves the race cleanly: exactly one SET succeeds, the other two get nothing back and simply skip the job for tonight. The winning worker generates the report, sends it once, then releases the lock using the compare and delete pattern from earlier."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030998-347728099.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030998-347728099.png",
+          "alt": "A job scheduler triggers two worker instances that both go through a shared Redis lock service before touching a shared job store",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030998-347728099.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the winning worker happens to crash mid report, the 120 second expiry means the lock frees itself, and the next scheduled run, or a manual retry, can pick it up again instead of the job being stuck forever waiting on a dead worker."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Redis Lock Versus Zookeeper Lock",
+          "text": "8. Redis Lock Versus Zookeeper Lock"
+        },
+        {
+          "type": "paragraph",
+          "content": "Neither option is universally better, they solve the same problem with different tradeoffs. Redis gives you speed and simplicity if you already run it. Zookeeper gives you stronger guarantees at the cost of running and operating an extra consensus system."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304581689-938002755.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304581689-938002755.png",
+          "alt": "A small summary diagram showing Redis lock leading to a fast best effort guarantee and Zookeeper lock leading to a strong consensus backed guarantee",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785304581689-938002755.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Side By Side",
+          "text": "8.1 Side By Side"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Redis Lock\",\"Zookeeper Lock\"],\"rows\":[[\"Guarantee strength\",\"Best effort, time based\",\"Strong, backed by consensus\"],[\"Setup complexity\",\"Low, most teams already run Redis\",\"Higher, needs a Zookeeper ensemble\"],[\"Latency\",\"Very low, single round trip\",\"Higher, consensus adds overhead\"],[\"Crash cleanup\",\"TTL expiry, a guess based on time\",\"Ephemeral node tied to session liveness\"],[\"Best fit\",\"High throughput, soft locks like deduplication\",\"Critical coordination like leader election\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "If you are only trying to stop duplicate processing of a job that is not catastrophic to run twice, a Redis lock with a sane TTL and a fencing token is usually enough, and it is fast to build. If you are protecting something where a double write is genuinely dangerous, like a financial ledger or exclusive leadership of a critical service, lean toward Zookeeper or an equivalent consensus backed coordinator."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Redis Lock Pros And Cons",
+          "text": "8.2 Redis Lock Pros And Cons"
+        },
+        {
+          "type": "paragraph",
+          "content": "Zooming in specifically on the plain Redis SET NX approach, here is the honest tradeoff."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Extremely fast, usually sub millisecond\",\"Not linearizable by default, best effort under network delay\"],[\"Simple to implement, most teams already run Redis\",\"TTL expiry is a guess, not tied to actual work duration\"],[\"Good enough for soft locks like deduplication\",\"A single Redis node is a single point of failure unless clustered\"],[\"Easy to add a fencing token with INCR\",\"Requires care to release safely with a compare and delete\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Where This Shows Up In System Design Interviews",
+          "text": "9. Where This Shows Up In System Design Interviews"
+        },
+        {
+          "type": "paragraph",
+          "content": "Distributed locking rarely shows up as its own dedicated interview question. It shows up as a follow up, right after you casually mention that you will run multiple worker instances for reliability. The interviewer immediately asks what stops two of those instances from processing the same job."
+        },
+        {
+          "type": "list",
+          "content": "[\"Coordinating a fleet of background workers pulling from the same queue, so a message is not processed twice.\",\"A scheduled cron job replicated across instances for high availability, where only one instance should actually run it.\",\"Preventing double charging when a payment webhook is retried and delivered to two different API server instances.\",\"Ensuring only one instance of a service performs a task, like rebalancing a cluster or sending a batch digest.\"]",
+          "items": [
+            "Coordinating a fleet of background workers pulling from the same queue, so a message is not processed twice.",
+            "A scheduled cron job replicated across instances for high availability, where only one instance should actually run it.",
+            "Preventing double charging when a payment webhook is retried and delivered to two different API server instances.",
+            "Ensuring only one instance of a service performs a task, like rebalancing a cluster or sending a batch digest."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "If you mention multiple instances of anything doing work, immediately ask yourself out loud: what stops two of them from doing the same work at the same time. That question is usually the whole point of the follow up."
+        },
+        {
+          "type": "paragraph",
+          "content": "A strong answer walks through exactly the shape of this lesson: name the shared resource, propose a lock with an expiry so a crash cannot deadlock the system, explain how you release it safely, and then proactively bring up the paused worker edge case and fencing tokens before the interviewer has to ask. That last part is what separates someone who memorized use Redis SET NX from someone who actually understands why it can fail."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Key Takeaways",
+          "text": "10. Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"An in process mutex only protects one process. Once you have multiple servers or workers, you need a lock all of them can see, a distributed lock.\",\"A distributed lock must guarantee mutual exclusion, automatic release when the holder crashes, tolerate the loss of a node in the lock service, and stay correct even when a holder pauses for longer than expected.\",\"Redis SET with NX and EX gives you a fast, simple lock. Always release it with a compare and delete, never a bare DEL.\",\"Clock drift, GC pauses, and slow networks can all cause a lock to expire while its holder still thinks it owns it. Redlock tries to harden this across multiple Redis nodes, but the debate around it is really about how much you trust wall clock timing.\",\"Zookeeper locks use ephemeral sequential nodes, cleanup is tied to session liveness instead of a timer, which is a stronger guarantee than a plain TTL.\",\"Fencing tokens fix split brain by moving the final check from the lock itself to the resource being protected. A monotonically increasing token lets the resource reject stale writes from a holder that woke up too late.\",\"In interviews, naming the failure mode before being asked, a crashed holder, a paused holder, is what shows real understanding of distributed locking.\"]",
+          "items": [
+            "An in process mutex only protects one process. Once you have multiple servers or workers, you need a lock all of them can see, a distributed lock.",
+            "A distributed lock must guarantee mutual exclusion, automatic release when the holder crashes, tolerate the loss of a node in the lock service, and stay correct even when a holder pauses for longer than expected.",
+            "Redis SET with NX and EX gives you a fast, simple lock. Always release it with a compare and delete, never a bare DEL.",
+            "Clock drift, GC pauses, and slow networks can all cause a lock to expire while its holder still thinks it owns it. Redlock tries to harden this across multiple Redis nodes, but the debate around it is really about how much you trust wall clock timing.",
+            "Zookeeper locks use ephemeral sequential nodes, cleanup is tied to session liveness instead of a timer, which is a stronger guarantee than a plain TTL.",
+            "Fencing tokens fix split brain by moving the final check from the lock itself to the resource being protected. A monotonically increasing token lets the resource reject stale writes from a holder that woke up too late.",
+            "In interviews, naming the failure mode before being asked, a crashed holder, a paused holder, is what shows real understanding of distributed locking."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Get comfortable with this pattern and you will recognize it everywhere: job queues, leader election, rate limiting, inventory decrements, anywhere only one of these should happen right now needs to hold true across machines that cannot read each other minds."
+        }
+      ]
+    }
+  ]
+}

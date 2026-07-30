@@ -1,0 +1,527 @@
+{
+  "slug": "context-persistence",
+  "title": "Context Persistence",
+  "content": [
+    {
+      "id": "context-persistence",
+      "title": "Context Persistence",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "A conversation with an MCP powered assistant rarely stays on one topic for one turn. A user asks a question, gets an answer, then asks a follow up that only makes sense if the assistant remembers what it just read. But remembering everything forever is not free, and not everything deserves to survive past the moment it was useful. Context persistence is the discipline of deciding, turn by turn and tool call by tool call, what stays and what goes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Context Persistence Means",
+          "id": "ctxpersist-what-it-means"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574725224-269038998.png",
+          "alt": "Context from one turn either persists forward into the next turn or is discarded",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Context persistence is the practice of keeping specific pieces of context available across multiple turns of a conversation, or across multiple tool calls within the same session, rather than letting them exist only for the single moment they were produced. A resource read at turn three that is still relevant at turn twelve has persisted, a tool result that was only ever needed to answer one immediate question has not, and did not need to."
+        },
+        {
+          "type": "paragraph",
+          "text": "The word persistence here is scoped to a session unless stated otherwise. Keeping something available for the rest of an ongoing conversation is a different problem, with different mechanisms, than keeping something available across entirely separate sessions days apart, which is the concern of long term memory covered later in this module."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a naive session simply appends everything, forever\nsession_context = []\ndef on_turn(new_content):\n    session_context.append(new_content)\n    return session_context  # grows without bound, nothing is ever discarded"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Two Kinds of Context: Reusable vs One-Shot",
+          "id": "ctxpersist-reusable-vs-oneshot"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574727116-79602483.png",
+          "alt": "Reusable context is compared against one shot context",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Some context is reusable by nature. A project's configuration file, a user's stated preferences, a schema describing a database, all of these are likely to matter again several turns later. Other context is one-shot, useful only to answer the exact question that triggered it, like the result of checking whether a specific file exists right now."
+        },
+        {
+          "type": "paragraph",
+          "text": "The mistake to avoid is treating all context as belonging to just one of these two categories by default. A host that persists everything wastes space on content that will never be referenced again. A host that persists nothing forces the model to ask the same question over and over, re-reading the same resource every time it becomes relevant again."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Kind\",\"Example\",\"Right call\"],\"rows\":[[\"Reusable\",\"A project's dependency manifest\",\"Persist across the session\"],[\"One-shot\",\"Whether a specific file exists right now\",\"Discard once answered\"],[\"Reusable\",\"A user's stated formatting preference\",\"Persist across the session\"],[\"One-shot\",\"The current timestamp used for one calculation\",\"Discard once used\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Why Not Just Keep Everything",
+          "id": "ctxpersist-why-not-everything"
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping every piece of context forever sounds like the safe choice, since nothing is ever lost, but it runs directly into the context window limit covered in the previous module. A session that persists indiscriminately eventually spends most of its available space on content the model will never look at again, crowding out the room needed for what actually matters right now."
+        },
+        {
+          "type": "paragraph",
+          "text": "There is also a quality cost, not just a space cost. A model asked to reason over a prompt cluttered with stale, irrelevant context tends to produce weaker answers than one given a focused, curated set of information, even when the window technically has room to spare. Persistence without judgment degrades the conversation even before it runs out of space."
+        },
+        {
+          "type": "note",
+          "title": "Persistence is a decision, not a default",
+          "content": "The question for every piece of context should be whether it is likely to matter again, not whether keeping it is technically possible."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Conversation History as the Simplest Form of Persistence",
+          "id": "ctxpersist-conversation-history"
+        },
+        {
+          "type": "paragraph",
+          "text": "The most familiar form of persistence is the running back and forth of a conversation itself, each user message and each assistant reply, kept available so later turns can refer back to earlier ones. Most MCP hosts persist this by default, since a conversation without memory of its own earlier turns barely functions as a conversation at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "Even this simplest case has limits worth noticing. A ten turn conversation is cheap to keep in full. A two hundred turn conversation is not, and at some point the host has to make the same kind of keep-or-discard decision about old turns that it makes about resources and tool results."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "history = []\ndef add_turn(role, content):\n    history.append({\"role\": role, \"content\": content})\n    if len(history) > MAX_TURNS_KEPT_IN_FULL:\n        history.pop(0)  # oldest turn dropped, or summarized instead"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Persisting Resource Reads Across Turns",
+          "id": "ctxpersist-resource-reads"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a model reads a resource, say a configuration file, to answer one question, there is a good chance it will need the same file again a few turns later for a related question. Persisting that resource read means the host does not have to fetch it again from the server, and the model does not lose access to it just because the conversation moved on."
+        },
+        {
+          "type": "paragraph",
+          "text": "The trade-off is staleness. A persisted resource read reflects the file's contents at the moment it was read, and if the underlying file changes later in the session, the persisted copy silently drifts out of date unless something actively refreshes it. This tension between persistence and freshness is explored fully in the lesson on context synchronization later in this module."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "persisted_resources = {}\ndef read_resource_cached(uri):\n    if uri not in persisted_resources:\n        persisted_resources[uri] = server.read_resource(uri)\n    return persisted_resources[uri]  # reused across turns, may go stale"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Persisting Tool Results Selectively",
+          "id": "ctxpersist-tool-results-selective"
+        },
+        {
+          "type": "paragraph",
+          "text": "Tool results are a mixed bag when it comes to persistence. Some, like a lookup of a customer's account details, are worth keeping around for the rest of a support conversation. Others, like a one-off check of whether a server is currently reachable, have no value the moment the immediate question is answered."
+        },
+        {
+          "type": "paragraph",
+          "text": "A practical approach is to let tool definitions themselves hint at persistence intent. A tool that fetches slowly changing, broadly relevant data is a natural candidate to persist its result, a tool that checks a fast changing, narrowly scoped fact is a natural candidate to discard immediately after use."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Account details lookup, moderately slow changing, broadly relevant, persist",
+            "Current server health check, fast changing, narrowly relevant, discard",
+            "Product catalog search, moderately relevant to the whole conversation, persist selectively",
+            "Random number or timestamp generation, relevant to one calculation only, discard"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Signals That Something Should Persist",
+          "id": "ctxpersist-signals-to-persist"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574728764-613227105.png",
+          "alt": "A signal to persist is compared against a signal to discard",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A few practical signals tend to indicate content worth persisting. If the user explicitly refers back to it later, it should have persisted. If it describes something slow to change, a schema, a policy, a preference, it is a good persistence candidate before you even know whether it will be referenced again. If multiple different tool calls in the same session would each need to re-derive it, persisting it once saves repeated work."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of these signals are perfectly reliable on their own, which is why a host benefits from combining them rather than relying on any single rule. A resource that is both slow changing and has already been referenced twice is a much safer bet to persist than one that only satisfies one of those conditions."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def should_persist(item):\n    return (\n        item.referenced_more_than_once\n        or item.slow_changing\n        or item.reused_by_multiple_tool_calls\n    )"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Signals That Something Should Be Discarded",
+          "id": "ctxpersist-signals-to-discard"
+        },
+        {
+          "type": "paragraph",
+          "text": "The mirror image is just as important. Content that only answers a narrow, immediate question, content that is already reflected in a summary elsewhere, and content that changes so quickly that a persisted copy would mislead more than it would help, are all good candidates to let go of once their immediate purpose is served."
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful habit is to ask, if this exact question came up again three turns from now, would re-fetching it be cheap and safe, or expensive and risky. When re-fetching is cheap and safe, discarding is usually the better default, since a fresh read beats a stale persisted copy."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Signal\",\"Suggests\",\"Example\"],\"rows\":[[\"Cheap and safe to refetch\",\"Discard\",\"Checking current disk space\"],[\"Expensive or risky to refetch\",\"Persist\",\"A large document already parsed and summarized\"],[\"Changes every few seconds\",\"Discard\",\"A live stock price\"],[\"Rarely changes at all\",\"Persist\",\"A project's license file\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Where Persisted Context Lives",
+          "id": "ctxpersist-where-it-lives"
+        },
+        {
+          "type": "paragraph",
+          "text": "Persisted context within a session usually lives in the host's own memory of that session, a growing structure the host consults every time it assembles the next prompt. It is not stored on the server, and it is not automatically shared with other sessions, it is scoped to the conversation the host is currently managing."
+        },
+        {
+          "type": "paragraph",
+          "text": "This matters because a host restart, a crash, or a session timeout can wipe out everything persisted only in memory. Hosts that need persistence to survive process restarts, not just to survive turns within a running process, need a real backing store, which starts to blur into the territory of longer term memory management."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "class SessionState:\n    def __init__(self):\n        self.persisted_resources = {}\n        self.persisted_facts = []\n        self.history = []\n    # all of this lives in process memory unless explicitly backed by storage"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Persistence Within a Session vs Across Sessions",
+          "id": "ctxpersist-within-vs-across-sessions"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574730406-707139163.png",
+          "alt": "Persistence within one session is compared against persistence across sessions",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth being precise about scope. Within-session persistence keeps context available for the rest of one ongoing conversation, and it typically ends when the session ends. Across-session persistence survives the session ending entirely, and requires a deliberate decision to write something durable, a database row, a file, a memory store, rather than just keeping it in the host's working memory."
+        },
+        {
+          "type": "paragraph",
+          "text": "Most of what this lesson covers is within-session persistence. The moment you find yourself asking whether something should still be available tomorrow, or in a completely new conversation next week, you have crossed into the territory covered later by the memory management lesson, which uses different mechanisms entirely."
+        },
+        {
+          "type": "note",
+          "title": "Session end is a hard boundary by default",
+          "content": "Unless a host explicitly writes context somewhere durable, everything persisted during a session disappears the moment that session closes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Turn-Scoped vs Session-Scoped Context",
+          "id": "ctxpersist-turn-vs-session-scoped"
+        },
+        {
+          "type": "paragraph",
+          "text": "Within a single session, it also helps to distinguish turn-scoped context, relevant only to the current exchange, from session-scoped context, relevant for as long as the conversation continues. A tool call made purely to answer the immediate question is turn-scoped. A user's stated preference for concise answers is session-scoped, since it should shape every subsequent turn, not just the one where it was mentioned."
+        },
+        {
+          "type": "paragraph",
+          "text": "Getting this distinction wrong in either direction causes visible problems. Treating session-scoped context as turn-scoped means the assistant forgets a stated preference the very next turn. Treating turn-scoped context as session-scoped clutters every future prompt with details that stopped mattering the moment they were used."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "turn_scoped = {\"file_exists_check\": True}       # gone after this turn\nsession_scoped = {\"user_prefers_concise\": True}  # kept for the whole session"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Explicit Retention Policies",
+          "id": "ctxpersist-retention-policies"
+        },
+        {
+          "type": "paragraph",
+          "text": "Rather than deciding persistence ad hoc for every individual piece of context, many hosts benefit from an explicit retention policy, a small set of rules applied consistently. A policy might say resource reads persist for the whole session unless the underlying file is known to change frequently, tool results persist only if explicitly marked reusable by the tool definition, and conversation history persists in full for the last N turns and summarized before that."
+        },
+        {
+          "type": "paragraph",
+          "text": "Writing the policy down, even informally, makes behavior predictable and debuggable. Without a stated policy, persistence decisions tend to accumulate as scattered special cases in the code, each one reasonable in isolation but inconsistent as a whole."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "RETENTION_POLICY = {\n    \"resource_reads\": \"persist_unless_volatile\",\n    \"tool_results\": \"persist_only_if_marked_reusable\",\n    \"history\": \"full_for_last_20_turns_then_summarize\",\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Stale Persisted Context",
+          "id": "ctxpersist-stale-context"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574731979-416398557.png",
+          "alt": "Persisted context can go stale after the underlying source changes",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every persisted piece of context carries an expiration risk, it was accurate when it was captured, and it may not remain accurate for the rest of the session. A persisted resource read of a configuration file is only as good as the assumption that the file has not changed since it was read, an assumption that gets shakier the longer a session runs."
+        },
+        {
+          "type": "paragraph",
+          "text": "A reasonable middle ground is to persist content along with a captured timestamp, and to treat anything older than a set threshold as a candidate for a refresh rather than blind reuse. This does not eliminate staleness, but it turns an invisible risk into a checkable condition."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def get_persisted(uri):\n    entry = persisted_resources.get(uri)\n    if entry and time.time() - entry[\"captured_at\"] < MAX_AGE_SECONDS:\n        return entry[\"content\"]\n    return None  # caller should refresh from the server"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Persistence and the Context Window Budget",
+          "id": "ctxpersist-and-budget"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574735188-270009634.png",
+          "alt": "Persisted context competes with everything else for window budget",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every persisted item is also a line item in the context window budget covered in the previous topic. Persistence decisions and budget decisions are really the same decision viewed from two angles, what to keep is also what to spend tokens on, every single turn, for as long as it stays persisted."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is why persistence needs to be selective rather than generous by default. A host that persists ten resources at two thousand tokens each has committed twenty thousand tokens to content that may only be relevant a fraction of the time it gets re-sent, tokens that could otherwise go toward fresher, more directly relevant context."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Persisted items\",\"Approximate token cost\",\"Fraction of a 32k window\"],\"rows\":[[\"2 resources, 1 preference\",\"3,000 tokens\",\"9 percent\"],[\"10 resources, full history\",\"24,000 tokens\",\"75 percent\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Rehydrating Persisted Context",
+          "id": "ctxpersist-rehydrating"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574733534-837723737.png",
+          "alt": "Stored context is rehydrated back into a live session",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Rehydration is the act of pulling persisted context back into the active prompt when it becomes relevant again, rather than keeping it in every single prompt regardless of whether the current turn needs it. A host might persist a summary of a resource cheaply, and only rehydrate the full content if the model's next question clearly requires the details."
+        },
+        {
+          "type": "paragraph",
+          "text": "This two tier approach, a cheap always-present summary plus an on-demand full rehydration, often beats the simpler all-or-nothing choice between persisting everything in full or discarding it entirely. It keeps the steady-state cost low while still making the complete information reachable when it actually matters."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def rehydrate_if_needed(summary_entry, current_question):\n    if is_relevant(summary_entry.topic, current_question):\n        return server.read_resource(summary_entry.uri)  # full content, on demand\n    return summary_entry.summary  # cheap, always-available fallback"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Failure Modes When Persistence Goes Wrong",
+          "id": "ctxpersist-failure-modes"
+        },
+        {
+          "type": "paragraph",
+          "text": "When persistence is done poorly, the symptoms usually show up as either the assistant repeating a question it should already know the answer to, meaning something that should have persisted did not, or the assistant confidently relying on outdated information, meaning something persisted that should have been refreshed or discarded."
+        },
+        {
+          "type": "paragraph",
+          "text": "Both symptoms tend to get worse the longer a session runs, since forgetting compounds turn after turn, and staleness compounds the same way. A host that never revisits its persistence decisions as a session grows will eventually hit both problems at once, forgetting some things it needs while stubbornly clinging to others it should have dropped."
+        },
+        {
+          "type": "list",
+          "items": [
+            "The assistant re-asks for information the user already provided several turns earlier",
+            "The assistant answers from a resource read that has since become outdated",
+            "A session's persisted context grows so large it starts crowding out fresh, relevant content",
+            "A restart silently wipes persisted context with no warning that anything was lost"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Designing a Persistence Strategy",
+          "id": "ctxpersist-designing-strategy"
+        },
+        {
+          "type": "paragraph",
+          "text": "A workable persistence strategy usually combines a few of the ideas from this lesson: an explicit retention policy stating defaults by content type, timestamps on persisted items so staleness is checkable rather than invisible, and a two tier summary-plus-rehydration approach for anything large enough to be expensive to keep in full."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of this needs to be elaborate to be effective. Even a simple policy, applied consistently, beats an elaborate one applied inconsistently. The goal is predictability, so that when a session eventually does forget something it needed or hold onto something stale, the cause is traceable to a specific rule rather than an accumulation of one-off decisions."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "class PersistenceStrategy:\n    def decide(self, item):\n        if item.explicitly_referenced_again:\n            return \"persist_full\"\n        if item.slow_changing:\n            return \"persist_summary\"\n        return \"discard\""
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "ctxpersist-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "A coding assistant is helping refactor a project across a long session. Early on, it reads the project's dependency manifest, a slow changing file, and persists it in full. A few turns later it runs a one-off check for whether a specific test currently passes, a fast changing, narrowly relevant fact, and discards that result the moment the answer is given."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "manifest = read_resource_cached(\"file:///pyproject.toml\")  # persisted, slow changing\ntest_result = server.call_tool(\"run_test\", {\"name\": \"test_login\"})\n# test_result is used to answer this turn's question, then dropped\n# manifest remains available for every later turn in the session"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Twenty turns later, the user asks about adding a new dependency. Because the manifest persisted, the host does not need to re-read the file, it already has an accurate enough copy, checked against its captured timestamp to confirm it is not too old to trust."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "ctxpersist-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Persisting every resource read and tool result by default with no retention policy at all",
+            "Discarding a user's stated preference after the turn it was mentioned in, instead of keeping it session-scoped",
+            "Never attaching a timestamp to persisted content, making staleness impossible to detect",
+            "Persisting large content in full when a cheap summary plus on-demand rehydration would work just as well",
+            "Assuming persisted context survives a host restart without any durable backing store",
+            "Confusing turn-scoped context with session-scoped context and misjudging which one a piece of information is"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "ctxpersist-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take a hypothetical customer support session with six pieces of context introduced over the course of a conversation: a customer's account tier, a one-off shipping status check, a stated preference for email follow up, a product return policy document, a random ticket number generated for logging, and a summary of the last three complaints. For each, decide persist or discard, and justify it using the signals from this lesson."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "items = [\n    \"customer_account_tier\",\n    \"one_off_shipping_status_check\",\n    \"stated_preference_email_followup\",\n    \"product_return_policy_document\",\n    \"random_ticket_number_for_logging\",\n    \"summary_of_last_three_complaints\",\n]\ndef classify(item):\n    # TODO: return \"persist\" or \"discard\" with a one-line justification for each\n    pass"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "ctxpersist-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Context persistence is a deliberate choice about which pieces of context earn a place across multiple turns of a conversation, made by weighing how likely something is to be needed again, how quickly it changes, and how expensive it would be to re-derive, rather than defaulting to keeping everything or nothing."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson picks up where budgets and persistence both point, context compression, the techniques for fitting more relevant information into the limited space a context window provides once you have already decided what is worth keeping around."
+        }
+      ]
+    }
+  ]
+}

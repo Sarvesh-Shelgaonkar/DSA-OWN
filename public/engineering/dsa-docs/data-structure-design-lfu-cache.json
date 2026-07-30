@@ -1,0 +1,503 @@
+{
+  "slug": "data-structure-design-lfu-cache",
+  "content": [
+    {
+      "id": "introduction",
+      "title": "Introduction",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "An&nbsp;<strong>LFU (Least Frequently Used) Cache</strong>&nbsp;is a fixed capacity key value store that, when full, evicts the entry that has been&nbsp;<strong>accessed the fewest number of times</strong>&nbsp;rather than the entry that was touched longest ago.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "If you have already studied the&nbsp;<strong>LRU Cache</strong>, LFU will look deceptively familiar at first glance both are fixed capacity caches, both need&nbsp;<code>get</code>&nbsp;and&nbsp;<code>put</code>&nbsp;in O(1) time, and both rely on a hash map plus a doubly linked list as the core building block. The difference is a single word in the name, RECENCY versus FREQUENCY, but that one word forces a genuinely different and more elaborate design.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "This topic builds the LFU cache from first principles: what frequency based eviction actually means, why a single doubly linked list (the trick that makes LRU O(1)) is no longer sufficient once you need to track frequency, how a frequency indexed map of linked lists plus a running minimum frequency counter solves the problem, and a full worked trace so you can see the bookkeeping happen step by step.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "1-lfu-vs-lru-the-core-difference-in-eviction-policy",
+      "title": "1. LFU vs LRU: The Core Difference in Eviction Policy",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Both LRU and LFU answer the same question, \"the cache is full, a new item needs to come in, which existing item do we throw out?\" They just disagree on how to measure importance.",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>LRU (Least Recently Used):</strong>&nbsp;evicts based on&nbsp;<strong>recency</strong>. It only cares about WHEN an item was last touched. An item accessed a thousand times an hour ago is treated as less valuable than an item accessed once a second ago.",
+            "<strong>LFU (Least Frequently Used):</strong>&nbsp;evicts based on&nbsp;<strong>frequency</strong>. It cares about HOW MANY TIMES an item has been touched in total (since it entered the cache, or since its count was last reset). An item accessed a thousand times survives even if it has not been touched in a while, as long as some other item has an even lower access count."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "Think of a music streaming app's \"recently played\" cache versus its \"most played\" cache. Recently played is pure LRU, the song you played thirty seconds ago sits at the top no matter how many times you have played it historically. Most played is pure LFU, a song you have played five hundred times stays near the top even if you have not opened the app in a week.",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "The tie breaking rule",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "Frequency alone is not enough to fully order the cache, because multiple keys can legitimately share the exact same access count. When two or more keys are tied on frequency, LFU needs a secondary rule to decide which one goes first, and the standard convention (and the one LeetCode's LFU Cache problem enforces) is to&nbsp;<strong>fall back to LRU ordering among the tied entries</strong>. In other words: evict the&nbsp;<strong>least recently used entry among the least frequently used entries</strong>.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "So LFU is not a replacement for LRU, it is LRU with an extra layer of ordering placed on top of it. Frequency is the primary sort key, recency is the tiebreaker within a frequency group. This is exactly why the design ends up reusing the hash map plus doubly linked list idea from LRU, just applied per frequency group instead of once globally.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "2-why-o1-lfu-is-meaningfully-harder-than-o1-lru",
+      "title": "2. Why O(1) LFU Is Meaningfully Harder Than O(1) LRU",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "In an LRU cache, one doubly linked list ordered by recency is the entire picture. The most recently used key sits at the front, the least recently used key sits at the back, and a hash map from key to node gives O(1) access to any node so it can be unlinked and moved to the front on every access. Eviction is just \"remove the node at the back.\" One list, one map, done.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "LFU breaks that simplicity immediately. Recency alone is no longer the full ordering, frequency has to be layered on top of it, and frequency is not a fixed property of a key, it changes on every access. A single global list ordered \"somehow\" by both frequency and recency at once cannot support inserting a key back into the middle of the list in O(1), because finding the correct position among keys of the same frequency (and the correct boundary against keys of a different frequency) would require scanning, not constant time pointer manipulation.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "The insight that unlocks O(1) is to stop trying to maintain one combined ordering and instead maintain many small orderings, one doubly linked list PER frequency value, so that within any single frequency's list, plain LRU ordering (recency) is enough. Moving a key between two of these lists when its frequency changes is O(1) because each list is still just a doubly linked list, and the hash map still gives O(1) access to the exact node being moved.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "The genuinely new piece of bookkeeping, the one that has no LRU analogue at all, is knowing WHICH frequency list currently holds the minimum frequency in the whole cache, so that eviction knows which bucket to pull from without scanning every bucket. That is the role of the minFreq counter covered in the next sections, and it is the single biggest source of implementation bugs in LFU cache interviews.",
+          "items": []
+        },
+        {
+          "type": "callout",
+          "text": "The jump from LRU to LFU is not \"one more field to track.\" It is a genuine structural change: one linked list becomes a map of linked lists, and a brand new piece of global state (minFreq) has to be kept in sync on every single operation.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "3-the-three-data-structures-that-power-o1-lfu",
+      "title": "3. The Three Data Structures That Power O(1) LFU",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "The standard O(1) LFU design keeps exactly three pieces of state, all updated together on every&nbsp;<code>get</code>&nbsp;and every&nbsp;<code>put</code>.",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>keyMap (key to node):</strong>&nbsp;a hash map from each key currently in the cache to a small node object holding its&nbsp;<code>value</code>, its current&nbsp;<code>frequency</code>&nbsp;count, and (implicitly, through the node itself) its position inside its frequency group's linked list. This gives O(1) lookup of \"does this key exist, and what is it currently worth.\"",
+            "<strong>freqMap (frequency to doubly linked list):</strong>&nbsp;a hash map from an integer frequency count to a doubly linked list containing every key that CURRENTLY sits at exactly that frequency. Within each of these lists, ordering is by recency, most recently used at the front, least recently used at the back, exactly like a small independent LRU list.",
+            "<strong>minFreq (a single integer):</strong>&nbsp;the smallest frequency value that currently has at least one key sitting in its bucket. This is the one piece of global state that lets eviction jump straight to the correct bucket instead of scanning every frequency from 1 upward."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "It helps to think of&nbsp;<code>freqMap</code>&nbsp;as a small city of buckets lined up by frequency: bucket 1, bucket 2, bucket 3, and so on. Each bucket is its own miniature LRU list. A key lives in exactly one bucket at any given time, the bucket matching its current access count. As a key gets accessed again, it does not stay in the same bucket, it physically moves one bucket to the right and gets placed at the front of that new bucket's list.",
+          "items": []
+        },
+        {
+          "type": "image",
+          "items": [],
+          "url": "/engineering/dsa-media/1785406865014-745854746.png",
+          "caption": "Keys are grouped into per-frequency buckets, each bucket ordered by recency with the most recently used key at the front; minFreq always points at the leftmost non-empty bucket",
+          "content": "/engineering/dsa-media/1785406865014-745854746.png",
+          "text": "/engineering/dsa-media/1785406865014-745854746.png",
+          "alt": "The Three Data Structures That Power O1 LFU"
+        },
+        {
+          "type": "text",
+          "text": "Nothing in this picture requires scanning. Looking up a key is one hash map lookup in&nbsp;<code>keyMap</code>. Finding the bucket a key belongs to is one hash map lookup in&nbsp;<code>freqMap</code>&nbsp;keyed by that key's stored frequency. Removing a key from the front or back of any bucket's list, or inserting it at the front of another bucket's list, is a handful of pointer reassignments on a doubly linked list, which is O(1) exactly the way it is in a plain LRU cache.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "4-why-tracking-minfreq-matters",
+      "title": "4. Why Tracking minFreq Matters",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Eviction in LFU always removes a key from the LEAST frequently used bucket, and if there is a tie inside that bucket, it removes the least recently used key within it (the key at the back of that bucket's list). The hard part is finding \"the least frequently used bucket\" fast.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "Without a running minFreq counter, the only way to find the minimum frequency present in the cache would be to scan every entry in&nbsp;<code>freqMap</code>&nbsp;and find the smallest key with a non empty list. In the worst case that is O(n), which defeats the entire point of an O(1) cache. By instead maintaining minFreq as a single integer that is updated INCREMENTALLY as frequencies change, eviction becomes a single hash map lookup:&nbsp;<code>freqMap[minFreq]</code>&nbsp;always gives you exactly the bucket to evict from, no scanning required.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "minFreq only ever needs to move in two situations, and both are cheap to detect:",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "On a&nbsp;<strong>put</strong>&nbsp;of a brand new key (when the cache was not already full or after an eviction made room): the new key always starts at frequency 1, so minFreq is unconditionally reset to 1. A freshly inserted key is, by definition, the least frequently used key in the entire cache at that instant.",
+            "On any access (get, or put on an existing key) that bumps a key's frequency from&nbsp;<code>f</code>&nbsp;to&nbsp;<code>f + 1</code>: if that key was the LAST remaining key in bucket&nbsp;<code>f</code>&nbsp;(the bucket is now empty after removing it) AND&nbsp;<code>f</code>&nbsp;was equal to the current minFreq, then minFreq must be incremented to&nbsp;<code>f + 1</code>, because bucket&nbsp;<code>f</code>&nbsp;no longer has anything in it and can no longer be the minimum."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "Notice that minFreq can only ever increase during a frequency bump, and can only ever be reset down to 1 by the arrival of a fresh key. It never needs to decrease by scanning backward, which is exactly what keeps every operation O(1).",
+          "items": []
+        },
+        {
+          "type": "image",
+          "items": [],
+          "url": "/engineering/dsa-media/1785406865014-367755698.png",
+          "caption": "When the last key in the minFreq bucket moves up to the next frequency, the old bucket empties and minFreq increments to follow it",
+          "content": "/engineering/dsa-media/1785406865014-367755698.png",
+          "text": "/engineering/dsa-media/1785406865014-367755698.png",
+          "alt": "Why Tracking minFreq Matters"
+        },
+        {
+          "type": "callout",
+          "text": "minFreq answers one question and one question only: \"if I have to evict right now, which bucket do I pull from?\" Get that one integer wrong at any point and the cache silently starts evicting the wrong keys, often keys that are still frequently used, without ever throwing an error.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "5-worked-trace-capacity-2-walkthrough",
+      "title": "5. Worked Trace: Capacity 2 Walkthrough",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Let's trace a small LFU cache with&nbsp;<code>capacity = 2</code>&nbsp;operation by operation, watching&nbsp;<code>freqMap</code>&nbsp;and&nbsp;<code>minFreq</code>&nbsp;change after each step.",
+          "items": []
+        },
+        {
+          "type": "table",
+          "items": [],
+          "url": "",
+          "caption": "",
+          "text": "",
+          "content": "{\"headers\":[\"Operation\",\"freqMap state after the call\",\"minFreq\",\"Notes\"],\"rows\":[[\"put(1, 1)\",\"freq 1: [ key 1 ]\",\"1\",\"Cache was empty. Key 1 enters at frequency 1. minFreq resets to 1.\"],[\"put(2, 2)\",\"freq 1: [ key 2, key 1 ]\",\"1\",\"Cache has room (capacity 2, only 1 key so far). Key 2 enters at frequency 1, placed at the front of the freq 1 bucket since it is the most recent.\"],[\"get(1)\",\"freq 1: [ key 2 ]&nbsp;&nbsp;freq 2: [ key 1 ]\",\"1\",\"Key 1 is accessed, so its frequency goes from 1 to 2. It is removed from the freq 1 bucket and inserted at the front of the freq 2 bucket. Key 2 is still alone at freq 1, so minFreq stays 1.\"],[\"put(3, 3)\",\"freq 1: [ key 3 ]&nbsp;&nbsp;freq 2: [ key 1 ]\",\"1\",\"Cache is full (2 keys, capacity 2). Evict from the minFreq = 1 bucket, which holds only key 2, so key 2 is evicted. Key 3 is inserted fresh at frequency 1. minFreq resets to 1.\"],[\"get(2)\",\"unchanged\",\"1\",\"Returns not found. Key 2 was evicted in the previous step, confirming the eviction was correct.\"]]}"
+        },
+        {
+          "type": "image",
+          "items": [],
+          "url": "/engineering/dsa-media/1785406865493-883403183.png",
+          "caption": "State immediately after put(3, 3): key 2 is evicted from the minFreq = 1 bucket, key 3 takes its place, minFreq resets to 1",
+          "content": "/engineering/dsa-media/1785406865493-883403183.png",
+          "text": "/engineering/dsa-media/1785406865493-883403183.png",
+          "alt": "Worked Trace: Capacity 2 Walkthrough"
+        },
+        {
+          "type": "text",
+          "text": "A few details worth calling out explicitly from this trace. First,&nbsp;<code>get(1)</code>&nbsp;did not change minFreq even though key 1's frequency doubled, because key 2 was still sitting in the freq 1 bucket after key 1 left it, so bucket 1 was not empty and could not stop being the minimum. Second, the eviction on&nbsp;<code>put(3, 3)</code>&nbsp;never had to compare key 1 and key 2 directly, it went straight to&nbsp;<code>freqMap[minFreq]</code>, found key 2 waiting at the back (and, in this case, only occupant) of that bucket, and removed it in O(1) with zero scanning.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "If capacity had been 3 instead of 2 in this same trace, no eviction would have happened on&nbsp;<code>put(3, 3)</code>, and you would end this trace with three buckets alive at once: freq 1 holding key 3, and freq 2 holding key 1, with key 2 still resident at freq 1 until its own frequency changes or it eventually gets evicted by a later operation.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "6-the-frequency-update-procedure",
+      "title": "6. The Frequency Update Procedure (Moving a Key Between Buckets)",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Every single time a key is touched, whether through&nbsp;<code>get</code>&nbsp;or through a&nbsp;<code>put</code>&nbsp;on a key that already exists, the exact same \"bump\" procedure runs. Getting the ORDER of these steps right is the single most important detail in the entire data structure, because doing them in the wrong order silently corrupts the bucket lookup.",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>Step 1, remove first:</strong>&nbsp;using the key's CURRENT (old) frequency, look up its bucket in&nbsp;<code>freqMap</code>&nbsp;and unlink the key's node from that bucket's linked list.",
+            "<strong>Step 2, check for an emptied minFreq bucket:</strong>&nbsp;if that old bucket is now empty AND the old frequency was equal to&nbsp;<code>minFreq</code>, increment&nbsp;<code>minFreq</code>&nbsp;by 1.",
+            "<strong>Step 3, increment the stored frequency:</strong>&nbsp;update the key's frequency field on its node from&nbsp;<code>f</code>&nbsp;to&nbsp;<code>f + 1</code>.",
+            "<strong>Step 4, insert into the new bucket:</strong>&nbsp;look up (or lazily create) the bucket for the NEW frequency&nbsp;<code>f + 1</code>&nbsp;in&nbsp;<code>freqMap</code>, and insert the key's node at the FRONT of that bucket's list, since it was just accessed and is therefore the most recently used entry within its new frequency group."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "Steps 1 and 2 must both use the OLD frequency, before it gets incremented. This is the classic off by one mistake in LFU implementations: incrementing the frequency field first and only then trying to remove the key from \"its bucket\" ends up looking the key up in the wrong bucket entirely, the bucket for&nbsp;<code>f + 1</code>&nbsp;instead of&nbsp;<code>f</code>, which either crashes on a missing entry or, worse, silently corrupts a different key's bucket if one happens to already exist at&nbsp;<code>f + 1</code>.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "The reason the key goes to the FRONT of its new bucket (step 4) rather than the back, or some arbitrary position, is the LRU tie breaking rule from section 1. Within any single frequency bucket, \"front\" always means \"most recently used.\" A key that was just bumped into a new frequency has, by definition, just been touched, so it belongs at the front of that new bucket exactly the same way a freshly accessed key moves to the front of the single list in a plain LRU cache.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "7-c-implementation",
+      "title": "7. C++ Implementation",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "The implementation below keeps the three data structures described earlier in sync on every operation. Each frequency bucket is modeled as a small doubly linked list of keys; for brevity the node struct stores the key directly inside the bucket list nodes and&nbsp;<code>keyMap</code>&nbsp;stores an iterator into the correct bucket list alongside the value and frequency, which is the standard way to get true O(1) removal from the middle of a&nbsp;<code>std::list</code>&nbsp;without a linear search.",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "class LFUCache {\n    int capacity;\n    int minFreq;\n\n    // key -> (value, frequency, iterator into freqMap[frequency] list)\n    struct Node {\n        int value;\n        int freq;\n        std::list<int>::iterator it; // points at this key inside its bucket list\n    };\n    std::unordered_map<int, Node> keyMap;\n\n    // frequency -> doubly linked list of keys currently at that frequency,\n    // front = most recently used, back = least recently used\n    std::unordered_map<int, std::list<int>> freqMap;\n\npublic:\n    LFUCache(int capacity) : capacity(capacity), minFreq(0) {}\n\n    int get(int key) {\n        if (keyMap.find(key) == keyMap.end()) return -1;\n        touch(key);\n        return keyMap[key].value;\n    }\n\n    void put(int key, int value) {\n        if (capacity <= 0) return;\n\n        if (keyMap.find(key) != keyMap.end()) {\n            keyMap[key].value = value;\n            touch(key);\n            return;\n        }\n\n        if ((int)keyMap.size() >= capacity) {\n            // evict the least recently used key from the minFreq bucket\n            int evictKey = freqMap[minFreq].back();\n            freqMap[minFreq].pop_back();\n            keyMap.erase(evictKey);\n        }\n\n        // brand new key always starts at frequency 1\n        freqMap[1].push_front(key);\n        keyMap[key] = { value, 1, freqMap[1].begin() };\n        minFreq = 1;\n    }\n\nprivate:\n    void touch(int key) {\n        Node& node = keyMap[key];\n        int oldFreq = node.freq;\n\n        // step 1: remove from old bucket\n        freqMap[oldFreq].erase(node.it);\n\n        // step 2: minFreq bookkeeping if the old bucket just emptied\n        if (freqMap[oldFreq].empty()) {\n            freqMap.erase(oldFreq);\n            if (minFreq == oldFreq) minFreq++;\n        }\n\n        // step 3: bump the stored frequency\n        node.freq++;\n\n        // step 4: insert at the front of the new bucket\n        freqMap[node.freq].push_front(key);\n        node.it = freqMap[node.freq].begin();\n    }\n};"
+          }
+        },
+        {
+          "type": "text",
+          "text": "A few implementation notes worth calling out. Using&nbsp;<code>std::list</code>&nbsp;is what makes step 1 (removal from an arbitrary position, not just the ends) O(1) the stored iterator lets&nbsp;<code>erase</code>&nbsp;jump straight to the node without walking the list. A plain&nbsp;<code>std::vector</code>&nbsp;would force an O(n) search or shift, breaking the O(1) guarantee entirely.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "The&nbsp;<code>touch</code>&nbsp;helper is deliberately the ONLY place the four step bump procedure from section 6 is implemented, and both&nbsp;<code>get</code>&nbsp;and&nbsp;<code>put</code>&nbsp;on an existing key funnel through it, which keeps the frequency bookkeeping in exactly one place instead of duplicating it and risking the two copies drifting apart.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "8-complexity-analysis",
+      "title": "8. Complexity Analysis",
+      "blocks": [
+        {
+          "type": "table",
+          "items": [],
+          "url": "",
+          "caption": "",
+          "text": "",
+          "content": "{\"headers\":[\"Operation\",\"Time complexity\",\"Why\"],\"rows\":[[\"get(key)\",\"O(1)\",\"One hash map lookup in keyMap, then a constant number of list operations inside touch (one erase, one push_front, both O(1) on a std::list given an iterator).\"],[\"put(key, value) on existing key\",\"O(1)\",\"Same as get, plus one value overwrite.\"],[\"put(key, value) on new key, cache not full\",\"O(1)\",\"One insertion at the front of the freq 1 bucket, one keyMap insert, one minFreq reset.\"],[\"put(key, value) on new key, cache full (triggers eviction)\",\"O(1)\",\"One back() lookup and one pop_back() on the minFreq bucket (both O(1) on a doubly linked list), one keyMap erase, then the same insertion as above.\"],[\"Space\",\"O(capacity)\",\"keyMap holds at most capacity entries; the union of all bucket lists in freqMap also holds at most capacity keys total, spread across at most capacity distinct frequency buckets in the worst case.\"]]}"
+        },
+        {
+          "type": "text",
+          "text": "The headline result is that LFU hits the exact same O(1) asymptotic bound as LRU for both operations. What differs is the CONSTANT factor of work per operation, not the big O class. Every LFU access touches two hash maps (keyMap and freqMap) and performs a bucket removal plus a bucket insertion, versus a single list splice in LRU. In practice this means LFU is measurably slower per operation than LRU even though both are technically O(1), which matters in latency sensitive real systems even when it does not matter for a Big O interview answer.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "It is also worth noting that&nbsp;<code>freqMap</code>&nbsp;can accumulate empty bucket entries if implementations forget to erase a bucket once its list becomes empty (the reference implementation above explicitly calls&nbsp;<code>freqMap.erase(oldFreq)</code>&nbsp;for this reason). Leaving empty buckets around does not break correctness as long as minFreq is still tracked correctly, but it is a minor space leak that grows unbounded over a long running cache with highly variable access patterns, since frequency values only ever increase and old, now abandoned frequency values would otherwise sit in the map forever.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "9-lfu-vs-lru-a-direct-comparison",
+      "title": "9. LFU vs LRU: A Direct Comparison",
+      "blocks": [
+        {
+          "type": "table",
+          "items": [],
+          "url": "",
+          "caption": "",
+          "text": "",
+          "content": "{\"headers\":[\"Dimension\",\"LRU Cache\",\"LFU Cache\"],\"rows\":[[\"Eviction criterion\",\"Recency only, evict the entry not touched for the longest time\",\"Frequency first, evict the entry touched the fewest times; ties broken by recency (least recently used among the tied entries)\"],[\"Core data structures\",\"One hash map (key to node) plus one doubly linked list\",\"One hash map (key to node), one hash map (frequency to doubly linked list), plus a single minFreq integer\"],[\"Work per get/put\",\"One list splice (unlink and re-insert at the front of a single list)\",\"One removal from the old frequency bucket, a minFreq check, a frequency increment, one insertion into the new frequency bucket\"],[\"Relative implementation complexity\",\"Lower, a well known, compact O(1) pattern\",\"Higher, an extra dimension of bucketing plus the minFreq invariant to maintain correctly on every mutation\"],[\"What a \\\"hot\\\" item needs to survive\",\"Just needs to have been touched recently\",\"Needs a genuinely high total access count, recency alone will not save an item that has only been touched once\"],[\"Best suited workload\",\"Access patterns where recency predicts future access well, e.g. a web browser's back button history, or a database's most recently touched rows\",\"Access patterns with a stable \\\"hot set\\\" that is accessed far more often than everything else regardless of recency, e.g. caching the metadata of frequently requested API endpoints or popular product pages\"]]}"
+        },
+        {
+          "type": "text",
+          "text": "Neither policy is universally superior, they encode different bets about the future based on different signals from the past. LRU bets that whatever was touched recently will be touched again soon, which holds up well for workloads with strong temporal locality, a user scrolling a feed, a browser history, a session cache. LFU bets that whatever has been touched a lot historically will keep being touched a lot, which holds up well for workloads with a persistent skew, a small set of items (celebrity profiles, trending products, popular search terms) that dominate total traffic regardless of when the last access happened.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "One real weakness of pure LFU is worth knowing for interviews: an item that was extremely popular in the past but has since gone cold can accumulate such a high frequency count that it becomes nearly impossible to evict, permanently squatting in the cache even though it is no longer useful. Production LFU implementations often mitigate this with frequency decay (periodically halving all frequency counts) or a hybrid scheme sometimes called LFU with aging, or they combine LFU with an LRU segment for recently arrived items. The pure textbook LFU cache covered in this topic does not include decay, since it is not part of the standard LeetCode problem, but it is a reasonable follow up question an interviewer might ask after you get the base version working.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "10-common-mistakes",
+      "title": "10. Common Mistakes",
+      "blocks": [
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>Forgetting to update minFreq when the old bucket becomes empty:</strong>&nbsp;if a key was the last occupant of the current minFreq bucket and gets bumped to a new frequency without incrementing minFreq, the next eviction will look up an empty (or nonexistent) bucket and either crash or, if the map returns a default empty list silently, incorrectly report the cache as unable to evict anything.",
+            "<strong>Forgetting the LRU tie breaking rule within a bucket:</strong>&nbsp;inserting a bumped key at the BACK of its new bucket instead of the FRONT (or evicting from the front instead of the back) silently inverts the recency ordering within that frequency group, so ties get broken backwards, evicting the MOST recently used key among equally frequent keys instead of the least recently used one.",
+            "<strong>Incrementing the frequency before removing from the old bucket:</strong>&nbsp;this is the classic ordering bug from section 6. If the frequency field is bumped from&nbsp;<code>f</code>&nbsp;to&nbsp;<code>f + 1</code>&nbsp;first, then the subsequent \"remove from&nbsp;<code>freqMap[node.freq]</code>\" call looks in bucket&nbsp;<code>f + 1</code>&nbsp;instead of the correct bucket&nbsp;<code>f</code>, either failing to find the key at all or, worse, removing an unrelated key that happens to already live in bucket&nbsp;<code>f + 1</code>.",
+            "<strong>Not resetting minFreq to 1 on every brand new key insertion:</strong>&nbsp;a freshly inserted key always starts at frequency 1, and frequency 1 is always less than or equal to whatever minFreq was before the insertion, so minFreq must unconditionally become 1 again, it is easy to accidentally leave it unchanged if the code path is shared with the \"existing key\" update path.",
+            "<strong>Treating capacity 0 as a normal cache:</strong>&nbsp;a capacity 0 LFU cache should reject every put silently rather than attempting to insert and then immediately evict, which would otherwise crash trying to evict from an empty minFreq bucket.",
+            "<strong>Using a data structure without O(1) arbitrary removal for the buckets:</strong>&nbsp;a&nbsp;<code>std::vector</code>&nbsp;or a plain array backed list for each frequency bucket forces an O(n) search or shift to remove a key from the middle, silently downgrading the whole cache from O(1) to O(n) per operation even though the surrounding hash map logic still looks correct."
+          ]
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "11-problem-patterns",
+      "title": "11. Problem Patterns",
+      "blocks": [
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "Hard&nbsp;LFU Cache (LC 460): the canonical problem this entire topic is built around. It is explicitly labeled&nbsp;<strong>hard difficulty</strong>&nbsp;on LeetCode, in direct contrast to LRU Cache which is labeled medium, reflecting the genuine jump in bookkeeping complexity covered in section 2.",
+            "Medium&nbsp;LRU Cache (LC 146): worth revisiting immediately before or after LFU, since LFU's per bucket ordering is literally an LRU list applied at a smaller scale.",
+            "Medium&nbsp;Design a data structure that supports insert, delete, getRandom in O(1) (LC 380): a different but related \"combine a hash map with another structure for O(1) operations\" design problem, good practice for the same style of thinking.",
+            "Medium&nbsp;Design Twitter (LC 355): another design problem that pairs a hash map with per user ordered structures, similar in spirit to per frequency bucket ordering.",
+            "Hard&nbsp;All O`one Data Structure (LC 432): a close cousin of LFU that asks for O(1) increment, decrement, and \"get any key with the max/min count\" using the exact same frequency bucket technique, a strong follow up problem once LFU feels solid."
+          ]
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "12-interview-checklist",
+      "title": "12. Interview Checklist",
+      "blocks": [
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "Can you state, without hesitating, that LRU evicts by recency and LFU evicts by frequency with an LRU tiebreak?",
+            "Can you explain, in one or two sentences, why a single doubly linked list is enough for LRU but not enough for LFU?",
+            "Can you name all three pieces of state (key to node map, frequency to bucket map, minFreq integer) and what each one is responsible for?",
+            "Can you explain precisely when and why minFreq changes, both on a fresh insertion and on a frequency bump?",
+            "Can you walk through the four step bump procedure (remove from old bucket, check minFreq, increment frequency, insert into new bucket at the front) in the correct order without swapping steps 1 and 3?",
+            "Can you implement get and put from scratch, keeping all three structures in sync, in roughly ten to fifteen minutes?",
+            "Can you explain why std::list (or an equivalent doubly linked list with O(1) arbitrary removal via a stored iterator or pointer) is required for each bucket, and what breaks if you use a vector instead?",
+            "Can you discuss at least one real world limitation of pure LFU (formerly popular items getting stuck in the cache) and a mitigation (frequency decay or aging)?"
+          ]
+        }
+      ]
+    }
+  ],
+  "description": "Learn how LFU cache combines frequency buckets of doubly linked lists with a running minimum frequency pointer to achieve O(1) get and put",
+  "isPremium": false,
+  "order": 0,
+  "patternId": "696a49ca9f270f2334e4593d",
+  "sections": [
+    {
+      "id": "introduction",
+      "title": "Introduction"
+    },
+    {
+      "id": "1-lfu-vs-lru-the-core-difference-in-eviction-policy",
+      "title": "1. LFU vs LRU: The Core Difference in Eviction Policy"
+    },
+    {
+      "id": "2-why-o1-lfu-is-meaningfully-harder-than-o1-lru",
+      "title": "2. Why O(1) LFU Is Meaningfully Harder Than O(1) LRU"
+    },
+    {
+      "id": "3-the-three-data-structures-that-power-o1-lfu",
+      "title": "3. The Three Data Structures That Power O(1) LFU"
+    },
+    {
+      "id": "4-why-tracking-minfreq-matters",
+      "title": "4. Why Tracking minFreq Matters"
+    },
+    {
+      "id": "5-worked-trace-capacity-2-walkthrough",
+      "title": "5. Worked Trace: Capacity 2 Walkthrough"
+    },
+    {
+      "id": "6-the-frequency-update-procedure",
+      "title": "6. The Frequency Update Procedure (Moving a Key Between Buckets)"
+    },
+    {
+      "id": "7-c-implementation",
+      "title": "7. C++ Implementation"
+    },
+    {
+      "id": "8-complexity-analysis",
+      "title": "8. Complexity Analysis"
+    },
+    {
+      "id": "9-lfu-vs-lru-a-direct-comparison",
+      "title": "9. LFU vs LRU: A Direct Comparison"
+    },
+    {
+      "id": "10-common-mistakes",
+      "title": "10. Common Mistakes"
+    },
+    {
+      "id": "11-problem-patterns",
+      "title": "11. Problem Patterns"
+    },
+    {
+      "id": "12-interview-checklist",
+      "title": "12. Interview Checklist"
+    }
+  ],
+  "tags": [],
+  "title": "Introduction to LFU Cache"
+}

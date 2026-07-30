@@ -1,0 +1,721 @@
+{
+  "slug": "distributed-caching",
+  "title": "Distributed Caching",
+  "content": [
+    {
+      "id": "distributed-caching",
+      "title": "Distributed Caching",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "One cache server is wonderful until it is not. Eventually your data set grows bigger than a single machine memory, or the request rate grows beyond what one node can serve, or that one node becomes a single point of failure whose crash empties the whole cache at once."
+        },
+        {
+          "type": "paragraph",
+          "content": "The answer to all three problems is the same: spread the cache across many machines. That is distributed caching, and it turns caching from a single fast box into a scalable, resilient layer that can hold enormous data and serve huge traffic."
+        },
+        {
+          "type": "paragraph",
+          "content": "But splitting a cache across nodes raises new questions. Which node holds a given key? What happens when a node is added or removed? How do you survive a node failure? This page works through those questions, and the elegant techniques, like consistent hashing, that answer them."
+        },
+        {
+          "type": "paragraph",
+          "content": "Consistent hashing, the star of this page, is not just a caching trick. It is the same technique that lets databases like DynamoDB and Cassandra spread data across nodes, so learning it here pays off far beyond caches."
+        },
+        {
+          "type": "paragraph",
+          "content": "The recurring theme is that once data outgrows one machine, you must answer where each piece lives and how that answer survives change, and distributed caching is a clean place to learn those answers."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279721713-89875323.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279721713-89875323.png",
+          "alt": "When one node runs out of memory or throughput, spread the cache across many nodes"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What Distributed Caching Is",
+          "text": "1. What Distributed Caching Is"
+        },
+        {
+          "type": "paragraph",
+          "content": "Distributed caching is caching data across multiple machines that work together as a single logical cache. Instead of one server holding everything, the cached data is spread across a cluster of nodes, and clients treat the cluster as if it were one big cache."
+        },
+        {
+          "type": "paragraph",
+          "content": "Each node holds a slice of the data. Together the nodes provide far more total memory than any single machine, and they share the request load, so the cluster can serve far more traffic than one node ever could."
+        },
+        {
+          "type": "paragraph",
+          "content": "The core challenge that defines distributed caching is placement: given a key, which node stores it? Every client needs to agree on the answer, so that a write and a later read for the same key land on the same node. Getting that mapping right, and stable, is the heart of the topic."
+        },
+        {
+          "type": "list",
+          "content": "[\"Cached data is spread across many nodes acting as one cache\",\"Total memory and throughput scale with the number of nodes\",\"Clients must agree on which node holds each key\",\"The key design problem is stable, balanced key placement\"]",
+          "items": [
+            "Cached data is spread across many nodes acting as one cache",
+            "Total memory and throughput scale with the number of nodes",
+            "Clients must agree on which node holds each key",
+            "The key design problem is stable, balanced key placement"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "The one line version",
+          "content": "Distributed caching spreads cached data across many machines so it can hold more and serve more, and the central question is which node owns each key."
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice the word logical. To the application there is still just one cache with a get and a put, and the machinery of picking a node is hidden inside the client or the cluster."
+        },
+        {
+          "type": "paragraph",
+          "content": "That illusion of a single cache over many machines is exactly what good distributed caching provides, and everything on this page is about making that illusion hold up as nodes fail and the cluster grows."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Why a Single Node Is Not Enough",
+          "text": "2. Why a Single Node Is Not Enough"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth being precise about why a single cache node eventually fails you, because each limit points to something distribution fixes."
+        },
+        {
+          "type": "list",
+          "content": "[\"Memory: one machine can only hold so much, and your cached data set can outgrow it\",\"Throughput: one node can handle only so many requests per second before it saturates\",\"Availability: if the single node dies, the entire cache is gone and every request slams the database\",\"Blast radius: that sudden loss of the whole cache can overwhelm and take down the backend\"]",
+          "items": [
+            "Memory: one machine can only hold so much, and your cached data set can outgrow it",
+            "Throughput: one node can handle only so many requests per second before it saturates",
+            "Availability: if the single node dies, the entire cache is gone and every request slams the database",
+            "Blast radius: that sudden loss of the whole cache can overwhelm and take down the backend"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The availability point is especially dangerous. When a single cache node dies, every request that used to be a fast cache hit becomes a slow database query, all at once. That flood can overwhelm the database and cause a cascading failure far worse than a slow cache."
+        },
+        {
+          "type": "paragraph",
+          "content": "Distribution addresses all of these. More nodes mean more total memory and throughput, and because each node holds only a slice of the data, losing one node loses only that slice, not the entire cache. The pain of a failure is divided rather than total."
+        },
+        {
+          "type": "note",
+          "title": "One node is a single point of failure",
+          "content": "Beyond its memory and throughput limits, a single cache node is a dangerous single point of failure. Its loss can flood the database. Distribution both scales the cache and contains the damage of any one failure."
+        },
+        {
+          "type": "paragraph",
+          "content": "It helps to put numbers on it. If one node holds sixty four gigabytes and your hot data set is a terabyte, no tuning fits it on a single machine, and only spreading it across many nodes will do."
+        },
+        {
+          "type": "paragraph",
+          "content": "Throughput scales the same way. If one node tops out at a hundred thousand requests a second and you need a million, you need roughly ten nodes sharing the load."
+        },
+        {
+          "type": "paragraph",
+          "content": "So distribution is driven by three independent pressures, memory, throughput, and availability, and often by all three at once."
+        },
+        {
+          "type": "paragraph",
+          "content": "You rarely hit all three limits at the same moment, but hitting any one of them is a signal that a single node has run its course."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Partitioning: Sharding the Cache",
+          "text": "3. Partitioning: Sharding the Cache"
+        },
+        {
+          "type": "paragraph",
+          "content": "The first job in a distributed cache is partitioning, also called sharding: dividing the keys across the nodes so each node owns a portion of the data."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396028795-924016978.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396028795-924016978.png",
+          "alt": "Sharding hashes each key to decide which node stores it"
+        },
+        {
+          "type": "paragraph",
+          "content": "The standard approach is to hash the key and use the result to pick a node. Because hashing spreads keys evenly, each node ends up with a roughly equal share of the data and the load. Crucially, the same key always hashes to the same node, so any client can find where a key lives without asking a central directory."
+        },
+        {
+          "type": "paragraph",
+          "content": "That property, any client computing the same owner locally, is what lets the cluster behave as one cache with no coordinator."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is what lets the cluster behave like one cache. A client that wants user 42 hashes the key, computes the owning node, and talks directly to it, whether it is reading or writing. Every client does the same computation and agrees on the answer."
+        },
+        {
+          "type": "list",
+          "content": "[\"Sharding divides keys across nodes so each holds a portion\",\"A hash of the key decides which node owns it\",\"Even hashing gives each node a balanced share of data and load\",\"The same key always maps to the same node, so clients agree\"]",
+          "items": [
+            "Sharding divides keys across nodes so each holds a portion",
+            "A hash of the key decides which node owns it",
+            "Even hashing gives each node a balanced share of data and load",
+            "The same key always maps to the same node, so clients agree"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Sharding is the foundation",
+          "content": "Everything in a distributed cache builds on sharding: hashing a key to decide its node. The interesting problems are all about making that mapping balanced and stable as nodes come and go."
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding is the cache version of horizontal partitioning, the same idea used to split a large database table across servers. The unit here is a key rather than a row, but the principle is identical."
+        },
+        {
+          "type": "paragraph",
+          "content": "A good shard key, or in this case a well distributed hash of the key, is what keeps the load even. A poorly chosen scheme concentrates keys on a few nodes and wastes the rest."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The Problem with Simple Hash Sharding",
+          "text": "4. The Problem with Simple Hash Sharding"
+        },
+        {
+          "type": "paragraph",
+          "content": "The obvious way to map a key to one of N nodes is hash the key, then take the result modulo N. With three nodes, a key goes to node hash mod 3. It is simple, fast, and balanced, and it works fine, until the number of nodes changes."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029029-82696656.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029029-82696656.png",
+          "alt": "With hash mod N, changing the node count remaps almost every key"
+        },
+        {
+          "type": "paragraph",
+          "content": "The moment you add or remove a node, N changes, and hash mod N gives a different answer for almost every key. Suddenly nearly all keys map to a different node than before. Since the data has not moved, virtually every lookup misses, and the whole cluster stampedes the database at once."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is catastrophic in practice. Scaling up your cache by adding a node, which should help, instead empties the cache and can take down your database. A scheme that breaks precisely when you try to grow is not usable for a real distributed cache."
+        },
+        {
+          "type": "list",
+          "content": "[\"Hash mod N is simple and balanced while N is fixed\",\"Adding or removing a node changes N and remaps almost every key\",\"The cache effectively empties, and misses flood the database\",\"So naive modulo sharding cannot handle changing cluster size\"]",
+          "items": [
+            "Hash mod N is simple and balanced while N is fixed",
+            "Adding or removing a node changes N and remaps almost every key",
+            "The cache effectively empties, and misses flood the database",
+            "So naive modulo sharding cannot handle changing cluster size"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Modulo sharding breaks on resize",
+          "content": "The fatal flaw of hash mod N is that changing the node count reshuffles nearly all keys, emptying the cache exactly when you scale. This single problem is why consistent hashing was invented."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is why teams sometimes discover the problem the hard way, adding a cache node during a traffic spike to help, only to watch the cache empty and the database fall over."
+        },
+        {
+          "type": "paragraph",
+          "content": "To make it concrete, with three nodes the key user 42 might hash to 7, and 7 mod 3 is 1, so it lives on node 1. Add a fourth node and 7 mod 4 is 3, so the same key now belongs on node 3, even though its data never moved."
+        },
+        {
+          "type": "paragraph",
+          "content": "Multiply that by every key in the cache and you see why a single node addition triggers a near total cache miss. The scheme is only stable while the node count never changes, which is never true in production."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Consistent Hashing",
+          "text": "5. Consistent Hashing"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consistent hashing is the elegant solution to the resizing problem, and it is one of the most important ideas in distributed systems. It makes adding or removing a node move only a small fraction of keys, instead of almost all of them."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279729442-130196850.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279729442-130196850.png",
+          "alt": "With consistent hashing, changing one node moves only a small slice of keys"
+        },
+        {
+          "type": "paragraph",
+          "content": "The idea is to hash both the nodes and the keys onto the same circular space, a ring. To find which node owns a key, you hash the key to a point on the ring and walk clockwise until you hit a node. That node owns the key."
+        },
+        {
+          "type": "paragraph",
+          "content": "The magic is what happens on a change. When you add a node, it takes over only the keys between it and the previous node on the ring, and everything else stays exactly where it was. When a node leaves, only its keys move, to the next node clockwise. Instead of remapping almost everything, you remap roughly one over N of the keys."
+        },
+        {
+          "type": "list",
+          "content": "[\"Nodes and keys are hashed onto the same circular ring\",\"A key is owned by the first node clockwise from its position\",\"Adding or removing a node moves only the keys in one arc\",\"Roughly one over N of keys move on a change, not nearly all\"]",
+          "items": [
+            "Nodes and keys are hashed onto the same circular ring",
+            "A key is owned by the first node clockwise from its position",
+            "Adding or removing a node moves only the keys in one arc",
+            "Roughly one over N of keys move on a change, not nearly all"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Consistent hashing is the key idea",
+          "content": "Consistent hashing turns a resize from a cache emptying catastrophe into a minor reshuffle of a small slice of keys. It is the technique that makes elastic distributed caches, and much of distributed systems, possible."
+        },
+        {
+          "type": "paragraph",
+          "content": "The property to remember is that the fraction of keys that move on a change is about one over the number of nodes, so in a large cluster a single node change disturbs only a tiny slice."
+        },
+        {
+          "type": "paragraph",
+          "content": "That property is what makes a distributed cache elastic: you can grow or shrink the cluster to match demand without a painful cache wide reshuffle each time."
+        },
+        {
+          "type": "paragraph",
+          "content": "Consistent hashing came out of work at Akamai in the late 1990s for exactly this kind of problem, distributing web content across a changing set of caches, and it has been foundational ever since."
+        },
+        {
+          "type": "paragraph",
+          "content": "A close cousin worth knowing is rendezvous hashing, which reaches the same goal, minimal movement on change, by having each key pick the highest scoring node. Both solve the resize problem, and interviewers are happy to hear either."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Virtual Nodes",
+          "text": "6. Virtual Nodes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Plain consistent hashing has a subtle weakness: with only a few nodes placed randomly on the ring, the arcs between them can be very uneven, so some nodes get a much larger share of keys than others. This imbalance is called skew."
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix is virtual nodes. Instead of placing each physical node at one point on the ring, you place it at many points, say a hundred, using a hundred hashed positions. Each physical node then owns many small arcs scattered around the ring rather than one large arc."
+        },
+        {
+          "type": "list",
+          "content": "[\"Few nodes on the ring can create uneven arcs and unbalanced load\",\"Virtual nodes place each physical node at many points on the ring\",\"This averages out the arcs, giving each node a balanced share\",\"It also makes rebalancing smoother when a node joins or leaves\"]",
+          "items": [
+            "Few nodes on the ring can create uneven arcs and unbalanced load",
+            "Virtual nodes place each physical node at many points on the ring",
+            "This averages out the arcs, giving each node a balanced share",
+            "It also makes rebalancing smoother when a node joins or leaves"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Virtual nodes also make failures graceful. When a physical node dies, its many small arcs are absorbed by many different neighbors, spreading the extra load evenly across the cluster rather than dumping it all on one unlucky node. Real systems almost always use virtual nodes for this reason."
+        },
+        {
+          "type": "note",
+          "title": "Virtual nodes balance the ring",
+          "content": "A few real nodes on a ring get uneven shares. Giving each node many virtual positions smooths the distribution and spreads both load and failure recovery evenly, which is why production systems always use them."
+        },
+        {
+          "type": "paragraph",
+          "content": "The number of virtual nodes per physical node is a tuning knob. More virtual nodes give a smoother distribution but cost a little more memory and bookkeeping, and a hundred or so per node is a common sweet spot."
+        },
+        {
+          "type": "paragraph",
+          "content": "Virtual nodes also make it easy to run mixed hardware. A bigger machine can simply be given more virtual nodes, so it takes a proportionally larger share of the keys, which is called weighting."
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice the client or cluster stores the ring of virtual nodes and does a fast lookup to find the owner, so all this structure costs is a little memory and a binary search."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Replication for Availability",
+          "text": "7. Replication for Availability"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding spreads data out, but on its own it does not protect against a node dying. If each key lives on exactly one node and that node fails, the keys it held are simply gone. Replication fixes this by keeping copies of each shard on more than one node."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279731855-587937506.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279731855-587937506.png",
+          "alt": "Each shard keeps a primary and one or more replicas for availability"
+        },
+        {
+          "type": "paragraph",
+          "content": "The common pattern is a primary and replicas per shard. The primary handles writes and serves reads, and one or more replicas hold copies of the same data. If the primary fails, a replica is promoted to take its place, and the shard keeps serving with little interruption."
+        },
+        {
+          "type": "list",
+          "content": "[\"Replication keeps copies of each shard on multiple nodes\",\"A primary handles writes, replicas hold synchronised copies\",\"If the primary fails, a replica is promoted to replace it\",\"Replicas can also serve reads, adding read throughput\"]",
+          "items": [
+            "Replication keeps copies of each shard on multiple nodes",
+            "A primary handles writes, replicas hold synchronised copies",
+            "If the primary fails, a replica is promoted to replace it",
+            "Replicas can also serve reads, adding read throughput"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Replication trades memory and consistency for availability. You spend extra memory holding copies, and you must decide how strictly the replicas track the primary, but in return a single node failure no longer loses data or takes a shard offline. For a cache that the whole system depends on, that resilience is usually worth the cost."
+        },
+        {
+          "type": "note",
+          "title": "Sharding scales, replication survives",
+          "content": "Sharding gives you capacity, replication gives you availability. You need both: sharding so the cache can grow, replication so a single node failure does not lose a slice of it."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a consistency choice in how replicas are kept up to date. Synchronous replication waits for replicas to confirm each write, which is safe but slower, while asynchronous replication acknowledges immediately and lets replicas catch up, which is fast but can lose the last few writes on a failure."
+        },
+        {
+          "type": "paragraph",
+          "content": "For a cache, asynchronous replication is usually fine, because the source of truth is the database, so a lost cache write is at worst a cache miss, not lost data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Handling Node Failures",
+          "text": "8. Handling Node Failures"
+        },
+        {
+          "type": "paragraph",
+          "content": "Nodes will fail, so a distributed cache has to detect failures and recover from them without a human in the loop."
+        },
+        {
+          "type": "list",
+          "content": "[\"Detection: the cluster uses heartbeats or health checks to notice a node is down\",\"Failover: if the failed node had replicas, one is promoted to primary for its shards\",\"Rebalancing: with consistent hashing, the failed node keys shift to their neighbors automatically\",\"Recovery: when the node returns or a replacement joins, it takes on a share of the keys again\"]",
+          "items": [
+            "Detection: the cluster uses heartbeats or health checks to notice a node is down",
+            "Failover: if the failed node had replicas, one is promoted to primary for its shards",
+            "Rebalancing: with consistent hashing, the failed node keys shift to their neighbors automatically",
+            "Recovery: when the node returns or a replacement joins, it takes on a share of the keys again"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The combination of consistent hashing and replication makes failure handling graceful. Consistent hashing means a failed node keys move to just a few neighbors rather than shuffling the whole cluster, and replication means those keys still exist as copies, so they are not lost, only relocated."
+        },
+        {
+          "type": "paragraph",
+          "content": "The moved keys do need to be repopulated from the database as they are first requested, so a failure causes a brief bump in misses, which is another reason replicas and gradual warming matter."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is still a cost to a failure: the keys that move may briefly miss until they are repopulated, adding a little database load. But with virtual nodes spreading that load and replicas preserving the data, a single failure is a small ripple rather than an outage."
+        },
+        {
+          "type": "note",
+          "title": "Design for nodes dying",
+          "content": "In a distributed cache, node failure is normal, not exceptional. Consistent hashing localises the disruption and replication preserves the data, so the cluster heals itself with only a small, temporary cost."
+        },
+        {
+          "type": "paragraph",
+          "content": "A subtle danger during failover is a partition, where nodes lose contact but are all still alive, risking a split brain with two primaries. Clusters guard against this with a quorum, requiring a majority to agree before promoting a replica."
+        },
+        {
+          "type": "paragraph",
+          "content": "Clusters track which nodes are alive using heartbeats or a gossip protocol, where nodes continuously share what they know about each other, so the whole cluster converges on an up to date view of membership."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Hot Keys and Skew",
+          "text": "9. Hot Keys and Skew"
+        },
+        {
+          "type": "paragraph",
+          "content": "Even with perfect sharding, one problem can wreck a distributed cache: a hot key. This is a single key so popular that the traffic to it alone overwhelms whichever node owns it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279733725-873942662.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279733725-873942662.png",
+          "alt": "A single extremely popular key can overload the one node that owns it"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding balances keys across nodes, but it cannot balance the load of one key, because that key lives on one node. If a celebrity profile or a viral post is being read a million times a second, all of that lands on a single node, which becomes a hot shard while the others sit idle."
+        },
+        {
+          "type": "paragraph",
+          "content": "Skew can also come from the key design itself. If keys are not hashed well, or many keys share a prefix that routes them together, load piles onto a few nodes even without a single viral key."
+        },
+        {
+          "type": "list",
+          "content": "[\"A hot key is a single key with a disproportionate share of traffic\",\"Sharding cannot split one key across nodes, so its owner is overloaded\",\"The result is a hot shard: one node saturated while others are underused\",\"Skew, where some keys or nodes are far busier than others, is the general form of this problem\"]",
+          "items": [
+            "A hot key is a single key with a disproportionate share of traffic",
+            "Sharding cannot split one key across nodes, so its owner is overloaded",
+            "The result is a hot shard: one node saturated while others are underused",
+            "Skew, where some keys or nodes are far busier than others, is the general form of this problem"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The fixes involve breaking the single point. You can replicate the hot key to several nodes and spread reads across them, cache it locally on each client so it does not hit the cluster at all, or split it into multiple sub keys. Detecting hot keys through monitoring is the first step, because you cannot fix a hot shard you cannot see."
+        },
+        {
+          "type": "note",
+          "title": "Balanced keys, unbalanced load",
+          "content": "Sharding balances the number of keys, not the traffic. A single hot key can still overload one node, so real systems detect hot keys and replicate or locally cache them to spread that load."
+        },
+        {
+          "type": "paragraph",
+          "content": "A common and effective fix is a small local cache in front of the distributed one, sometimes called a near cache. The hottest keys are served from the application memory itself, so they never even reach the cluster, which neatly absorbs hot key traffic."
+        },
+        {
+          "type": "paragraph",
+          "content": "Detecting the hot key in the first place relies on per key metrics, so investing in monitoring that surfaces the busiest keys is what makes the fix possible at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Client-Side vs Server-Side Sharding",
+          "text": "10. Client-Side vs Server-Side Sharding"
+        },
+        {
+          "type": "paragraph",
+          "content": "A practical question is who computes which node owns a key. There are two broad answers, and the difference shapes how the cluster is deployed."
+        },
+        {
+          "type": "list",
+          "content": "[\"Client side sharding: the client library knows the nodes and hashes the key itself, then talks directly to the right node\",\"Server side or proxy sharding: the client talks to any node or a proxy, which routes the request to the correct node\",\"Client side is fast, with no extra hop, but every client must know the cluster layout\",\"Proxy based is simpler for clients and centralises routing, at the cost of an extra hop\"]",
+          "items": [
+            "Client side sharding: the client library knows the nodes and hashes the key itself, then talks directly to the right node",
+            "Server side or proxy sharding: the client talks to any node or a proxy, which routes the request to the correct node",
+            "Client side is fast, with no extra hop, but every client must know the cluster layout",
+            "Proxy based is simpler for clients and centralises routing, at the cost of an extra hop"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Client side sharding is efficient because there is no middleman, but it couples every client to the cluster topology, so a change has to propagate to all of them. A proxy or a smart cluster hides the layout behind a single endpoint, which is simpler to operate but adds a network hop and a component to run."
+        },
+        {
+          "type": "paragraph",
+          "content": "Real systems land in different places. Some use smart clients that track the cluster, some use a proxy layer, and some, like Redis Cluster, have the nodes themselves redirect a client to the right node. All three are ways to answer the same question of who owns the routing logic."
+        },
+        {
+          "type": "paragraph",
+          "content": "A popular middle ground is the two tier or near cache setup: a fast local cache in each application instance backed by the shared distributed cache. Local hits are instant, misses fall through to the cluster, and the cluster falls through to the database."
+        },
+        {
+          "type": "paragraph",
+          "content": "This layering also softens the read your writes problem, where a client should see its own recent write, since the local tier can hold the fresh value the client just wrote."
+        },
+        {
+          "type": "paragraph",
+          "content": "The tradeoff of a near cache is a second place data can be stale, so its entries need short lifetimes or invalidation, which is a theme the cache consistency and invalidation pages pick up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Popular Distributed Caches",
+          "text": "11. Popular Distributed Caches"
+        },
+        {
+          "type": "paragraph",
+          "content": "The concepts show up in a handful of widely used systems, each with its own take."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"System\",\"Style\",\"Notable for\"],\"rows\":[[\"Redis Cluster\",\"Sharded with replicas\",\"Hash slots, primary and replica failover, rich data types\"],[\"Memcached\",\"Simple sharded cache\",\"Client side sharding, very fast, no persistence\"],[\"Amazon ElastiCache\",\"Managed\",\"Hosted Redis or Memcached, handles ops for you\"],[\"Hazelcast\",\"In memory data grid\",\"Distributed cache plus compute, common in Java\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Redis Cluster is the common heavyweight. It splits the key space into sixteen thousand or so hash slots spread across the nodes, keeps replicas for failover, and has nodes redirect clients to the right place. Memcached is deliberately simpler, a plain sharded cache where the client picks the node and there is no replication or persistence."
+        },
+        {
+          "type": "paragraph",
+          "content": "Managed services like ElastiCache remove the operational burden entirely, running the cluster, handling failover, and scaling for you. For most teams that do not want to operate a cache fleet, a managed option is the pragmatic choice."
+        },
+        {
+          "type": "paragraph",
+          "content": "The general takeaway is to lean on proven systems and managed services for distributed caching, since the failure and resize handling is subtle and easy to get wrong by hand."
+        },
+        {
+          "type": "paragraph",
+          "content": "Redis Cluster is worth one concrete detail: it divides the key space into 16384 fixed hash slots and assigns ranges of slots to nodes, which is a form of consistent hashing that makes moving data between nodes a matter of moving slots."
+        },
+        {
+          "type": "paragraph",
+          "content": "Memcached, by contrast, pushes the sharding entirely to the client and keeps the server dead simple, which is part of why it is so fast and easy to reason about."
+        },
+        {
+          "type": "paragraph",
+          "content": "Amazon ElastiCache and similar managed services wrap these engines with automated failover, scaling, and backups, which is why most teams reach for a managed cache rather than operating a cluster themselves."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Consistency and Tradeoffs",
+          "text": "12. Consistency and Tradeoffs"
+        },
+        {
+          "type": "paragraph",
+          "content": "Distributing a cache introduces the same hard tradeoffs as any distributed system, and it is important to be honest about them."
+        },
+        {
+          "type": "paragraph",
+          "content": "With replication, there is a consistency question: after a write to the primary, replicas take a moment to catch up, so a read from a replica might briefly return stale data. Most caches accept this eventual consistency, because a cache is already a slightly stale copy of the database, so a little more staleness is usually fine."
+        },
+        {
+          "type": "list",
+          "content": "[\"Replication brings eventual consistency, replicas can lag the primary briefly\",\"A cache is already a stale copy, so mild staleness is often acceptable\",\"Strong consistency across nodes is possible but slower and rarely needed for a cache\",\"Adding nodes helps capacity but also adds coordination and failure modes\"]",
+          "items": [
+            "Replication brings eventual consistency, replicas can lag the primary briefly",
+            "A cache is already a stale copy, so mild staleness is often acceptable",
+            "Strong consistency across nodes is possible but slower and rarely needed for a cache",
+            "Adding nodes helps capacity but also adds coordination and failure modes"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The general lesson is that distribution is not free. It buys scale and resilience, but it adds moving parts, network hops, consistency questions, and operational complexity. You distribute a cache when a single node genuinely cannot cope, not by default, because a simple single node cache is far easier to run."
+        },
+        {
+          "type": "note",
+          "title": "Distribution has a price",
+          "content": "A distributed cache scales and survives failures, but it adds consistency and operational complexity. Reach for it when one node cannot hold the data or the load, not before."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is really the CAP theorem showing up for caches. Under a network partition you must choose between staying available with possibly stale data or staying consistent by refusing some reads, and for a cache, availability with mild staleness is almost always the right call."
+        },
+        {
+          "type": "paragraph",
+          "content": "The comforting part is that a cache is a performance optimisation, not the system of record, so choosing availability and eventual consistency rarely causes real harm."
+        },
+        {
+          "type": "paragraph",
+          "content": "The one exception is data where a stale read is genuinely dangerous, like a permission check, in which case you either skip the cache for it or invalidate very aggressively."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Common Mistakes",
+          "text": "13. Common Mistakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Distributed caches fail in a few predictable ways, almost all tied to the topics above."
+        },
+        {
+          "type": "list",
+          "content": "[\"Using naive hash mod N, so scaling the cluster empties the cache and floods the database\",\"Skipping virtual nodes, leaving load unevenly spread across nodes\",\"Ignoring hot keys, so one popular key overloads a single node no matter how many you add\",\"No replication, so a single node failure loses a slice of the cache and hammers the backend\",\"Not planning for the failure flood, where losing cache capacity suddenly overwhelms the database\",\"Distributing prematurely, taking on cluster complexity a single node could have handled\"]",
+          "items": [
+            "Using naive hash mod N, so scaling the cluster empties the cache and floods the database",
+            "Skipping virtual nodes, leaving load unevenly spread across nodes",
+            "Ignoring hot keys, so one popular key overloads a single node no matter how many you add",
+            "No replication, so a single node failure loses a slice of the cache and hammers the backend",
+            "Not planning for the failure flood, where losing cache capacity suddenly overwhelms the database",
+            "Distributing prematurely, taking on cluster complexity a single node could have handled"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The recurring theme is that the hard parts of a distributed cache are about change and failure, not the happy path. A cluster that works when everything is stable can still fall over when a node is added or lost, so the real design work is making resize and failure smooth, with consistent hashing, virtual nodes, replication, and hot key handling."
+        },
+        {
+          "type": "note",
+          "title": "The happy path is easy",
+          "content": "Any distributed cache works when nodes are stable. The engineering is in surviving resize and failure gracefully, which is exactly what consistent hashing, replication, and hot key handling are for."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is also easy to under provision monitoring. Without per node and per key metrics, a hot shard or an unbalanced ring is invisible until it causes an incident, so observability is part of a correct distributed cache, not an extra."
+        },
+        {
+          "type": "paragraph",
+          "content": "A pragmatic path is to start with a single node plus one replica, and only move to a full sharded cluster when you can measure that one node genuinely cannot hold the data or the load."
+        },
+        {
+          "type": "paragraph",
+          "content": "Growing this way, single node, then add a replica, then shard, means you only pay for each layer of complexity once you have proven you need it."
+        },
+        {
+          "type": "paragraph",
+          "content": "In the end, a distributed cache is a balance: it buys scale and resilience, and you take on partitioning, replication, and failure handling as the price, adding each piece only when the workload demands it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "14. HLD Interview: How to Talk About This",
+          "text": "14. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "Distributed caching is a rich interview topic that quickly reveals whether you understand distributed systems, so hit the key ideas clearly."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Shard, then fix the resize problem:</strong> I shard by hashing keys across nodes, and I use consistent hashing so adding or removing a node moves only a small fraction of keys instead of emptying the cache."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Balance with virtual nodes:</strong> I use virtual nodes so each physical node owns many small arcs of the ring, which keeps load even and spreads failure recovery."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Replicate for availability:</strong> I keep a primary and replicas per shard so a node failure promotes a replica instead of losing data, and I mention that a lost cache can flood the database."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Call out hot keys:</strong> I note that sharding balances keys but not the traffic to one key, so I detect hot keys and replicate or locally cache them to avoid a hot shard."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Reach for consistent hashing by name:</strong> Saying I shard with consistent hashing and virtual nodes, replicate each shard, and handle hot keys with a near cache signals real distributed systems depth, not just cache buzzwords."
+        },
+        {
+          "type": "paragraph",
+          "content": "The whole topic really rests on two ideas working together: consistent hashing to place keys stably as the cluster changes, and replication to survive the loss of any single node."
+        },
+        {
+          "type": "paragraph",
+          "content": "Get those two right, add virtual nodes for balance and hot key handling for skew, and a distributed cache becomes a dependable, elastic layer rather than a fragile one."
+        }
+      ]
+    }
+  ]
+}

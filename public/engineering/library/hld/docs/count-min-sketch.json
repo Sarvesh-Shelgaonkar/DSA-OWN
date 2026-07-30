@@ -1,0 +1,449 @@
+{
+  "slug": "count-min-sketch",
+  "title": "Count-Min Sketch",
+  "content": [
+    {
+      "id": "count-min-sketch",
+      "title": "Count-Min Sketch",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Picture a food delivery app on a Friday night. Millions of order events are streaming in every minute, and someone on the ops team wants to know: how many times has each restaurant's menu page been hit in the last hour."
+        },
+        {
+          "type": "paragraph",
+          "content": "You could keep a counter for every single restaurant in a hash map. That works fine until you have ten million distinct restaurants, menu items, and search terms all needing their own counter, and your server's memory starts screaming."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265435-406507226.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265435-406507226.png",
+          "alt": "A hash map storing one counter per unique item, growing without bound",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265435-406507226.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is where the <strong>Count-Min Sketch</strong> comes in. It's a small, fixed-size structure that gives you a fast, good-enough estimate of how many times each item has appeared, without ever storing a counter per item."
+        },
+        {
+          "type": "note",
+          "title": "The one line definition",
+          "content": "A Count-Min Sketch is a compact 2D array of counters that estimates how many times an item has occurred in a stream, using a fixed amount of memory no matter how many distinct items show up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The problem it solves",
+          "text": "1. The problem it solves"
+        },
+        {
+          "type": "paragraph",
+          "content": "Any system that watches a high volume stream eventually needs to answer some version of \"how many times has X happened.\" Requests per API endpoint, views per video, retweets per hashtag, packets per source IP."
+        },
+        {
+          "type": "paragraph",
+          "content": "The naive fix is a hash map from item to counter. That's exact and simple, but it scales with the number of distinct items you've ever seen, not with how much traffic you can afford to handle. On a stream with hundreds of millions of distinct keys, that hash map can blow past available memory."
+        },
+        {
+          "type": "paragraph",
+          "content": "You usually don't need an exact count anyway. You need to know that <strong>slash checkout</strong> got hit about 4.2 million times, not that it got hit exactly 4,213,507 times. Count-Min Sketch trades a small, controllable amount of accuracy for a huge, predictable drop in memory."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. How this is different from HyperLogLog",
+          "text": "2. How this is different from HyperLogLog"
+        },
+        {
+          "type": "paragraph",
+          "content": "If you've come across HyperLogLog before, it's easy to lump these two together because both are probabilistic structures that save memory on a big stream. They answer different questions though."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265436-789275804.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265436-789275804.png",
+          "alt": "HyperLogLog answering how many distinct items versus Count-Min Sketch answering how many times each item",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265436-789275804.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>HyperLogLog</strong> answers \\\"how many distinct items have I seen\\\". It can tell you a million unique users visited today, but it cannot tell you how many times any single one of them visited.\",\"<strong>Count-Min Sketch</strong> answers \\\"how many times has this specific item occurred\\\". It can tell you user 42 showed up 300 times, but it has no idea how many distinct users there were in total.\",\"<strong>Bloom filter</strong>, the third member of this family, answers a simpler yes or no question: \\\"have I seen this item before at all\\\", with no count involved.\"]",
+          "items": [
+            "<strong>HyperLogLog</strong> answers \"how many distinct items have I seen\". It can tell you a million unique users visited today, but it cannot tell you how many times any single one of them visited.",
+            "<strong>Count-Min Sketch</strong> answers \"how many times has this specific item occurred\". It can tell you user 42 showed up 300 times, but it has no idea how many distinct users there were in total.",
+            "<strong>Bloom filter</strong>, the third member of this family, answers a simpler yes or no question: \"have I seen this item before at all\", with no count involved."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "So the choice of structure comes down to the question you're actually asking. Distinct count, frequency count, or membership check are three different problems, and each has its own purpose built structure."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 A quick side by side",
+          "text": "2.1 A quick side by side"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Structure\",\"Question it answers\",\"Typical example\"],\"rows\":[[\"Bloom filter\",\"Have I seen this exact item before\",\"Has this username already been taken\"],[\"HyperLogLog\",\"How many distinct items have I seen\",\"How many unique visitors today\"],[\"Count-Min Sketch\",\"How many times has this item occurred\",\"How many times was slash checkout hit\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "All three share the same underlying trick: hash the item into a small fixed-size structure and accept a controlled amount of error in exchange for memory that doesn't grow with the number of distinct items."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. How the structure works",
+          "text": "3. How the structure works"
+        },
+        {
+          "type": "paragraph",
+          "content": "A Count-Min Sketch is just a 2D array of counters, call it width columns by depth rows. Depth is typically a small number like 3 to 7, width might be a few thousand."
+        },
+        {
+          "type": "paragraph",
+          "content": "Each row has its own independent hash function. When an item arrives, you hash it once per row, and each hash tells you which column to bump in that row."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265436-457571607.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265436-457571607.png",
+          "alt": "One item being hashed by three independent hash functions into three separate rows",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265436-457571607.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Adding an item",
+          "text": "3.1 Adding an item"
+        },
+        {
+          "type": "paragraph",
+          "content": "To record an occurrence of an item, run it through every row's hash function and increment the counter each hash lands on. One event touches exactly one counter per row, and every row gets touched."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265437-106915431.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265437-106915431.png",
+          "alt": "A single event incrementing one counter in each of three rows",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265437-106915431.png"
+        },
+        {
+          "type": "code",
+          "content": "WIDTH = 2000\nDEPTH = 4\ntable = [[0] * WIDTH for _ in range(DEPTH)]\n\ndef add(item):\n    for row in range(DEPTH):\n        col = hash(item, seed=row) % WIDTH\n        table[row][col] += 1",
+          "code": {
+            "language": "python",
+            "content": "WIDTH = 2000\nDEPTH = 4\ntable = [[0] * WIDTH for _ in range(DEPTH)]\n\ndef add(item):\n    for row in range(DEPTH):\n        col = hash(item, seed=row) % WIDTH\n        table[row][col] += 1"
+          },
+          "codes": {
+            "python": "WIDTH = 2000\nDEPTH = 4\ntable = [[0] * WIDTH for _ in range(DEPTH)]\n\ndef add(item):\n    for row in range(DEPTH):\n        col = hash(item, seed=row) % WIDTH\n        table[row][col] += 1"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Why several hash functions instead of one",
+          "content": "A single hash function means every collision is permanent and unrecoverable. Multiple independent hash functions mean a collision in one row is very unlikely to also happen in every other row for the same pair of items, which is exactly what the read step below relies on."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Reading a frequency estimate",
+          "text": "4. Reading a frequency estimate"
+        },
+        {
+          "type": "paragraph",
+          "content": "To estimate how many times an item has occurred, hash it the same way you did on insert, one hash per row, and look up the counter in each row. Then take the <strong>minimum</strong> of those counters."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265437-624140137.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265437-624140137.png",
+          "alt": "Three row counters for the same item, with the minimum chosen as the estimate",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265437-624140137.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Why the minimum and not the average or the max? Because a counter can only ever be too high, never too low. Other items sharing that same slot in a row can only add to the count, they can never subtract from it. So whichever row happened to have the least collision damage for this item gives you the closest estimate to the truth."
+        },
+        {
+          "type": "code",
+          "content": "def estimate(item):\n    counts = []\n    for row in range(DEPTH):\n        col = hash(item, seed=row) % WIDTH\n        counts.append(table[row][col])\n    return min(counts)",
+          "code": {
+            "language": "python",
+            "content": "def estimate(item):\n    counts = []\n    for row in range(DEPTH):\n        col = hash(item, seed=row) % WIDTH\n        counts.append(table[row][col])\n    return min(counts)"
+          },
+          "codes": {
+            "python": "def estimate(item):\n    counts = []\n    for row in range(DEPTH):\n        col = hash(item, seed=row) % WIDTH\n        counts.append(table[row][col])\n    return min(counts)"
+          }
+        },
+        {
+          "type": "note",
+          "title": "This estimate only ever overestimates",
+          "content": "Count-Min Sketch guarantees your estimate is always greater than or equal to the true count, never less. That one sided error is what makes the minimum trick work, and it's a property you can rely on when reasoning about correctness."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. What a collision actually does to your estimate",
+          "text": "5. What a collision actually does to your estimate"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say item A and item B happen to hash to the same column in row 2, just by bad luck. Every time B occurs, it bumps the same counter that A relies on in that row, inflating A's row 2 count."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265438-370805484.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265438-370805484.png",
+          "alt": "Two different items colliding into the same counter in one row, inflating it, while other rows stay clean",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265438-370805484.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "If A and B don't also collide in row 1 and row 3, though, those rows still hold A's true count uncontaminated. The minimum across all rows picks out exactly those clean rows and ignores the inflated one."
+        },
+        {
+          "type": "paragraph",
+          "content": "The failure case is when an item collides badly across most or all of its rows at once. That's rare when width is reasonably large and hash functions are genuinely independent, but it's the reason width and depth both matter, not just one of them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. The width and depth trade-off",
+          "text": "6. The width and depth trade-off"
+        },
+        {
+          "type": "paragraph",
+          "content": "Two knobs control accuracy: <strong>width</strong>, the number of columns per row, and <strong>depth</strong>, the number of rows and hash functions."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265438-114064200.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265438-114064200.png",
+          "alt": "Wider arrays and more rows both reducing collisions, at the cost of more memory",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396265438-114064200.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Knob\",\"Effect of increasing it\",\"Cost\"],\"rows\":[[\"Width\",\"Fewer items land on the same counter, so collision inflation shrinks\",\"Linear increase in memory per row\"],[\"Depth\",\"More independent chances to find a clean, uncontaminated row\",\"One more hash computation and one more row of memory per event\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice depth stays small, somewhere around 4 to 7 rows is common, because the odds of a bad collision hitting all of them at once drop fast with each extra row. Width is where you spend most of your memory budget, sized against how many events you expect and how tight an error bound you need."
+        },
+        {
+          "type": "note",
+          "title": "Sizing rule of thumb",
+          "content": "Width and depth are usually chosen from two parameters: epsilon, the acceptable error as a fraction of total stream size, and delta, the probability of exceeding that error. Roughly, width scales as 1 divided by epsilon, and depth scales as the log of 1 divided by delta. You don't need to memorize the derivation for an interview, just know that both knobs exist and what each one buys you."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Merging sketches across machines",
+          "text": "6.1 Merging sketches across machines"
+        },
+        {
+          "type": "paragraph",
+          "content": "If you're running this on a cluster, say one sketch per server handling a slice of the traffic, you can combine them into a global view without touching the raw events again. Two sketches of the same width and depth, built with the same hash functions, merge by simply adding corresponding counters cell by cell."
+        },
+        {
+          "type": "code",
+          "content": "def merge(table_a, table_b):\n    return [\n        [a + b for a, b in zip(row_a, row_b)]\n        for row_a, row_b in zip(table_a, table_b)\n    ]",
+          "code": {
+            "language": "python",
+            "content": "def merge(table_a, table_b):\n    return [\n        [a + b for a, b in zip(row_a, row_b)]\n        for row_a, row_b in zip(table_a, table_b)\n    ]"
+          },
+          "codes": {
+            "python": "def merge(table_a, table_b):\n    return [\n        [a + b for a, b in zip(row_a, row_b)]\n        for row_a, row_b in zip(table_a, table_b)\n    ]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Conservative update, a common optimization",
+          "text": "6.2 Conservative update, a common optimization"
+        },
+        {
+          "type": "paragraph",
+          "content": "A small tweak reduces overestimation further. Instead of blindly incrementing every counter an item hashes to, first read all of them, find the current minimum, and only raise counters that are at or below that minimum, bringing each up to at most minimum plus one."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266841-824554868.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266841-824554868.png",
+          "alt": "An update reading the current minimum first and only raising counters that need it",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266841-824554868.png"
+        },
+        {
+          "type": "note",
+          "title": "Why bother with this extra step",
+          "content": "A counter that's already ahead because of some other item's collisions doesn't need to grow further just because this item also happened to hash there. Skipping that increment keeps the error from compounding, at the cost of one extra read pass before the write."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Finding heavy hitters",
+          "text": "7. Finding heavy hitters"
+        },
+        {
+          "type": "paragraph",
+          "content": "One of the most common uses of Count-Min Sketch is spotting the small set of items responsible for most of the traffic, the so called heavy hitters, like a trending hashtag or a single IP address hammering your API."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266844-288400833.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266844-288400833.png",
+          "alt": "Items above a chosen count threshold flagged as heavy hitters, the rest treated as background noise",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266844-288400833.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The pattern is simple: keep a small candidate set, maybe a min-heap of the top few hundred keys seen so far. Every time you update the sketch for an item, check its estimate against the current threshold, and if it clears the bar, add or update it in the candidate set. You never need to track every distinct key, only the ones that matter."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Where this shows up in real systems",
+          "text": "8. Where this shows up in real systems"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Trending topics.</strong> Platforms like Twitter use frequency sketches to detect hashtags or search terms spiking in real time without tracking every term ever mentioned.\",\"<strong>Network traffic monitoring.</strong> Routers and DDoS mitigation tools estimate packet counts per source IP to flag abusive traffic without a counter per IP.\",\"<strong>Redis</strong> ships a Count-Min Sketch as part of RedisBloom, used directly for frequency queries over huge key spaces.\",\"<strong>Database query planners</strong> use sketches to estimate column value frequencies, which feeds into selectivity estimates for choosing a query plan.\",\"<strong>Caches</strong> like the admission policy in Caffeine use a Count-Min Sketch to estimate how popular a key is before deciding whether it deserves a spot in the cache.\"]",
+          "items": [
+            "<strong>Trending topics.</strong> Platforms like Twitter use frequency sketches to detect hashtags or search terms spiking in real time without tracking every term ever mentioned.",
+            "<strong>Network traffic monitoring.</strong> Routers and DDoS mitigation tools estimate packet counts per source IP to flag abusive traffic without a counter per IP.",
+            "<strong>Redis</strong> ships a Count-Min Sketch as part of RedisBloom, used directly for frequency queries over huge key spaces.",
+            "<strong>Database query planners</strong> use sketches to estimate column value frequencies, which feeds into selectivity estimates for choosing a query plan.",
+            "<strong>Caches</strong> like the admission policy in Caffeine use a Count-Min Sketch to estimate how popular a key is before deciding whether it deserves a spot in the cache."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Worked example: counting API requests from a log firehose",
+          "text": "9. Worked example: counting API requests from a log firehose"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say you're running an API gateway logging every request path, and you want a live view of request counts per endpoint without storing a counter for every unique path plus query string combination that's ever been hit."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266845-563920264.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266845-563920264.png",
+          "alt": "A log firehose feeding a Count-Min Sketch, which answers count queries for individual endpoints",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266845-563920264.png"
+        },
+        {
+          "type": "example-box",
+          "title": "Walking through it",
+          "text": "You set width to 2048 and depth to 4. Every incoming request line gets its path extracted, say slash checkout, and that string is fed into add(). Four hash functions map it to four counters, one per row, and all four get incremented. A minute later, someone asks the dashboard how many hits slash checkout got. You hash slash checkout the same way, read the four counters, and return the minimum, say 4.2 million. Meanwhile slash cart, a much rarer path, returns its own low estimate from the same table, unaffected by how busy slash checkout was, as long as its hashes didn't happen to collide badly with it."
+        },
+        {
+          "type": "paragraph",
+          "content": "The entire table for this example stays at a fixed size, roughly 2048 times 4 counters, regardless of whether your gateway sees a thousand distinct paths or ten million. That fixed footprint is the whole point."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. The interview angle",
+          "text": "10. The interview angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "Count-Min Sketch tends to come up in system design interviews as part of a broader question about approximate counting at scale, things like \"design a trending topics feature\" or \"design a rate limiter that tracks request counts per user across a cluster.\""
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266846-863982560.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266846-863982560.png",
+          "alt": "Bloom filter for membership, HyperLogLog for distinct counts, Count-Min Sketch for frequency, side by side",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266846-863982560.png"
+        },
+        {
+          "type": "blockQuote",
+          "content": "Bloom filter, HyperLogLog, and Count-Min Sketch are the standard trio of probabilistic structures. Naming all three and knowing which question each one answers is usually enough to signal you understand this space, you rarely need to derive the math live in an interview."
+        },
+        {
+          "type": "paragraph",
+          "content": "A good answer walks through the same three moves: identify that exact counting over a huge key space doesn't fit in memory, propose a fixed size sketch instead of a per-key counter, and acknowledge the trade-off, some accuracy lost in exchange for bounded memory and O(1) updates and queries."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. When to reach for it, and when not to",
+          "text": "11. When to reach for it, and when not to"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266846-320439234.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266846-320439234.png",
+          "alt": "Deciding between a Count-Min Sketch and a plain hash map based on key space size",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396266846-320439234.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Fixed, predictable memory regardless of distinct key count\",\"Estimates can be inflated by collisions, never exact\"],[\"O(1) update and query time, cheap enough for a hot path\",\"No way to remove or decay old counts without extra machinery\"],[\"Works well merged across machines, just add the tables together\",\"Overestimation gets worse on skewed traffic with many rare items\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "If your key space is small enough to fit an exact hash map comfortably in memory, just use the hash map, it's simpler and exact. Reach for a Count-Min Sketch once the number of distinct keys is large enough, or unbounded enough, that per-key counters become the bottleneck rather than the traffic itself."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "Key Takeaways",
+          "text": "Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"Count-Min Sketch estimates how many times an item occurred in a stream using fixed memory, not a counter per item.\",\"It's a 2D array of counters with one independent hash function per row. Adding an item increments one counter in every row.\",\"Reading an estimate means hashing the item again and taking the minimum across its rows, since collisions can only inflate a count, never deflate it.\",\"Width controls how spread out counters are, depth controls how many independent chances you get to dodge a bad collision. Both trade memory for accuracy.\",\"It answers frequency, not distinct count (that's HyperLogLog) and not membership (that's a Bloom filter). Knowing which of the three you need is the real skill.\"]",
+          "items": [
+            "Count-Min Sketch estimates how many times an item occurred in a stream using fixed memory, not a counter per item.",
+            "It's a 2D array of counters with one independent hash function per row. Adding an item increments one counter in every row.",
+            "Reading an estimate means hashing the item again and taking the minimum across its rows, since collisions can only inflate a count, never deflate it.",
+            "Width controls how spread out counters are, depth controls how many independent chances you get to dodge a bad collision. Both trade memory for accuracy.",
+            "It answers frequency, not distinct count (that's HyperLogLog) and not membership (that's a Bloom filter). Knowing which of the three you need is the real skill."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

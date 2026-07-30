@@ -1,0 +1,576 @@
+{
+  "slug": "immutable-objects-concurrency",
+  "title": "Immutable Objects in Concurrency",
+  "content": [
+    {
+      "id": "immutable-objects-concurrency",
+      "title": "Immutable Objects in Concurrency",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Most concurrency bugs are not caused by threads doing something wrong in isolation. They are caused by two or more threads sharing one piece of mutable state and stepping on each other while updating it."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a class of object that sidesteps this entire problem by construction. An object that can never change after it is built simply has nothing for two threads to race over. No matter how many threads read it, at the same instant, from different cores, they all see the exact same value forever."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson is about that idea in a very practical sense, not as a theoretical curiosity. We will look at why shared mutable state is the actual root cause behind most race conditions, how to build a class that is genuinely immutable rather than just accidentally hard to modify, and where this strategy is worth its performance cost and where it is not."
+        },
+        {
+          "type": "paragraph",
+          "content": "By the end, you should be able to look at a class and tell, with confidence, whether it is thread safe simply by checking whether it can ever change after construction."
+        },
+        {
+          "type": "blockQuote",
+          "content": "An immutable object cannot have a race condition, because a race condition requires two threads to disagree about a value that is changing, and an immutable object never changes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Shared Mutable State Is the Root of Almost Every Concurrency Bug",
+          "text": "1. Shared Mutable State Is the Root of Almost Every Concurrency Bug"
+        },
+        {
+          "type": "paragraph",
+          "content": "When people describe concurrency bugs, they use words like race condition, data race, or lost update. Underneath all of those names is the same shape of problem."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499610440-387117834.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499610440-387117834.png",
+          "alt": "Three ingredients, shared state, mutable state, and no synchronization, combining into a race condition that produces an unpredictable result"
+        },
+        {
+          "type": "heading3",
+          "content": "The three ingredients of a race condition",
+          "text": "The three ingredients of a race condition"
+        },
+        {
+          "type": "list",
+          "content": "[\"State that is shared, meaning more than one thread can see and touch it\",\"State that is mutable, meaning its value can change after it was created\",\"No coordination, meaning nothing forces the threads to take turns safely\"]",
+          "items": [
+            "State that is shared, meaning more than one thread can see and touch it",
+            "State that is mutable, meaning its value can change after it was created",
+            "No coordination, meaning nothing forces the threads to take turns safely"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Remove any one of those three ingredients and the bug disappears. Locks and synchronized blocks attack the third ingredient, coordination. Immutability attacks the second ingredient directly, mutability, and it removes the problem instead of managing it."
+        },
+        {
+          "type": "heading3",
+          "content": "A concrete way to see the difference",
+          "text": "A concrete way to see the difference"
+        },
+        {
+          "type": "paragraph",
+          "content": "A bank balance that two threads can both read and write is shared and mutable, so it needs coordination. A tax rate constant loaded once at startup is shared but never mutable, so it never needs any coordination at all, no matter how many threads read it."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the entire insight behind reaching for immutability first. If the second ingredient is missing, the third one becomes unnecessary, and an entire class of bug simply cannot occur."
+        },
+        {
+          "type": "note",
+          "title": "Why this angle matters",
+          "content": "Locks are a way to make mutation safe. Immutability is a way to make mutation unnecessary. The second option is strictly simpler when it is available, because there is no coordination logic left to get wrong."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. What Actually Makes a Class Immutable",
+          "text": "2. What Actually Makes a Class Immutable"
+        },
+        {
+          "type": "paragraph",
+          "content": "A class is not immutable just because you feel like you will not change it. It is immutable only if the compiler and the runtime make change impossible, for every thread, in every situation."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499612380-912926322.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499612380-912926322.png",
+          "alt": "Four rules feeding into a genuinely immutable class, all fields final, no setter methods, fully built inside the constructor, and no leaked reference to a mutable field"
+        },
+        {
+          "type": "heading3",
+          "content": "The four rules",
+          "text": "The four rules"
+        },
+        {
+          "type": "list",
+          "content": "[\"Every field is declared final, and assigned exactly once, inside the constructor\",\"No method exists that sets a field after construction, no setters of any kind\",\"The class itself is final, or otherwise cannot be subtly subclassed into a mutable variant\",\"Any field that is itself a mutable type, like a list, a date, or an array, is defensively copied on the way in and on the way out\"]",
+          "items": [
+            "Every field is declared final, and assigned exactly once, inside the constructor",
+            "No method exists that sets a field after construction, no setters of any kind",
+            "The class itself is final, or otherwise cannot be subtly subclassed into a mutable variant",
+            "Any field that is itself a mutable type, like a list, a date, or an array, is defensively copied on the way in and on the way out"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "content": "The first three rules are usually easy to remember. The fourth one is where most so called immutable classes quietly fail, and it deserves its own section next."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Defensive Copy Problem",
+          "text": "3. The Defensive Copy Problem"
+        },
+        {
+          "type": "paragraph",
+          "content": "Marking a field final only stops you from reassigning the reference. It does not stop anyone from reaching through that reference and mutating the object it points to."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499613864-521406062.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499613864-521406062.png",
+          "alt": "Two separate leaks, a constructor that stores the caller list directly and a getter that returns the internal field directly, both ending in broken immutability"
+        },
+        {
+          "type": "heading3",
+          "content": "Where a leak sneaks in",
+          "text": "Where a leak sneaks in"
+        },
+        {
+          "type": "paragraph",
+          "content": "If your constructor stores a reference to a caller supplied list without copying it, the caller still holds their own reference to that same list. They can mutate it after construction, and your supposedly immutable object changes along with it."
+        },
+        {
+          "type": "heading3",
+          "content": "Where a second leak sneaks in",
+          "text": "Where a second leak sneaks in"
+        },
+        {
+          "type": "paragraph",
+          "content": "If a getter returns your internal mutable field directly, any caller of that getter can mutate the object through the returned reference, from any thread, at any time."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Leak point\",\"What goes wrong\",\"The fix\"],\"rows\":[[\"Constructor stores caller reference directly\",\"Caller mutates their original object after construction\",\"Copy the mutable input inside the constructor\"],[\"Getter returns internal field directly\",\"Caller mutates the internal state through the returned reference\",\"Return a copy, or an unmodifiable view, from the getter\"],[\"Field is an array\",\"Arrays are always mutable in place, even if final\",\"Clone the array on the way in and on the way out\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "A useful test",
+          "content": "Ask yourself, after this object is constructed, is there any reference anywhere in the program, held by anyone, that can be used to change a field. If the answer is yes, the class is not actually immutable, no matter how it looks."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. A Mutable Class With a Real Race Condition",
+          "text": "4. A Mutable Class With a Real Race Condition"
+        },
+        {
+          "type": "paragraph",
+          "content": "The clearest way to see why this matters is to watch a mutable class fail under concurrent access, then fix it by making it immutable instead of by adding locks."
+        },
+        {
+          "type": "heading3",
+          "content": "The mutable version",
+          "text": "The mutable version"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is an ordinary looking coordinate class with setters. Nothing about it looks dangerous when you read it top to bottom on its own."
+        },
+        {
+          "type": "code",
+          "content": "public class MutablePoint {\n    private int x;\n    private int y;\n\n    public MutablePoint(int x, int y) {\n        this.x = x;\n        this.y = y;\n    }\n\n    public int getX() { return x; }\n    public int getY() { return y; }\n\n    public void setX(int x) { this.x = x; }\n    public void setY(int y) { this.y = y; }\n\n    // A thread reading both fields has no guarantee it sees a\n    // consistent pair, another thread may be halfway through an update.\n    public String describe() {\n        return \"(\" + x + \", \" + y + \")\";\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "public class MutablePoint {\n    private int x;\n    private int y;\n\n    public MutablePoint(int x, int y) {\n        this.x = x;\n        this.y = y;\n    }\n\n    public int getX() { return x; }\n    public int getY() { return y; }\n\n    public void setX(int x) { this.x = x; }\n    public void setY(int y) { this.y = y; }\n\n    // A thread reading both fields has no guarantee it sees a\n    // consistent pair, another thread may be halfway through an update.\n    public String describe() {\n        return \"(\" + x + \", \" + y + \")\";\n    }\n}"
+          },
+          "codes": {
+            "java": "public class MutablePoint {\n    private int x;\n    private int y;\n\n    public MutablePoint(int x, int y) {\n        this.x = x;\n        this.y = y;\n    }\n\n    public int getX() { return x; }\n    public int getY() { return y; }\n\n    public void setX(int x) { this.x = x; }\n    public void setY(int y) { this.y = y; }\n\n    // A thread reading both fields has no guarantee it sees a\n    // consistent pair, another thread may be halfway through an update.\n    public String describe() {\n        return \"(\" + x + \", \" + y + \")\";\n    }\n}",
+            "python": "class MutablePoint:\n    def __init__(self, x, y):\n        self.x = x\n        self.y = y\n\n    def set_x(self, x):\n        self.x = x\n\n    def set_y(self, y):\n        self.y = y\n\n    def describe(self):\n        # A second thread updating x and y between these two reads\n        # can hand back a pair that never actually existed together.\n        return f\"({self.x}, {self.y})\"\n",
+            "cpp": "#include <iostream>\n#include <string>\nusing namespace std;\n\nclass MutablePoint {\nprivate:\n    int x;\n    int y;\n\npublic:\n    MutablePoint(int x, int y) : x(x), y(y) {}\n\n    int getX() { return x; }\n    int getY() { return y; }\n\n    void setX(int newX) { x = newX; }\n    void setY(int newY) { y = newY; }\n\n    // A thread reading both fields has no guarantee it sees a\n    // consistent pair, another thread may be halfway through an update.\n    string describe() {\n        return \"(\" + to_string(x) + \", \" + to_string(y) + \")\";\n    }\n};"
+          }
+        },
+        {
+          "type": "heading3",
+          "content": "The bug in action",
+          "text": "The bug in action"
+        },
+        {
+          "type": "paragraph",
+          "content": "Now put this object where two threads can reach it at the same time. One thread repeatedly moves the point along a diagonal, another thread repeatedly reads and prints it."
+        },
+        {
+          "type": "code",
+          "content": "MutablePoint shared = new MutablePoint(0, 0);\n\nRunnable mover = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        shared.setX(i);\n        shared.setY(i);\n    }\n};\n\nRunnable reader = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        String snapshot = shared.describe();\n        // Occasionally prints something like (48213, 48200),\n        // a pair that never actually existed together on the diagonal.\n        if (!isOnDiagonal(snapshot)) {\n            System.out.println(\"Inconsistent read: \" + snapshot);\n        }\n    }\n};\n\nnew Thread(mover).start();\nnew Thread(reader).start();",
+          "code": {
+            "language": "java",
+            "content": "MutablePoint shared = new MutablePoint(0, 0);\n\nRunnable mover = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        shared.setX(i);\n        shared.setY(i);\n    }\n};\n\nRunnable reader = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        String snapshot = shared.describe();\n        // Occasionally prints something like (48213, 48200),\n        // a pair that never actually existed together on the diagonal.\n        if (!isOnDiagonal(snapshot)) {\n            System.out.println(\"Inconsistent read: \" + snapshot);\n        }\n    }\n};\n\nnew Thread(mover).start();\nnew Thread(reader).start();"
+          },
+          "codes": {
+            "java": "MutablePoint shared = new MutablePoint(0, 0);\n\nRunnable mover = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        shared.setX(i);\n        shared.setY(i);\n    }\n};\n\nRunnable reader = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        String snapshot = shared.describe();\n        // Occasionally prints something like (48213, 48200),\n        // a pair that never actually existed together on the diagonal.\n        if (!isOnDiagonal(snapshot)) {\n            System.out.println(\"Inconsistent read: \" + snapshot);\n        }\n    }\n};\n\nnew Thread(mover).start();\nnew Thread(reader).start();",
+            "python": "import threading\n\nshared = MutablePoint(0, 0)\n\ndef mover():\n    for i in range(1_000_000):\n        shared.set_x(i)\n        shared.set_y(i)\n\ndef reader():\n    for i in range(1_000_000):\n        snapshot = shared.describe()\n        # Even with the GIL, this interleaving can print an x and y\n        # that were never set together, since set_x and set_y are\n        # two separate operations with a gap between them.\n        print(snapshot)\n\nthreading.Thread(target=mover).start()\nthreading.Thread(target=reader).start()\n",
+            "cpp": "#include <iostream>\n#include <string>\n#include <thread>\nusing namespace std;\n\nMutablePoint shared(0, 0);\n\nvoid mover() {\n    for (int i = 0; i < 1000000; i++) {\n        shared.setX(i);\n        shared.setY(i);\n    }\n}\n\nvoid reader() {\n    for (int i = 0; i < 1000000; i++) {\n        string snapshot = shared.describe();\n        // Occasionally prints something like (48213, 48200),\n        // a pair that never actually existed together on the diagonal.\n        if (!isOnDiagonal(snapshot)) {\n            cout << \"Inconsistent read: \" << snapshot << endl;\n        }\n    }\n}\n\nint main() {\n    thread moverThread(mover);\n    thread readerThread(reader);\n    moverThread.join();\n    readerThread.join();\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "example-box",
+          "title": "What actually happens",
+          "text": "The reader thread can call describe partway through the mover thread updating x and setting y. It reads a fresh x and a stale y, or vice versa, and hands back a coordinate pair that was never a real position the point ever held. No exception is thrown. No error is logged. The bug just quietly corrupts data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. The Same Class Made Properly Immutable",
+          "text": "5. The Same Class Made Properly Immutable"
+        },
+        {
+          "type": "paragraph",
+          "content": "Now build the same idea again, but this time with every field final, no setters at all, and a method that returns a new object instead of mutating the existing one."
+        },
+        {
+          "type": "code",
+          "content": "public final class ImmutablePoint {\n    private final int x;\n    private final int y;\n\n    public ImmutablePoint(int x, int y) {\n        this.x = x;\n        this.y = y;\n    }\n\n    public int getX() { return x; }\n    public int getY() { return y; }\n\n    // Instead of mutating this object, hand back a brand new one.\n    public ImmutablePoint moveTo(int newX, int newY) {\n        return new ImmutablePoint(newX, newY);\n    }\n\n    public String describe() {\n        // x and y can never disagree with each other, they were\n        // fixed together at construction and can never change again.\n        return \"(\" + x + \", \" + y + \")\";\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "public final class ImmutablePoint {\n    private final int x;\n    private final int y;\n\n    public ImmutablePoint(int x, int y) {\n        this.x = x;\n        this.y = y;\n    }\n\n    public int getX() { return x; }\n    public int getY() { return y; }\n\n    // Instead of mutating this object, hand back a brand new one.\n    public ImmutablePoint moveTo(int newX, int newY) {\n        return new ImmutablePoint(newX, newY);\n    }\n\n    public String describe() {\n        // x and y can never disagree with each other, they were\n        // fixed together at construction and can never change again.\n        return \"(\" + x + \", \" + y + \")\";\n    }\n}"
+          },
+          "codes": {
+            "java": "public final class ImmutablePoint {\n    private final int x;\n    private final int y;\n\n    public ImmutablePoint(int x, int y) {\n        this.x = x;\n        this.y = y;\n    }\n\n    public int getX() { return x; }\n    public int getY() { return y; }\n\n    // Instead of mutating this object, hand back a brand new one.\n    public ImmutablePoint moveTo(int newX, int newY) {\n        return new ImmutablePoint(newX, newY);\n    }\n\n    public String describe() {\n        // x and y can never disagree with each other, they were\n        // fixed together at construction and can never change again.\n        return \"(\" + x + \", \" + y + \")\";\n    }\n}",
+            "python": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass ImmutablePoint:\n    x: int\n    y: int\n\n    def move_to(self, new_x, new_y):\n        # Return a new instance, the original is never touched again.\n        return ImmutablePoint(new_x, new_y)\n\n    def describe(self):\n        return f\"({self.x}, {self.y})\"\n",
+            "cpp": "#include <iostream>\n#include <string>\nusing namespace std;\n\nclass ImmutablePoint {\nprivate:\n    const int x;\n    const int y;\n\npublic:\n    ImmutablePoint(int x, int y) : x(x), y(y) {}\n\n    int getX() const { return x; }\n    int getY() const { return y; }\n\n    // Instead of mutating this object, hand back a brand new one.\n    ImmutablePoint moveTo(int newX, int newY) const {\n        return ImmutablePoint(newX, newY);\n    }\n\n    string describe() const {\n        // x and y can never disagree with each other, they were\n        // fixed together at construction and can never change again.\n        return \"(\" + to_string(x) + \", \" + to_string(y) + \")\";\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice what disappeared compared to the mutable version. There is no setX, no setY, no window between two separate writes for a reader to catch mid update. The object is either the old point or the new point, and there is nothing in between for a reader to observe."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Proving the Immutable Version Cannot Be Corrupted",
+          "text": "6. Proving the Immutable Version Cannot Be Corrupted"
+        },
+        {
+          "type": "paragraph",
+          "content": "Run the exact same two threads against the immutable version, one thread repeatedly building new points along the diagonal and swapping a shared reference, another repeatedly reading whatever the current reference points to."
+        },
+        {
+          "type": "code",
+          "content": "volatile ImmutablePoint shared = new ImmutablePoint(0, 0);\n\nRunnable mover = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        shared = shared.moveTo(i, i);\n    }\n};\n\nRunnable reader = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        ImmutablePoint snapshot = shared;\n        String s = snapshot.describe();\n        // Every single read is guaranteed to be a coordinate pair\n        // that genuinely existed together, because the object itself\n        // never changes after it is built, only the reference swaps.\n        if (!isOnDiagonal(s)) {\n            throw new IllegalStateException(\"impossible: \" + s);\n        }\n    }\n};\n\nnew Thread(mover).start();\nnew Thread(reader).start();",
+          "code": {
+            "language": "java",
+            "content": "volatile ImmutablePoint shared = new ImmutablePoint(0, 0);\n\nRunnable mover = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        shared = shared.moveTo(i, i);\n    }\n};\n\nRunnable reader = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        ImmutablePoint snapshot = shared;\n        String s = snapshot.describe();\n        // Every single read is guaranteed to be a coordinate pair\n        // that genuinely existed together, because the object itself\n        // never changes after it is built, only the reference swaps.\n        if (!isOnDiagonal(s)) {\n            throw new IllegalStateException(\"impossible: \" + s);\n        }\n    }\n};\n\nnew Thread(mover).start();\nnew Thread(reader).start();"
+          },
+          "codes": {
+            "java": "volatile ImmutablePoint shared = new ImmutablePoint(0, 0);\n\nRunnable mover = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        shared = shared.moveTo(i, i);\n    }\n};\n\nRunnable reader = () -> {\n    for (int i = 0; i < 1_000_000; i++) {\n        ImmutablePoint snapshot = shared;\n        String s = snapshot.describe();\n        // Every single read is guaranteed to be a coordinate pair\n        // that genuinely existed together, because the object itself\n        // never changes after it is built, only the reference swaps.\n        if (!isOnDiagonal(s)) {\n            throw new IllegalStateException(\"impossible: \" + s);\n        }\n    }\n};\n\nnew Thread(mover).start();\nnew Thread(reader).start();",
+            "python": "import threading\n\nshared = ImmutablePoint(0, 0)\n\ndef mover():\n    global shared\n    for i in range(1_000_000):\n        shared = shared.move_to(i, i)\n\ndef reader():\n    for i in range(1_000_000):\n        snapshot = shared\n        # snapshot is a fully built, frozen object the instant it is\n        # assigned, so describe on it can never see a half updated pair.\n        print(snapshot.describe())\n\nthreading.Thread(target=mover).start()\nthreading.Thread(target=reader).start()\n",
+            "cpp": "#include <iostream>\n#include <string>\n#include <memory>\n#include <thread>\n#include <stdexcept>\nusing namespace std;\n\nshared_ptr<ImmutablePoint> shared = make_shared<ImmutablePoint>(0, 0);\n\nvoid mover() {\n    for (int i = 0; i < 1000000; i++) {\n        atomic_store(&shared, make_shared<ImmutablePoint>(i, i));\n    }\n}\n\nvoid reader() {\n    for (int i = 0; i < 1000000; i++) {\n        shared_ptr<ImmutablePoint> snapshot = atomic_load(&shared);\n        string s = snapshot->describe();\n        // Every single read is guaranteed to be a coordinate pair\n        // that genuinely existed together, because the object itself\n        // never changes after it is built, only the pointer swaps.\n        if (!isOnDiagonal(s)) {\n            throw runtime_error(\"impossible: \" + s);\n        }\n    }\n}\n\nint main() {\n    thread moverThread(mover);\n    thread readerThread(reader);\n    moverThread.join();\n    readerThread.join();\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The reference itself can still be swapped out from under the reader, that part is unavoidable whenever state changes over time. But the object each swap points to is always a complete, internally consistent point. There is no in between state for any thread to ever observe, because the object was fully built before any other thread could see it at all."
+        },
+        {
+          "type": "note",
+          "title": "What changed and what did not",
+          "content": "Both versions still have state that changes over time, the position genuinely moves in both examples. The difference is that the mutable version changes an existing object in place, exposing a half updated state to other threads, while the immutable version always swaps in a brand new, fully formed object."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Defensive Copies for Fields That Are Themselves Mutable",
+          "text": "7. Defensive Copies for Fields That Are Themselves Mutable"
+        },
+        {
+          "type": "paragraph",
+          "content": "Coordinates are simple because ints cannot be mutated in place. Most real classes are not that lucky, they hold lists, maps, dates, or other objects that are mutable by nature."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499615645-695626601.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499615645-695626601.png",
+          "alt": "Constructor copies the caller supplied list in, stores it as a private internal list, and the getter copies it back out so the caller only ever holds an independent list"
+        },
+        {
+          "type": "heading3",
+          "content": "An immutable class wrapping a mutable field",
+          "text": "An immutable class wrapping a mutable field"
+        },
+        {
+          "type": "code",
+          "content": "import java.util.Collections;\nimport java.util.List;\nimport java.util.ArrayList;\n\npublic final class ImmutableOrder {\n    private final String orderId;\n    private final List<String> items;\n\n    public ImmutableOrder(String orderId, List<String> items) {\n        this.orderId = orderId;\n        // Defensive copy on the way in, the caller's list can now\n        // change freely without affecting this object.\n        this.items = Collections.unmodifiableList(new ArrayList<>(items));\n    }\n\n    public String getOrderId() { return orderId; }\n\n    public List<String> getItems() {\n        // Already unmodifiable, safe to hand out directly.\n        return items;\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "import java.util.Collections;\nimport java.util.List;\nimport java.util.ArrayList;\n\npublic final class ImmutableOrder {\n    private final String orderId;\n    private final List<String> items;\n\n    public ImmutableOrder(String orderId, List<String> items) {\n        this.orderId = orderId;\n        // Defensive copy on the way in, the caller's list can now\n        // change freely without affecting this object.\n        this.items = Collections.unmodifiableList(new ArrayList<>(items));\n    }\n\n    public String getOrderId() { return orderId; }\n\n    public List<String> getItems() {\n        // Already unmodifiable, safe to hand out directly.\n        return items;\n    }\n}"
+          },
+          "codes": {
+            "java": "import java.util.Collections;\nimport java.util.List;\nimport java.util.ArrayList;\n\npublic final class ImmutableOrder {\n    private final String orderId;\n    private final List<String> items;\n\n    public ImmutableOrder(String orderId, List<String> items) {\n        this.orderId = orderId;\n        // Defensive copy on the way in, the caller's list can now\n        // change freely without affecting this object.\n        this.items = Collections.unmodifiableList(new ArrayList<>(items));\n    }\n\n    public String getOrderId() { return orderId; }\n\n    public List<String> getItems() {\n        // Already unmodifiable, safe to hand out directly.\n        return items;\n    }\n}",
+            "python": "class ImmutableOrder:\n    def __init__(self, order_id, items):\n        self._order_id = order_id\n        # Defensive copy on the way in, stored as an immutable tuple.\n        self._items = tuple(items)\n\n    @property\n    def order_id(self):\n        return self._order_id\n\n    @property\n    def items(self):\n        # A tuple is already immutable, safe to hand out directly.\n        return self._items\n",
+            "cpp": "#include <iostream>\n#include <string>\n#include <vector>\nusing namespace std;\n\nclass ImmutableOrder {\nprivate:\n    const string orderId;\n    const vector<string> items;\n\npublic:\n    ImmutableOrder(const string& orderId, const vector<string>& items)\n        // Defensive copy on the way in, the caller's vector can now\n        // change freely without affecting this object.\n        : orderId(orderId), items(items) {}\n\n    string getOrderId() const { return orderId; }\n\n    vector<string> getItems() const {\n        // vector has no built-in immutable wrapper, so a copy is\n        // returned here to keep the caller from mutating our internals.\n        return items;\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Two copies matter here, not one. The constructor copies the caller supplied list so later changes to their list do not leak in, and the getter either returns an already unmodifiable view or a fresh copy so callers cannot mutate the internal state on the way out."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. The Performance Tradeoff of Immutability",
+          "text": "8. The Performance Tradeoff of Immutability"
+        },
+        {
+          "type": "paragraph",
+          "content": "Immutability is not free. Every logical change now allocates a brand new object instead of updating a field in place, and that has a real cost in allocation pressure and garbage collection work."
+        },
+        {
+          "type": "heading3",
+          "content": "Where the cost shows up",
+          "text": "Where the cost shows up"
+        },
+        {
+          "type": "list",
+          "content": "[\"A small object like a point or a money value is cheap to reallocate constantly, the cost is close to negligible\",\"A large collection rebuilt on every single element change can become genuinely expensive if done naively\",\"Persistent, structure sharing data structures exist specifically to make large immutable collections cheap to update, by reusing most of the old structure instead of copying it all\"]",
+          "items": [
+            "A small object like a point or a money value is cheap to reallocate constantly, the cost is close to negligible",
+            "A large collection rebuilt on every single element change can become genuinely expensive if done naively",
+            "Persistent, structure sharing data structures exist specifically to make large immutable collections cheap to update, by reusing most of the old structure instead of copying it all"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "pros-cons",
+          "content": "{\"pros\":[\"Impossible to have a race condition on the object itself, nothing to synchronize\",\"Safe to share freely across threads, caches, and callers without any copying\",\"Easier to reason about, an immutable object is always in whatever state it started in\",\"No defensive copying needed for callers, since it can never change under them either\"],\"cons\":[\"Every change allocates a new object, increasing garbage collector work\",\"Naive immutable updates to large collections can be slow without structure sharing\",\"Can feel unnatural for objects that genuinely represent something that changes very often, like a live counter\"]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice, the allocation cost of immutability is usually far cheaper than people assume, and it is almost always cheaper than the cost of debugging a race condition that only shows up under production load."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Where Immutability Is Not Practical",
+          "text": "9. Where Immutability Is Not Practical"
+        },
+        {
+          "type": "paragraph",
+          "content": "Immutability is not a universal answer. Some state genuinely needs to be updated in place, often for performance reasons, and forcing it to be immutable would fight the problem rather than solve it."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Situation\",\"Why immutability struggles here\",\"What is used instead\"],\"rows\":[[\"A counter incremented millions of times per second\",\"Allocating a new object per increment is wasteful\",\"Atomic variables or synchronized mutation\"],[\"A large in memory cache updated frequently\",\"Copying the whole structure per update is too slow without sharing\",\"Concurrent hash maps or persistent structures\"],[\"A connection or file handle representing a live resource\",\"The resource itself is inherently stateful, not a value\",\"Careful lifecycle management with explicit synchronization\"],[\"A UI widget tree that must reflect live user input\",\"Immutable replacement of the whole tree per keystroke can be costly\",\"Localized mutable state with clear ownership\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "The real question to ask",
+          "content": "Is this thing a value, something that represents a fixed fact like a date or an amount, or is it an identity, something that represents an ongoing, changing process. Values make excellent immutable objects. Identities usually do not."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Immutable References Versus Immutable Objects",
+          "text": "10. Immutable References Versus Immutable Objects"
+        },
+        {
+          "type": "paragraph",
+          "content": "It helps to separate two different ideas that get blurred together, whether a variable can be reassigned, and whether the object that variable points to can be internally changed."
+        },
+        {
+          "type": "heading3",
+          "content": "Two independent axes",
+          "text": "Two independent axes"
+        },
+        {
+          "type": "list",
+          "content": "[\"A final or const reference stops reassignment of the variable itself, it says nothing about the object it points to\",\"An immutable object stops internal changes to the object, regardless of how many variables point to it\",\"True thread safety through immutability requires the object to be immutable, a final reference to a mutable object is not enough\"]",
+          "items": [
+            "A final or const reference stops reassignment of the variable itself, it says nothing about the object it points to",
+            "An immutable object stops internal changes to the object, regardless of how many variables point to it",
+            "True thread safety through immutability requires the object to be immutable, a final reference to a mutable object is not enough"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "A final field holding a mutable ArrayList is a common trap. The reference cannot be reassigned, which feels safe, but any thread with access can still call add or remove on that same list, and the underlying race condition is completely untouched."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494926112-48555668.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494926112-48555668.png",
+          "alt": "Two threads safely reading one immutable point on the left, versus two threads corrupting a shared mutable point on the right"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. A Second Worked Example, Immutable Money",
+          "text": "11. A Second Worked Example, Immutable Money"
+        },
+        {
+          "type": "paragraph",
+          "content": "Coordinates make the bug easy to see, but the same pattern shows up constantly with money, and getting it wrong there is a lot more expensive."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499617838-800148843.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499617838-800148843.png",
+          "alt": "Mutable money where both threads read the same balance and write their own update so one deposit is silently lost, versus immutable money where each deposit builds a new object and the winning thread swaps the shared reference"
+        },
+        {
+          "type": "heading3",
+          "content": "A mutable money class with a hidden bug",
+          "text": "A mutable money class with a hidden bug"
+        },
+        {
+          "type": "paragraph",
+          "content": "A mutable balance that supports deposit and withdraw looks completely ordinary, right up until two threads call those methods on the same account at the same time."
+        },
+        {
+          "type": "code",
+          "content": "public class MutableBalance {\n    private long cents;\n\n    public MutableBalance(long cents) { this.cents = cents; }\n\n    public void deposit(long amount) {\n        // read, add, write, three separate steps another thread can interleave with\n        long current = cents;\n        cents = current + amount;\n    }\n\n    public void withdraw(long amount) {\n        long current = cents;\n        cents = current - amount;\n    }\n\n    public long getCents() { return cents; }\n}",
+          "code": {
+            "language": "java",
+            "content": "public class MutableBalance {\n    private long cents;\n\n    public MutableBalance(long cents) { this.cents = cents; }\n\n    public void deposit(long amount) {\n        // read, add, write, three separate steps another thread can interleave with\n        long current = cents;\n        cents = current + amount;\n    }\n\n    public void withdraw(long amount) {\n        long current = cents;\n        cents = current - amount;\n    }\n\n    public long getCents() { return cents; }\n}"
+          },
+          "codes": {
+            "java": "public class MutableBalance {\n    private long cents;\n\n    public MutableBalance(long cents) { this.cents = cents; }\n\n    public void deposit(long amount) {\n        // read, add, write, three separate steps another thread can interleave with\n        long current = cents;\n        cents = current + amount;\n    }\n\n    public void withdraw(long amount) {\n        long current = cents;\n        cents = current - amount;\n    }\n\n    public long getCents() { return cents; }\n}",
+            "python": "class MutableBalance:\n    def __init__(self, cents):\n        self.cents = cents\n\n    def deposit(self, amount):\n        current = self.cents\n        self.cents = current + amount\n\n    def withdraw(self, amount):\n        current = self.cents\n        self.cents = current - amount\n",
+            "cpp": "#include <iostream>\nusing namespace std;\n\nclass MutableBalance {\nprivate:\n    long cents;\n\npublic:\n    MutableBalance(long cents) : cents(cents) {}\n\n    void deposit(long amount) {\n        // read, add, write, three separate steps another thread can interleave with\n        long current = cents;\n        cents = current + amount;\n    }\n\n    void withdraw(long amount) {\n        long current = cents;\n        cents = current - amount;\n    }\n\n    long getCents() { return cents; }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "When two deposits run at nearly the same moment, both threads can read the same starting value before either write lands, and one of the two deposits is silently lost. The account ends up short, with no error anywhere in the logs."
+        },
+        {
+          "type": "heading3",
+          "content": "The immutable equivalent",
+          "text": "The immutable equivalent"
+        },
+        {
+          "type": "paragraph",
+          "content": "An immutable Money object never gets updated in place. Every operation returns a brand new, fully formed Money value, so there is no read, modify, write gap for another thread to land inside."
+        },
+        {
+          "type": "code",
+          "content": "public final class Money {\n    private final long cents;\n\n    public Money(long cents) { this.cents = cents; }\n\n    public Money plus(Money other) {\n        return new Money(this.cents + other.cents);\n    }\n\n    public Money minus(Money other) {\n        return new Money(this.cents - other.cents);\n    }\n\n    public long getCents() { return cents; }\n}",
+          "code": {
+            "language": "java",
+            "content": "public final class Money {\n    private final long cents;\n\n    public Money(long cents) { this.cents = cents; }\n\n    public Money plus(Money other) {\n        return new Money(this.cents + other.cents);\n    }\n\n    public Money minus(Money other) {\n        return new Money(this.cents - other.cents);\n    }\n\n    public long getCents() { return cents; }\n}"
+          },
+          "codes": {
+            "java": "public final class Money {\n    private final long cents;\n\n    public Money(long cents) { this.cents = cents; }\n\n    public Money plus(Money other) {\n        return new Money(this.cents + other.cents);\n    }\n\n    public Money minus(Money other) {\n        return new Money(this.cents - other.cents);\n    }\n\n    public long getCents() { return cents; }\n}",
+            "python": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass Money:\n    cents: int\n\n    def plus(self, other):\n        return Money(self.cents + other.cents)\n\n    def minus(self, other):\n        return Money(self.cents - other.cents)\n",
+            "cpp": "#include <iostream>\nusing namespace std;\n\nclass Money {\nprivate:\n    const long cents;\n\npublic:\n    Money(long cents) : cents(cents) {}\n\n    Money plus(const Money& other) const {\n        return Money(cents + other.cents);\n    }\n\n    Money minus(const Money& other) const {\n        return Money(cents - other.cents);\n    }\n\n    long getCents() const { return cents; }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Whichever thread finishes last simply overwrites the shared reference with its own freshly built Money value. Callers must now be careful to apply every update against the latest reference, but each individual Money value is always internally correct, never half written."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Common Mistakes When Building Immutable Classes",
+          "text": "12. Common Mistakes When Building Immutable Classes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most broken immutable classes fail for one of a small handful of repeated reasons, and it is worth naming them plainly."
+        },
+        {
+          "type": "list",
+          "content": "[\"Marking fields final but forgetting to defensively copy a mutable field passed into the constructor\",\"Returning an internal mutable field directly from a getter instead of a copy or an unmodifiable view\",\"Leaving the class non final, allowing a subclass to add mutable state or override behavior\",\"Exposing a mutable builder or helper object as a public field instead of keeping it private during construction\",\"Assuming a final reference to a list or map means the collection itself cannot change\"]",
+          "items": [
+            "Marking fields final but forgetting to defensively copy a mutable field passed into the constructor",
+            "Returning an internal mutable field directly from a getter instead of a copy or an unmodifiable view",
+            "Leaving the class non final, allowing a subclass to add mutable state or override behavior",
+            "Exposing a mutable builder or helper object as a public field instead of keeping it private during construction",
+            "Assuming a final reference to a list or map means the collection itself cannot change"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. A Quick Checklist Before Calling a Class Immutable",
+          "text": "13. A Quick Checklist Before Calling a Class Immutable"
+        },
+        {
+          "type": "paragraph",
+          "content": "Before trusting a class to be safe across threads simply because it looks immutable, run it through a short checklist."
+        },
+        {
+          "type": "list",
+          "content": "[\"Are all fields declared final and set only inside the constructor\",\"Is there truly no method, public or otherwise, that changes a field after construction\",\"Is the class itself final, or otherwise protected from being subclassed into something mutable\",\"Is every mutable constructor argument copied before being stored\",\"Does every getter return either an immutable value, a copy, or an unmodifiable view\"]",
+          "items": [
+            "Are all fields declared final and set only inside the constructor",
+            "Is there truly no method, public or otherwise, that changes a field after construction",
+            "Is the class itself final, or otherwise protected from being subclassed into something mutable",
+            "Is every mutable constructor argument copied before being stored",
+            "Does every getter return either an immutable value, a copy, or an unmodifiable view"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "content": "If every answer is yes, the class is genuinely immutable, and it is automatically thread safe with zero synchronization code anywhere."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "14. Immutability as the Simplest Concurrency Strategy",
+          "text": "14. Immutability as the Simplest Concurrency Strategy"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every other concurrency tool, locks, atomic operations, concurrent collections, is fundamentally a way to manage change safely when change cannot be avoided. Immutability is different, it removes the need for that management entirely, for the specific piece of state that no longer changes."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is why experienced engineers reach for immutable objects first, before reaching for a lock. A lock has to be acquired correctly, held for the right duration, and released in every code path, including error paths. An immutable object needs none of that, because there is nothing left to protect."
+        },
+        {
+          "type": "paragraph",
+          "content": "The practical habit worth building from this lesson is simple. Before adding synchronization to a class that is causing concurrency bugs, first ask whether that class actually needs to be mutable at all. Often the honest answer is no, and the fix is not a better lock, it is removing the mutation altogether."
+        },
+        {
+          "type": "blockQuote",
+          "content": "The cheapest concurrency bug to fix is the one that was never possible in the first place, and immutability is how you buy that guarantee."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,534 @@
+{
+  "slug": "web-search-server",
+  "title": "Web Search Server",
+  "content": [
+    {
+      "id": "web-search-server",
+      "title": "Web Search Server",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "An AI agent cannot browse the web on its own. It needs a tool that goes out, runs a search, and brings back something useful."
+        },
+        {
+          "type": "paragraph",
+          "text": "A web search MCP server wraps a real search API behind two simple tools, one that searches and one that fetches a full page."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson builds that server piece by piece, including the parts people forget, rate limits, cost per query, and proper citations."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why Wrap Web Search in MCP",
+          "id": "wss-why-wrap"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580682494-288644877.png",
+          "alt": "An AI agent calls a web search MCP server which wraps a search API and a page fetcher",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Search engines already expose APIs, so the value of an MCP wrapper is not the search itself, it is the contract."
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP gives the model a stable, documented tool interface instead of a raw HTTP API it has to guess how to call."
+        },
+        {
+          "type": "paragraph",
+          "text": "It also gives you, the server owner, one place to enforce limits, log usage, and control cost before a request ever reaches the search provider."
+        },
+        {
+          "type": "paragraph",
+          "text": "That single choke point is what makes the rest of this lesson possible, every safeguard below hangs off that one entry point."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. What the Search Tool Should Return",
+          "id": "wss-search-shape"
+        },
+        {
+          "type": "paragraph",
+          "text": "A search tool should return a short, ranked list of results, not a wall of raw HTML or a single best guess answer."
+        },
+        {
+          "type": "paragraph",
+          "text": "Each result needs three things at minimum, a title, a url, and a snippet that gives the model enough context to judge relevance."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"query\": \"mcp rate limiting best practices\",\n  \"results\": [\n    {\n      \"rank\": 1,\n      \"title\": \"Rate Limiting Patterns for Tool Calling Servers\",\n      \"url\": \"https://example.com/rate-limiting-patterns\",\n      \"snippet\": \"A practical guide to token bucket and sliding window limits for API backed tools.\"\n    },\n    {\n      \"rank\": 2,\n      \"title\": \"Designing Cost Aware Search Tools\",\n      \"url\": \"https://example.com/cost-aware-search\",\n      \"snippet\": \"How to track and cap spend when a tool calls a paid search provider per query.\"\n    }\n  ]\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping the snippet short matters, the model reads many of these at once and a bloated snippet burns context for no real gain."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Designing the search Tool Schema",
+          "id": "wss-search-schema"
+        },
+        {
+          "type": "paragraph",
+          "text": "The schema should ask for a query string and, optionally, a result count and a recency filter."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"name\": \"search\",\n  \"description\": \"Search the web and return a ranked list of results with title, url, and snippet\",\n  \"inputSchema\": {\n    \"type\": \"object\",\n    \"properties\": {\n      \"query\": { \"type\": \"string\" },\n      \"max_results\": { \"type\": \"integer\", \"minimum\": 1, \"maximum\": 10, \"default\": 5 },\n      \"recency\": { \"type\": \"string\", \"enum\": [\"any\", \"day\", \"week\", \"month\", \"year\"], \"default\": \"any\" }\n    },\n    \"required\": [\"query\"]\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Capping max_results at the schema level stops the model from asking for a hundred results and blowing the cost budget in one call."
+        },
+        {
+          "type": "note",
+          "title": "Enums beat free text",
+          "content": "The recency field is an enum, not a free string, so the model cannot send an unparseable value the provider would reject."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Calling the Search API for Real Results",
+          "id": "wss-search-call"
+        },
+        {
+          "type": "paragraph",
+          "text": "Inside the tool handler, the server calls the underlying provider, normalizes its response, and ranks the results before returning them."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function handleSearch({ query, max_results = 5, recency = \"any\" }) {\n  const resp = await fetch(\"https://search-provider.example.com/v1/search\", {\n    method: \"POST\",\n    headers: { \"Authorization\": `Bearer ${process.env.SEARCH_API_KEY}`, \"Content-Type\": \"application/json\" },\n    body: JSON.stringify({ q: query, limit: max_results, freshness: recency })\n  });\n  const data = await resp.json();\n  const results = data.items.slice(0, max_results).map((item, i) => ({\n    rank: i + 1,\n    title: item.title,\n    url: item.url,\n    snippet: item.snippet\n  }));\n  return { query, results };\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the server, not the model, decides the final result count, that keeps behavior predictable even if the provider ignores the limit."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Ranking and Filtering Results",
+          "id": "wss-ranking"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580684610-314916265.png",
+          "alt": "Raw search results are ranked and filtered before being returned",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Raw provider order is not always the best order for an agent, some providers mix in ads or low quality pages."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Drop results whose domain is on a known low quality or spam list.",
+            "De-duplicate near identical urls that only differ by tracking parameters.",
+            "Boost results with a clear publish date when recency was requested.",
+            "Cap the snippet length so no single result dominates the response."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "A little filtering here saves the model from wasting a follow up fetch_page call on a page that was never worth reading."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. The fetch_page Tool for Full Content",
+          "id": "wss-fetch-page-intro"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580686635-456288985.png",
+          "alt": "A fetch page call retrieves the full content of one result page",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A snippet is often not enough, so the server also offers a second tool, fetch_page, that pulls the full readable content from one url."
+        },
+        {
+          "type": "paragraph",
+          "text": "This tool should only accept urls that came from a prior search result, or at least log clearly when it did not."
+        },
+        {
+          "type": "note",
+          "title": "Keep fetch_page separate from search",
+          "content": "Bundling fetching into search would force every query to pay the cost of downloading full pages even when a snippet was enough."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Fetching a Page for Real",
+          "id": "wss-fetch-page-call"
+        },
+        {
+          "type": "paragraph",
+          "text": "The fetch_page handler downloads the page, strips scripts and navigation chrome, and returns clean readable text."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function handleFetchPage({ url }) {\n  const resp = await fetch(url, { redirect: \"follow\", signal: AbortSignal.timeout(8000) });\n  if (!resp.ok) {\n    return { url, error: `fetch failed with status ${resp.status}` };\n  }\n  const html = await resp.text();\n  const text = extractReadableText(html);\n  return {\n    url,\n    title: extractTitle(html),\n    content: text.slice(0, 20000)\n  };\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The content field is truncated on purpose, an eight thousand word article is rarely worth handing to the model in full."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Handling Fetch Failures and Timeouts",
+          "id": "wss-fetch-failures"
+        },
+        {
+          "type": "paragraph",
+          "text": "Web pages fail in every possible way, timeouts, paywalls, redirects to a login screen, malformed HTML."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Set a short timeout on every fetch, an agent should not wait thirty seconds for one page.",
+            "Return a structured error the model can read, never let the tool call throw silently.",
+            "Detect paywalled or blocked pages and say so plainly instead of returning an empty body.",
+            "Follow redirects but cap the number of hops to avoid a redirect loop."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "A clear error lets the model try a different result instead of assuming the page had no useful content."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Rate Limits on the Underlying Search API",
+          "id": "wss-rate-limits"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most search providers cap requests per second and per day, and your server inherits that limit whether it plans for it or not."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Limit type\",\"Typical scope\",\"What happens if ignored\"],\"rows\":[[\"Requests per second\",\"Whole account\",\"Provider returns 429 and briefly blocks all callers\"],[\"Requests per day\",\"Whole account\",\"Search stops working until the next billing day\"],[\"Concurrent connections\",\"Per API key\",\"New calls queue or fail while others are in flight\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "A server that queues and throttles its own outbound calls avoids ever hitting the provider limit in the first place."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Track requests in a rolling window, not just a fixed per minute counter.",
+            "Return a clear retryable error the moment the local limit is reached.",
+            "Keep a small safety margin below the provider's stated limit, not right at the edge."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Cost Per Query and Budgeting",
+          "id": "wss-cost"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580688829-890791387.png",
+          "alt": "Each query has a cost that must be budgeted against a spending limit",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Search APIs are rarely free at scale, each query and each page fetch usually carries a small real cost."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Action\",\"Typical cost driver\",\"Mitigation\"],\"rows\":[[\"search call\",\"Priced per query to the provider\",\"Cap max_results, cache repeated queries\"],[\"fetch_page call\",\"Bandwidth plus provider fee if proxied\",\"Truncate content, cache by url\"],[\"Retry after failure\",\"Doubles cost for the same result\",\"Backoff instead of immediate retry\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Tracking cost per caller, not just globally, is what lets you cut off one runaway agent without punishing every other user."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Caching to Reduce Cost and Latency",
+          "id": "wss-caching"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580692239-351893519.png",
+          "alt": "A repeated query is served from cache to reduce cost and latency",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The same query or url is often requested more than once in a short window, especially across multiple agent sessions."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const cache = new Map();\n\nasync function cachedSearch(query, maxResults) {\n  const key = `${query}::${maxResults}`;\n  const hit = cache.get(key);\n  if (hit && Date.now() - hit.ts < 10 * 60 * 1000) {\n    return hit.value;\n  }\n  const value = await handleSearch({ query, max_results: maxResults });\n  cache.set(key, { value, ts: Date.now() });\n  return value;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A short cache window keeps results fresh enough for most tasks while cutting real provider cost noticeably."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Result Freshness and Staleness",
+          "id": "wss-freshness"
+        },
+        {
+          "type": "paragraph",
+          "text": "Caching helps cost but it can also serve stale results for anything time sensitive, breaking news, prices, live scores."
+        },
+        {
+          "type": "paragraph",
+          "text": "A good server shortens or skips the cache entirely when the caller sets recency to day, and keeps a longer cache for stable reference queries."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Recency set to day or week, skip the cache or keep it under a few minutes.",
+            "Recency set to any or year, a cache window of ten to thirty minutes is usually safe.",
+            "Always let a caller force a fresh lookup for a specific url when needed."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Security and Untrusted Web Content",
+          "id": "wss-security"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580694353-276413795.png",
+          "alt": "Fetched web content is treated as untrusted before it reaches the model",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every page fetch_page returns is untrusted content, it can contain hidden instructions aimed at the model reading it."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Never let fetched page content trigger a tool call on its own, treat it purely as data.",
+            "Strip script tags and hidden text before returning content to the model.",
+            "Block internal and private network addresses so fetch_page cannot be used to probe your own infrastructure.",
+            "Log the url and domain of every fetch so a suspicious pattern is visible later."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "The safest mental model is that fetch_page hands the model a quote from a stranger, useful, but never a command to follow."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Citing Sources Back to the User",
+          "id": "wss-citations"
+        },
+        {
+          "type": "paragraph",
+          "text": "An agent that searches and reads but never shows its sources is much less trustworthy than one that cites clearly."
+        },
+        {
+          "type": "paragraph",
+          "text": "The cleanest pattern keeps each result's url attached to the claim it supports, so the final answer can list exactly where each fact came from."
+        },
+        {
+          "type": "note",
+          "title": "Cite the url, not just the title",
+          "content": "A title can be edited or renamed later, but the url is what actually lets a person go verify the claim themselves."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Combining Search and Fetch in an Agent Loop",
+          "id": "wss-agent-loop"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580696235-150532988.png",
+          "alt": "A search step feeds a fetch step inside one agent loop",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice an agent calls search first, skims the snippets, then calls fetch_page only on the one or two results worth reading fully."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const { results } = await callTool(\"search\", { query: \"latency budget for llm agents\", max_results: 5 });\nconst top = results.slice(0, 2);\nconst pages = await Promise.all(top.map(r => callTool(\"fetch_page\", { url: r.url })));\nconst answer = summarizeWithCitations(pages);"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This two step pattern keeps cost proportional to how deep the agent actually needs to go, most queries never need more than a couple of fetches."
+        },
+        {
+          "type": "paragraph",
+          "text": "It also keeps latency reasonable, the user is not waiting on ten full page downloads for a question two sources could answer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: An Agent Researching Rate Limiting",
+          "id": "wss-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Say a user asks an agent to explain current best practices for rate limiting AI tool calls, and to back up the answer with sources."
+        },
+        {
+          "type": "paragraph",
+          "text": "The agent calls search with that query, gets back five ranked results, and reads the snippets to pick the two most relevant ones."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "// Step 1: search\n{ \"query\": \"rate limiting best practices ai tool calls\", \"results\": [ /* 5 ranked items */ ] }\n\n// Step 2: fetch the top two\nfetch_page({ \"url\": \"https://example.com/rate-limiting-patterns\" })\nfetch_page({ \"url\": \"https://example.com/token-bucket-explained\" })\n\n// Step 3: answer with citations\n\"Token bucket limits are the most common approach [1]. Scoping limits per\ncaller, not just globally, avoids one bad actor starving everyone else [2].\n[1] https://example.com/rate-limiting-patterns\n[2] https://example.com/token-bucket-explained\""
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The whole exchange cost two search style calls and two page fetches, a small, bounded amount of real spend for a well cited answer."
+        },
+        {
+          "type": "paragraph",
+          "text": "If either fetch had failed, the agent would fall back to the snippet alone and say plainly that the full page could not be read."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "wss-common-mistakes"
+        },
+        {
+          "type": "paragraph",
+          "text": "These mistakes show up again and again in web search MCP servers built without enough thought to cost and safety."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Letting the model set an unbounded result count and paying for it on every call.",
+            "Returning raw HTML from fetch_page instead of clean extracted text.",
+            "Skipping rate limiting until the provider starts returning errors in production.",
+            "Treating fetched page text as trusted instructions instead of untrusted data.",
+            "Dropping urls from the final answer so nothing can actually be verified.",
+            "Caching every query forever, even ones about fast changing, time sensitive topics."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "wss-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Design the full tool schema for a search and fetch_page pair for a server scoped to programming documentation sites only."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Write the input schema for both tools, including any domain allowlist field.",
+            "Decide a sensible cache window for each tool and justify the difference between them.",
+            "Sketch the per caller cost tracking you would add before letting this run for real users."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "wss-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A web search MCP server is really two small, disciplined tools, one that ranks and one that reads, wrapped around limits on rate and cost."
+        },
+        {
+          "type": "paragraph",
+          "text": "Get the citations right and treat fetched content as data, not instructions, and the rest of the design mostly falls into place."
+        }
+      ]
+    }
+  ]
+}

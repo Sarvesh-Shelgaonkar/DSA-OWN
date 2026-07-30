@@ -1,0 +1,534 @@
+{
+  "slug": "missing-value-imputation",
+  "title": "Missing Value Imputation",
+  "content": [
+    {
+      "id": "missing-value-imputation",
+      "title": "Missing Value Imputation",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Filling a gap with a number is easy. Filling it with the right number is the actual skill. The Handling Missing Values lesson got you comfortable finding NaN and doing something reasonable about it, dropping a row here, forward filling a sensor reading there. This lesson goes deeper. It is about choosing a fill value on purpose, backed by a reason you could defend to a teammate, instead of reaching for whatever is easiest."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660859388-764609752.png",
+          "alt": "A missing value branching into dropping the row, an arbitrary constant, and a principled statistic feeding a reliable model",
+          "caption": "Three ways to handle a gap. Only one of them is actually defensible.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Introduction",
+          "id": "introduction"
+        },
+        {
+          "type": "paragraph",
+          "text": "Quick recap before we go further. isna finds the gaps, dropna removes rows or columns that have them, and fillna stuffs a value into each one, whether that value is a constant, a forward filled neighbor, or a simple average. That toolkit gets you through plenty of real cleaning work. What it does not do is tell you which value is the right one to fill with, or when a single number for the whole column is actually a bad idea. That is everything this lesson covers."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Imputation is choosing a principled value to stand in for a missing one, not just picking something that compiles",
+            "Mean and median both describe the center of a column, but they disagree sharply once a distribution gets skewed, and picking the wrong one quietly damages your data",
+            "groupby and transform, which you already met in the Transform lesson, let you fill a gap using that row's own group instead of the whole dataset",
+            "scikit-learn's SimpleImputer is the standard tool for real ML pipelines, and the fit and transform split it enforces exists for a very good reason",
+            "Data leakage is one of the most damaging mistakes in practical machine learning, and imputation is one of the easiest places to accidentally cause it",
+            "Sometimes the fact that a value was missing in the first place is useful information on its own, worth keeping around as its own column"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The Core Idea of Imputation",
+          "id": "the-core-idea-of-imputation"
+        },
+        {
+          "type": "paragraph",
+          "text": "Imputation just means filling in a missing value with an estimate instead of leaving it blank or throwing the row away. The word sounds fancier than the idea actually is. What matters is not the word, it is the principle behind the number you choose. A principled fill value is one you can justify: it is the average of similar rows, it is the most common category, it is a number a small model predicted based on everything else you know about that row. An arbitrary fill value is one you picked because it was convenient, zero, negative one, the string unknown, with no real connection to what the true value probably was."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.1 Why Imputation Beats Dropping the Row",
+          "id": "why-imputation-beats-dropping-the-row"
+        },
+        {
+          "type": "paragraph",
+          "text": "dropna is tempting because it is a single line and the problem just disappears. But every row you drop is a row of real information you are throwing away, including all the other columns in that row that were perfectly fine. If ten percent of your rows are missing just one out of thirty columns, dropping every one of those rows means losing ten percent of your entire dataset over a single field. In a small dataset, that can be the difference between a model that generalizes and one that does not."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "df = pd.read_csv(\"housing.csv\")\nprint(len(df))                                 # 4200 rows\nprint(len(df.dropna(subset=[\"square_feet\"])))  # 3760 rows, 440 gone\n# every one of those 440 rows might have had a perfectly good price,\n# location, and bedroom count, all discarded because of one missing field"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.2 Why Imputation Beats an Arbitrary Constant",
+          "id": "why-imputation-beats-an-arbitrary-constant"
+        },
+        {
+          "type": "paragraph",
+          "text": "Filling every gap with zero feels harmless because it is fast, but zero is rarely a neutral choice. Fill a missing income with zero and you have just told your model that a chunk of your customers earn nothing at all, which is almost certainly false and will drag any average, correlation, or model coefficient involving that column in a completely wrong direction."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "df[\"income\"].fillna(0)\n# every missing earner now looks like they reported zero income,\n# which quietly poisons the column's mean, its correlations, everything downstream"
+          }
+        },
+        {
+          "type": "note",
+          "title": "An arbitrary constant is a silent distortion, not a neutral placeholder",
+          "content": "Zero, negative one, or 999 might feel like a safe placeholder because it does not crash your code. But your model cannot tell the difference between a real zero and a fake one standing in for missing data. It will happily learn a pattern from your fake values, and that pattern is wrong."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Simple Statistical Imputation: Mean, Median, and Mode",
+          "id": "simple-statistical-imputation-mean-median-mode"
+        },
+        {
+          "type": "paragraph",
+          "text": "The three simplest principled fill values all come from basic descriptive statistics you already know: the mean, the median, and the mode. Each one answers a slightly different question about a column, and picking the right one for the column you are actually looking at is most of the skill here."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.1 Mean and Median for Numeric Columns",
+          "id": "mean-and-median-for-numeric-columns"
+        },
+        {
+          "type": "paragraph",
+          "text": "For numeric columns, fillna paired with mean or median is the standard starting point. Both describe where the center of the column sits, just computed differently, and pandas makes either one a one line call."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "df[\"age\"].fillna(df[\"age\"].mean())\ndf[\"age\"].fillna(df[\"age\"].median())"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.2 Mode for Categorical Columns",
+          "id": "mode-for-categorical-columns"
+        },
+        {
+          "type": "paragraph",
+          "text": "Mean and median only make sense for numbers. For a categorical column, like a subscription tier or a shipping method, the equivalent principled fill value is the mode, the single most frequently occurring category. mode returns a Series in case there is a tie, so grabbing the first entry with [0] is the usual pattern."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "df[\"plan_tier\"].fillna(df[\"plan_tier\"].mode()[0])\n# fills every missing plan_tier with whichever tier shows up most often"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.3 Mean vs Median: Choosing the Robust One",
+          "id": "mean-vs-median-choosing-the-robust-one"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is the distinction that actually matters in practice. Mean adds up every value and divides by the count, so a single extreme value can drag it a long way from where most of your data actually sits. Median just finds the middle ranked value, so it does not care how extreme the outliers on either side get, only their rank. For a column that is roughly symmetric with no wild outliers, mean and median land in almost the same place and either one works fine. For a skewed column, they diverge hard, and picking the wrong one silently pushes every imputed row toward a number that does not represent anything real."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660863023-692083691.png",
+          "alt": "A right skewed income column with the mean pulled toward the high outliers while the median stays anchored near the bulk of the data",
+          "caption": "Same column, two different centers. Only one of them describes where most people actually are.",
+          "size": "medium"
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "income = pd.Series([42000, 45000, 47000, 51000, 998000])  # one very high earner\n\nprint(income.mean())    # 236600.0, dragged way up by that single outlier\nprint(income.median())  # 47000.0, sitting right where the bulk of the data actually is"
+          }
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Statistic\",\"How it reacts to outliers\",\"When to reach for it\"],\"rows\":[[\"Mean\",\"One extreme value can shift it a large distance\",\"Roughly symmetric distributions with no heavy outliers, like a normally distributed test score\"],[\"Median\",\"Ignores how extreme the outliers are, only their rank matters\",\"Skewed distributions, income, housing price, or any column you already suspect has outliers\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "This is the exact same idea the Outlier Detection lesson builds on",
+          "content": "A right skewed income column is almost always the textbook case for imputing with median instead of mean. The very same skew that makes mean the wrong choice here is what an outlier detection pass, coming up later in this course, is specifically built to catch and flag. Robust statistics and outlier detection are really two sides of the same coin."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Group Aware Imputation with groupby and transform",
+          "id": "group-aware-imputation-with-groupby-and-transform"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single mean or median for the whole column is still a compromise. It assumes every row belongs to the same underlying population, and that assumption is often false. Back in the Transform lesson, you saw exactly this problem with a missing age column: filling every gap with one company wide mean age ignores the fact that engineering, sales, and support can each have a genuinely different typical age. The fix there was groupby paired with transform, and it is exactly the same fix you reach for during imputation."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660865058-278501536.png",
+          "alt": "A missing engineering age filled with engineering's own group mean next to the same gap filled incorrectly with a company wide mean",
+          "caption": "The group aware fill lands close to reality. The global fill just drags toward whatever the rest of the company looks like.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.1 The Transform Pattern Applied to Imputation",
+          "id": "the-transform-pattern-applied-to-imputation"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is the exact line from the Transform lesson, and it is worth seeing again here because imputation is precisely the situation it was built for."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "df[\"age\"] = df.groupby(\"department\")[\"age\"].transform(lambda x: x.fillna(x.mean()))\n\n# a missing age in engineering gets filled with engineering's own mean age\n# a missing age in sales gets filled with sales' own mean age,\n# computed completely independently of what happens in any other department"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Read the lambda the same way you did the first time. x is one department's age Series at a time, missing values included. x.mean() automatically ignores the NaNs and computes that department's own average. x.fillna fills only the gaps inside that same Series with that department specific number, and transform hands the whole thing back at the original row count and row order, ready to assign straight into the column."
+        },
+        {
+          "type": "note",
+          "title": "The same edge case from the Transform lesson still applies here",
+          "content": "If an entire group has no non missing values at all, that group's mean is NaN too, so the fill does nothing for that group. Keep a second, more general fillna as a fallback for that situation, exactly like the Transform lesson called out."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.2 When Group Aware Imputation Wins Big",
+          "id": "when-group-aware-imputation-wins-big"
+        },
+        {
+          "type": "paragraph",
+          "text": "Group aware imputation earns its extra complexity most when the groups genuinely differ from each other. If every department at your company has roughly the same age distribution, a global mean and a group aware mean will land close enough that the extra groupby barely matters. If the groups are meaningfully different, an intern heavy department next to a senior leadership team, for instance, the gap between the two approaches gets large fast, and the global fill starts actively hurting your data."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Situation\",\"Global statistic\",\"Group aware statistic\"],\"rows\":[[\"Groups are similar to each other\",\"Close enough, extra complexity barely helps\",\"Slightly more accurate, but the gain is small\"],[\"Groups genuinely differ\",\"Systematically wrong for every group that differs from the overall average\",\"Tracks each group's own reality\"],[\"A group is small\",\"Still usable\",\"Can be noisy with very few rows, worth a sanity check\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. scikit-learn's SimpleImputer",
+          "id": "scikit-learns-simpleimputer"
+        },
+        {
+          "type": "paragraph",
+          "text": "Hand rolled fillna calls work fine for exploration, but once you are building an actual ML pipeline, scikit-learn's SimpleImputer is the standard tool people reach for instead. It does the same basic job, mean, median, or most frequent, but it fits into the same fit and transform interface every other scikit-learn preprocessing step uses, which makes it slot cleanly into a Pipeline alongside scaling, encoding, and the model itself."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.1 The fit and transform Pattern",
+          "id": "the-fit-and-transform-pattern"
+        },
+        {
+          "type": "paragraph",
+          "text": "SimpleImputer separates learning the fill value from actually applying it. fit looks at the data you give it and computes the statistic, the mean, the median, whichever strategy you chose, and stores it inside the imputer object. transform then takes that already computed statistic and uses it to fill gaps in whatever data you hand it next, without recomputing anything."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from sklearn.impute import SimpleImputer\n\nimputer = SimpleImputer(strategy=\"median\")\nimputer.fit(X_train[[\"square_feet\"]])\n\nX_train[\"square_feet\"] = imputer.transform(X_train[[\"square_feet\"]])\nX_test[\"square_feet\"] = imputer.transform(X_test[[\"square_feet\"]])"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660867211-313813406.png",
+          "alt": "SimpleImputer fit called only on the training data, learning and storing a single statistic",
+          "caption": "fit looks at training data once and remembers a number. Nothing about test data is involved yet.",
+          "size": "medium"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660868775-145133161.png",
+          "alt": "The same fitted statistic from training being applied to transform both the training set and the test set",
+          "caption": "transform reuses that same stored number on both splits. It never recomputes anything from test data.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.2 Data Leakage: Why the Split Matters",
+          "id": "data-leakage-why-the-split-matters"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is the part that trips up almost everyone the first time. It is tempting to just call fit_transform once on your whole dataset before splitting it into train and test. Do not. Fitting the imputer on the full dataset means the statistic it learns is partly computed from rows that are supposed to be your test set, rows your model is never supposed to have seen anything about during training. That is data leakage: information from the test set quietly leaking into the training process, making your model look better during evaluation than it will ever perform in the real world."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# WRONG: fitting before the split lets test rows influence the statistic\nimputer_wrong = SimpleImputer(strategy=\"median\")\nimputer_wrong.fit(X[[\"square_feet\"]])          # X still contains the test rows here\nX_filled = imputer_wrong.transform(X[[\"square_feet\"]])\n\n# RIGHT: split first, fit only on the training rows\nX_train, X_test = train_test_split(X, test_size=0.2, random_state=42)\nimputer_right = SimpleImputer(strategy=\"median\")\nimputer_right.fit(X_train[[\"square_feet\"]])     # only ever sees training rows\nX_train[\"square_feet\"] = imputer_right.transform(X_train[[\"square_feet\"]])\nX_test[\"square_feet\"] = imputer_right.transform(X_test[[\"square_feet\"]])"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660870574-28399759.png",
+          "alt": "A statistic computed on test data leaking backward into training and producing an overly optimistic model",
+          "caption": "This is data leakage. The fix is always the same: split first, then fit only on the training half.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "Data leakage is one of the most common real world ML mistakes",
+          "content": "It rarely shows up as an error. Your code runs fine, your validation score even looks great, and the model quietly fails once it meets genuinely unseen data in production. Any time you compute a statistic, a scaler, an encoder, anything that gets fit, always fit it on training data only, and only ever transform with it afterward, never refit on test or production data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Beyond Flat Statistics: KNNImputer and IterativeImputer",
+          "id": "beyond-flat-statistics-knnimputer-and-iterativeimputer"
+        },
+        {
+          "type": "paragraph",
+          "text": "Mean, median, mode, and their group aware versions all fill a gap with one flat number computed from a single column. Sometimes a missing value correlates strongly with other columns in the same row, and a smarter fill would take advantage of that relationship instead of ignoring it. That is exactly what scikit-learn's KNNImputer and IterativeImputer are built for."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from sklearn.impute import KNNImputer\n\nknn_imputer = KNNImputer(n_neighbors=5)\nX_train_filled = knn_imputer.fit_transform(X_train)\n# each missing value gets filled using the average of the 5 most similar rows,\n# similarity measured across every other column, not one flat statistic"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "IterativeImputer takes this even further. It treats each column with missing values as something to predict from all the other columns, using a small regression model, then cycles through every column repeatedly, refining its guesses each pass. Both of these are genuinely more powerful than a flat statistic, and both cost more to compute and are easier to misuse. This lesson will not go deep into either one, just know they exist and that they are the natural next step once simple and group aware imputation stop being enough."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660872426-479812187.png",
+          "alt": "A missing value predicted from correlated columns using a model based approach instead of one flat statistic",
+          "caption": "KNNImputer and IterativeImputer look at the whole row, not just one column's average.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Indicator Columns: Marking What Was Imputed",
+          "id": "indicator-columns-marking-what-was-imputed"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every technique so far focuses on choosing a good value to fill the gap with. There is a second, easy to miss idea sitting right next to it: the fact that a value was missing in the first place can itself be useful information, and filling the gap erases that information unless you save it somewhere first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "7.1 Adding the Indicator Before You Fill",
+          "id": "adding-the-indicator-before-you-fill"
+        },
+        {
+          "type": "paragraph",
+          "text": "Think about why a value might be missing. A survey respondent who skips the income question might be skipping it for a reason connected to their income. A sensor that stops reporting might be failing in a way that correlates with the exact condition you are trying to predict. In cases like these, whether a row was missing can carry real predictive signal, separate from whatever value you end up filling in. The fix is a boolean indicator column, set before you touch the original column at all."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "df[\"square_feet_was_missing\"] = df[\"square_feet\"].isna()\ndf[\"square_feet\"] = df.groupby(\"neighborhood\")[\"square_feet\"].transform(\n    lambda x: x.fillna(x.median())\n)\n# was_missing preserves exactly which rows got a filled in guess,\n# even after the actual gap in square_feet is long gone"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660874668-875305964.png",
+          "alt": "A missing value producing both a filled statistic and a separate boolean column marking that row as originally missing",
+          "caption": "The gap gets filled, but the fact that it was a gap does not disappear, it just moves into its own column.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "Create the indicator before you fill, never after",
+          "content": "isna only finds gaps that are still actually there. If you fill the column first and add the indicator second, isna on the already filled column finds nothing, since every gap is already gone. Always mark the missing rows first, then fill."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Worked Example: Housing Square Footage by Neighborhood",
+          "id": "worked-example-housing-square-footage-by-neighborhood"
+        },
+        {
+          "type": "paragraph",
+          "text": "Time to put every idea in this lesson onto one small, real feeling example. A housing dataset has a square_feet column with a few gaps, and two very different neighborhoods sitting inside it. Watch what happens when you fill those gaps the naive way versus the group aware way."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "8.1 Setting Up the Data",
+          "id": "setting-up-the-data"
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import pandas as pd\nimport numpy as np\n\nhousing = pd.DataFrame({\n    \"neighborhood\": [\"oakwood\", \"oakwood\", \"oakwood\",\n                      \"riverside\", \"riverside\", \"riverside\", \"riverside\"],\n    \"square_feet\": [1450, np.nan, 1600, 2400, 2550, np.nan, 2300],\n})"
+          }
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "print(housing.isna().sum())\n# neighborhood    0\n# square_feet     2"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "8.2 Naive Global Mean Imputation",
+          "id": "naive-global-mean-imputation"
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "global_mean = housing[\"square_feet\"].mean()\nhousing[\"naive_fill\"] = housing[\"square_feet\"].fillna(global_mean)\n\nprint(global_mean)  # 2060.0"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "2060 square feet does not describe either neighborhood well. Oakwood is the smaller, older neighborhood in this dataset, every real value there sits at 1600 or below. Riverside is bigger, every real value there sits at 2300 or above. The global mean lands in the empty space between the two neighborhoods, a number that barely resembles a real home in either one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "8.3 Group Aware Median Imputation With an Indicator Column",
+          "id": "group-aware-median-imputation-with-an-indicator-column"
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "housing[\"sqft_was_missing\"] = housing[\"square_feet\"].isna()\nhousing[\"group_fill\"] = housing.groupby(\"neighborhood\")[\"square_feet\"].transform(\n    lambda x: x.fillna(x.median())\n)\n\nprint(housing[[\"neighborhood\", \"group_fill\"]])\n# oakwood's missing row gets 1525.0, the median of 1450 and 1600\n# riverside's missing row gets 2400.0, the median of 2300, 2400, and 2550"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660876262-232217626.png",
+          "alt": "Housing rows grouped by neighborhood, each missing square footage filled with that neighborhood's own median",
+          "caption": "Oakwood's gap gets an oakwood sized number. Riverside's gap gets a riverside sized number.",
+          "size": "medium"
+        },
+        {
+          "type": "paragraph",
+          "text": "That is the entire point of group aware imputation sitting in two real numbers. 1525 square feet is a completely plausible oakwood home. 2400 square feet is a completely plausible riverside home. Neither one is the global average pretending to represent a neighborhood it has nothing to do with."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "8.4 Comparing the Two Results",
+          "id": "comparing-the-two-results"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"neighborhood\",\"square_feet\",\"naive_fill\",\"group_fill\",\"sqft_was_missing\"],\"rows\":[[\"oakwood\",\"1450\",\"1450\",\"1450\",\"False\"],[\"oakwood\",\"missing\",\"2060.0\",\"1525.0\",\"True\"],[\"oakwood\",\"1600\",\"1600\",\"1600\",\"False\"],[\"riverside\",\"2400\",\"2400\",\"2400\",\"False\"],[\"riverside\",\"2550\",\"2550\",\"2550\",\"False\"],[\"riverside\",\"missing\",\"2060.0\",\"2400.0\",\"True\"],[\"riverside\",\"2300\",\"2300\",\"2300\",\"False\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660878034-252022101.png",
+          "alt": "Naive global mean producing the same flat number for every neighborhood next to group aware median producing a different, more accurate number per neighborhood",
+          "caption": "Same missing rows, two different fill strategies, two very different answers.",
+          "size": "medium"
+        },
+        {
+          "type": "paragraph",
+          "text": "Look at that oakwood row one more time. The naive fill hands it 2060 square feet, larger than every single real oakwood home in the dataset. The group aware fill hands it 1525, sitting comfortably between its two real neighbors. Multiply that gap across a few hundred rows and a few dozen neighborhoods, and naive global imputation is not a small rounding error anymore, it is a systematic distortion baked into your training data."
+        },
+        {
+          "type": "note",
+          "title": "A quick sanity check worth running every time",
+          "content": "After any group aware fill, group the result by the same key again and confirm each group's imputed rows fall within a reasonable range of that group's real values. If a filled value looks like an outlier for its own group, something in the groupby or transform call is probably misaligned."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Recap",
+          "id": "recap"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783660880864-642579064.png",
+          "alt": "A decision path moving from a simple statistic to a group aware transform to a SimpleImputer pipeline to advanced model based imputation",
+          "caption": "Start simple, add group awareness when groups genuinely differ, formalize it with SimpleImputer, reach for KNN or Iterative only when you need it.",
+          "size": "medium"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Imputation means choosing a principled fill value you can justify, not dropping the row and not reaching for an arbitrary constant",
+            "Median beats mean whenever a column is skewed or has real outliers, since mean gets dragged toward extreme values and median does not",
+            "groupby paired with transform, the exact pattern from the Transform lesson, fills a gap using that row's own group instead of one number for the whole dataset",
+            "SimpleImputer is the standard scikit-learn tool for real pipelines, and it always fits on training data only, then transforms both train and test with that same learned statistic",
+            "Fitting an imputer, or any preprocessing step, on data that includes your test set is data leakage, and it makes your model look better than it actually is",
+            "KNNImputer and IterativeImputer predict a missing value from correlated columns instead of using one flat statistic, worth knowing about even without going deep here",
+            "An indicator column marking which rows were originally missing can carry real signal on its own, so create it before you fill the gap, never after"
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,450 @@
+{
+  "slug": "log-aggregation",
+  "title": "Log Aggregation",
+  "content": [
+    {
+      "id": "log-aggregation",
+      "title": "Log Aggregation",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "You've got 80 service instances running behind a load balancer. Something's throwing 500s for a chunk of users right now."
+        },
+        {
+          "type": "paragraph",
+          "content": "Where do you look? The logs. But which of the 80 machines? You don't know yet, that's the whole problem."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349135-811197222.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349135-811197222.png",
+          "alt": "Engineer trying to SSH into dozens of machines to grep logs during an incident"
+        },
+        {
+          "type": "paragraph",
+          "content": "Old school move: SSH into machine 1, grep the log file, nothing. SSH into machine 2, grep again, nothing. Repeat 78 more times while the incident is still live and your users are still seeing errors."
+        },
+        {
+          "type": "paragraph",
+          "content": "That doesn't scale past a handful of machines. You need every log line from every instance in one searchable place, and you need it before the incident is over, not after."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Log aggregation ships logs from every instance to one centralized system where you can search, filter, and correlate across the whole fleet in a single place."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every request in a distributed system touches multiple services. A single checkout call might hit the API gateway, the cart service, the payments service, and the inventory service, each running on its own set of machines."
+        },
+        {
+          "type": "paragraph",
+          "content": "Each of those services writes its own logs, to its own local disk, on its own machine. When something breaks, the evidence is scattered across every one of those machines."
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>The problem</strong> logs live locally on each instance, nobody can search across the fleet\",\"<strong>The core idea</strong> ship every log line off the host to one central system\",\"<strong>The payoff</strong> search, filter, and correlate logs across every service and every instance from one screen\"]",
+          "items": [
+            "<strong>The problem</strong> logs live locally on each instance, nobody can search across the fleet",
+            "<strong>The core idea</strong> ship every log line off the host to one central system",
+            "<strong>The payoff</strong> search, filter, and correlate logs across every service and every instance from one screen"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Not just for incidents",
+          "content": "Log aggregation also powers things like tracking a single request across five microservices using a request ID, spotting a slow creeping error rate before it becomes an outage, and auditing who did what."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The problem without a centralized system",
+          "text": "2. The problem without a centralized system"
+        },
+        {
+          "type": "paragraph",
+          "content": "Picture 80 instances of the same service, all behind a load balancer, all writing to a local file like /var/log/app/service.log."
+        },
+        {
+          "type": "paragraph",
+          "content": "A customer reports an error. You don't know which instance handled their request, because the load balancer picked one at random. So you'd have to check all 80."
+        },
+        {
+          "type": "list",
+          "content": "[\"SSH into each box one at a time\",\"grep for the customer's request ID or timestamp\",\"Hope the log rotated recently, or the evidence is already gone\",\"Do this again for every downstream service that request touched\"]",
+          "items": [
+            "SSH into each box one at a time",
+            "grep for the customer's request ID or timestamp",
+            "Hope the log rotated recently, or the evidence is already gone",
+            "Do this again for every downstream service that request touched"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "This gets worse with autoscaling",
+          "content": "If an instance scaled down and got terminated, its local disk and its logs are gone with it. You can't SSH into a machine that no longer exists."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The core idea: ship logs to one place",
+          "text": "3. The core idea: ship logs to one place"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of logs sitting wherever they were written, you ship them off the host as they're generated, to a central system built for search."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349136-167036378.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349136-167036378.png",
+          "alt": "A log shipping agent on a host tailing the local log file and forwarding it out"
+        },
+        {
+          "type": "paragraph",
+          "content": "The app itself doesn't need to know any of this is happening. It just writes log lines to a file or stdout like it always did. A separate small agent process running on the same host does the shipping."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 What changes for the on call engineer",
+          "text": "3.1 What changes for the on call engineer"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Without aggregation\",\"With aggregation\"],\"rows\":[[\"SSH into every instance one by one\",\"One search box, one query\"],[\"Logs vanish when an instance is terminated\",\"Logs already shipped, survive the instance\"],[\"No way to correlate across services\",\"Filter by request ID across the whole fleet\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The typical pipeline",
+          "text": "4. The typical pipeline"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once you accept the core idea, the pipeline shape is pretty consistent no matter which specific tools you pick."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349136-397774041.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349136-397774041.png",
+          "alt": "Full pipeline shape: host agent to buffer to index store to query UI"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Agent on every host",
+          "text": "4.1 Agent on every host"
+        },
+        {
+          "type": "paragraph",
+          "content": "A small agent runs alongside your app on every instance. Tools like Filebeat, Fluentd, or Fluent Bit do this job. The agent tails log files as new lines get appended, or receives a log stream directly, and forwards each line onward."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 A central pipeline",
+          "text": "4.2 A central pipeline"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349137-441935091.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349137-441935091.png",
+          "alt": "Agents on many hosts forwarding logs into one central pipeline"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every agent on every host points at the same central pipeline. That's the point where logs from 80 different machines start becoming one unified stream."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 A buffer or queue in the middle",
+          "text": "4.3 A buffer or queue in the middle"
+        },
+        {
+          "type": "paragraph",
+          "content": "Between the agents and the storage layer, there's often a durable queue, commonly Kafka. More on why that matters in the next section."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.4 Storage and indexing",
+          "text": "4.4 Storage and indexing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349138-493585040.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349138-493585040.png",
+          "alt": "Logs landing in a storage and indexing system, becoming searchable"
+        },
+        {
+          "type": "paragraph",
+          "content": "Logs land in a system built to index and search text at scale, like Elasticsearch or Loki. This is what makes a query across a billion log lines return in under a second instead of a coffee break."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.5 A query UI",
+          "text": "4.5 A query UI"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349139-508939213.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396349139-508939213.png",
+          "alt": "An engineer querying logs through Kibana or Grafana"
+        },
+        {
+          "type": "paragraph",
+          "content": "Finally, a UI like Kibana or Grafana sits on top, letting you type a query, filter by service or time range, and actually read the results."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Why the buffer or queue matters",
+          "text": "5. Why the buffer or queue matters"
+        },
+        {
+          "type": "paragraph",
+          "content": "It's tempting to skip the queue and have agents write straight into the indexing system. Don't. Here's why."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396350354-279974190.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396350354-279974190.png",
+          "alt": "A queue absorbing a log volume spike during an incident before it hits the indexer"
+        },
+        {
+          "type": "paragraph",
+          "content": "Log volume isn't steady. It's low on a normal day and it spikes hard exactly when things are going wrong, which is exactly when an error handler starts logging a stack trace on every single request."
+        },
+        {
+          "type": "paragraph",
+          "content": "That's the worst possible moment for your indexing system to fall over from being hit with ten times its normal write load. A queue like Kafka sits in between and absorbs the burst."
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Durability</strong> if the indexer is temporarily down or slow, logs sit safely in the queue instead of being dropped\",\"<strong>Backpressure handling</strong> the queue smooths a burst out into a steady stream the indexer can actually keep up with\",\"<strong>Decoupling</strong> agents don't need to know or care how fast the indexer currently is\"]",
+          "items": [
+            "<strong>Durability</strong> if the indexer is temporarily down or slow, logs sit safely in the queue instead of being dropped",
+            "<strong>Backpressure handling</strong> the queue smooths a burst out into a steady stream the indexer can actually keep up with",
+            "<strong>Decoupling</strong> agents don't need to know or care how fast the indexer currently is"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "This is the same instinct as everywhere else",
+          "content": "Any time you have a bursty producer and a rate limited consumer, a queue in between is the standard fix. Log aggregation is just one more place that pattern shows up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Real systems people actually run",
+          "text": "6. Real systems people actually run"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 The ELK or Elastic stack",
+          "text": "6.1 The ELK or Elastic stack"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396350356-214638466.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396350356-214638466.png",
+          "alt": "The ELK stack pipeline: Filebeat to Logstash to Elasticsearch to Kibana"
+        },
+        {
+          "type": "paragraph",
+          "content": "Filebeat ships logs off each host. Logstash optionally parses and transforms them. Elasticsearch stores and indexes them with full text search. Kibana is the UI you query and build dashboards in."
+        },
+        {
+          "type": "paragraph",
+          "content": "Elasticsearch indexes the full text of every log line. That's powerful, you can search for any word anywhere, but it's also expensive, because building a full text index over every log line takes real CPU and real disk."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 The Grafana Loki stack",
+          "text": "6.2 The Grafana Loki stack"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396350357-354801914.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396350357-354801914.png",
+          "alt": "The Loki stack pipeline: Promtail or Fluent Bit to Loki to Grafana"
+        },
+        {
+          "type": "paragraph",
+          "content": "Loki takes a different bet. Instead of indexing the full text of every log line, it only indexes a small set of labels, things like service name, instance id, or environment. The actual log text is stored compressed but unindexed."
+        },
+        {
+          "type": "paragraph",
+          "content": "Grafana Loki markets itself as the cheaper option specifically because of this. Less indexing work means less compute and less storage, at the cost of full text search being slower since it has to scan rather than look up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.3 Commercial options",
+          "text": "6.3 Commercial options"
+        },
+        {
+          "type": "paragraph",
+          "content": "Datadog and Splunk offer the same shape of pipeline as a managed product. You install their agent, they handle the queue, the storage, and the UI. You pay per gigabyte ingested instead of running the infrastructure yourself."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Trade offs",
+          "text": "7. Trade offs"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396350357-420743231.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396350357-420743231.png",
+          "alt": "Full text indexing versus label based indexing, cost comparison"
+        },
+        {
+          "type": "paragraph",
+          "content": "Centralized log storage isn't free. At real scale, a fleet of hundreds of instances can produce terabytes of logs a day, and every one of those gigabytes costs money to ship, store, and index."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Trade off\"],\"rows\":[[\"Full text indexing, e.g. Elasticsearch\",\"Great for ad hoc search on any field, much more expensive to run at scale\"],[\"Label based indexing, e.g. Loki\",\"Cheaper to run, but you need to know your labels up front, and free text search is slower\"],[\"Managed, e.g. Datadog or Splunk\",\"No infra to run, but you pay per gigabyte and costs scale directly with log volume\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "A common real world response",
+          "content": "Teams often log less at the source, sample high volume debug logs, or set shorter retention windows, specifically to control this cost, rather than just indexing everything forever."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Worked example",
+          "text": "8. Worked example"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say you're running 50 instances of a checkout service. Each one runs a Fluent Bit agent that tails the local log file and forwards it to Loki."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396350358-644332836.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396350358-644332836.png",
+          "alt": "A fleet of 50 instances shipping logs through Fluent Bit into Loki, queried from Grafana"
+        },
+        {
+          "type": "example-box",
+          "title": "Incident walkthrough",
+          "text": "Checkout error rate jumps at 2:14pm. You open Grafana, filter by service=checkout and level=error, and set the time range to the last 20 minutes. Instead of guessing which of the 50 instances is at fault, every instance's error logs show up in one stream, sorted by time. You spot that instance-37 started throwing a connection timeout to the payments service right at 2:14pm, and the rest is a payments service problem, not a checkout one."
+        },
+        {
+          "type": "paragraph",
+          "content": "Without aggregation, this same investigation means SSHing into up to 50 boxes to find the one that has anything useful in its logs. With it, it's one query."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Implementation: shipping logs to Loki",
+          "text": "9. Implementation: shipping logs to Loki"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here's a real Fluent Bit config that tails an application log file and forwards it to Loki, labeled by service name."
+        },
+        {
+          "type": "code",
+          "content": "[INPUT]\n    Name              tail\n    Path              /var/log/app/checkout.log\n    Tag               checkout.logs\n    Refresh_Interval  5\n    Mem_Buf_Limit     10MB\n\n[OUTPUT]\n    Name              loki\n    Match             checkout.logs\n    Host              loki.internal\n    Port              3100\n    Labels            service=checkout, env=production\n    Line_Format       json\n    Remove_Keys       tag",
+          "code": {
+            "language": "ini",
+            "content": "[INPUT]\n    Name              tail\n    Path              /var/log/app/checkout.log\n    Tag               checkout.logs\n    Refresh_Interval  5\n    Mem_Buf_Limit     10MB\n\n[OUTPUT]\n    Name              loki\n    Match             checkout.logs\n    Host              loki.internal\n    Port              3100\n    Labels            service=checkout, env=production\n    Line_Format       json\n    Remove_Keys       tag"
+          },
+          "codes": {
+            "ini": "[INPUT]\n    Name              tail\n    Path              /var/log/app/checkout.log\n    Tag               checkout.logs\n    Refresh_Interval  5\n    Mem_Buf_Limit     10MB\n\n[OUTPUT]\n    Name              loki\n    Match             checkout.logs\n    Host              loki.internal\n    Port              3100\n    Labels            service=checkout, env=production\n    Line_Format       json\n    Remove_Keys       tag"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The Input block tells Fluent Bit which file to tail and how often to check for new lines. The Output block points it at Loki and attaches labels, service and env, which is exactly what Loki indexes. Everything else in the log line stays as unindexed text."
+        },
+        {
+          "type": "note",
+          "title": "Keep label cardinality low",
+          "content": "Don't put things like request ID or user ID in Loki labels. Labels are meant to be a small, low cardinality set, like service name or region. High cardinality labels blow up Loki's index size and defeat the whole cost advantage."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. The interview angle",
+          "text": "10. The interview angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a system design interview, if you're designing anything with more than a couple of services, log aggregation is expected infrastructure, the same way a load balancer or a cache is."
+        },
+        {
+          "type": "list",
+          "content": "[\"Know the shape of the pipeline: agent on host, buffer or queue, storage and index, query UI\",\"Know why the queue is there: absorbing bursty log volume without dropping logs or overwhelming the indexer\",\"Know the cost angle: full text indexing like Elasticsearch is powerful but pricier, label based indexing like Loki is cheaper but less flexible\",\"Be ready to name real systems: ELK, Loki plus Grafana, or a managed option like Datadog\"]",
+          "items": [
+            "Know the shape of the pipeline: agent on host, buffer or queue, storage and index, query UI",
+            "Know why the queue is there: absorbing bursty log volume without dropping logs or overwhelming the indexer",
+            "Know the cost angle: full text indexing like Elasticsearch is powerful but pricier, label based indexing like Loki is cheaper but less flexible",
+            "Be ready to name real systems: ELK, Loki plus Grafana, or a managed option like Datadog"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "You don't need to design a new log system",
+          "content": "The expectation isn't that you invent log aggregation from scratch. It's that you recognize it as a standard building block and can sketch its pipeline in thirty seconds when asked how you'd debug an incident across a fleet."
+        }
+      ]
+    }
+  ]
+}

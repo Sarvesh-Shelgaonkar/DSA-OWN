@@ -1,0 +1,542 @@
+{
+  "slug": "elasticsearch-and-search-systems",
+  "title": "Elasticsearch and Search Systems",
+  "content": [
+    {
+      "id": "elasticsearch-and-search-systems",
+      "title": "Elasticsearch and Search Systems",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Type a few words into a product search box and a ranked list appears in milliseconds, typos and all, with the most relevant result sitting right at the top. Ask a normal relational database to do the same thing over a few million rows of text and it grinds to a crawl."
+        },
+        {
+          "type": "paragraph",
+          "content": "The gap is not about better hardware or a faster query planner. It is about a fundamentally different data structure built specifically for text. <strong>Elasticsearch</strong> is the tool most systems reach for when search becomes a first class feature rather than an afterthought, and understanding why it exists, and how it actually works, is what separates knowing the name from being able to design with it."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is not a niche need either. GitHub's code search, most e commerce product search, log analysis dashboards, and internal support ticket search all sit on top of the same underlying idea, sometimes literally on Elasticsearch itself, sometimes on a close cousin built around the same inverted index concept."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson builds Elasticsearch up from first principles: why a normal database struggles at this job, the inverted index that makes fast text search possible, how documents, shards, and replicas fit together, how a query actually gets scored, and how to keep a search index honest against a primary database that keeps changing underneath it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530155-795271190.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530155-795271190.png",
+          "alt": "A LIKE scan checks every row, an inverted index jumps straight to matches"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Why Regular Databases Struggle at Search",
+          "text": "1. Why Regular Databases Struggle at Search"
+        },
+        {
+          "type": "paragraph",
+          "content": "A relational database is built around indexes that make equality and range lookups fast, things like WHERE user_id = 42 or WHERE created_at > yesterday. A B-Tree index, the workhorse behind most of those lookups, is superb at finding an exact value or a sorted range."
+        },
+        {
+          "type": "paragraph",
+          "content": "Full text search is a different problem entirely. A user typing best budget noise cancelling headphones wants documents that contain some or all of those words, ranked by how relevant each one is, not documents that exactly equal that string. A query like WHERE description LIKE '%budget%' cannot use a normal index at all, because the wildcard on both sides forces the database to scan every single row and check its content by hand."
+        },
+        {
+          "type": "paragraph",
+          "content": "Even if you make the LIKE query fast with a leading wildcard removed, it still cannot answer the question that actually matters for search: <strong>which result is the best match</strong>. SQL has no built in concept of relevance ranking, no idea that a headphones review mentioning budget five times is probably more relevant than one that mentions it once in passing. That gap, ranking by relevance rather than filtering by equality, is exactly what a dedicated search engine is built to close."
+        },
+        {
+          "type": "code",
+          "content": "-- forces a full scan, no index can help here\nSELECT * FROM products\nWHERE description LIKE '%budget%'\nORDER BY ??? -- SQL has nothing meaningful to sort by",
+          "code": {
+            "language": "sql",
+            "content": "-- forces a full scan, no index can help here\nSELECT * FROM products\nWHERE description LIKE '%budget%'\nORDER BY ??? -- SQL has nothing meaningful to sort by"
+          },
+          "codes": {
+            "sql": "-- forces a full scan, no index can help here\nSELECT * FROM products\nWHERE description LIKE '%budget%'\nORDER BY ??? -- SQL has nothing meaningful to sort by"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Search is a ranking problem, not just a filtering problem",
+          "content": "A database answers does this row match. A search engine answers how well does this row match, compared to every other row, and that single difference is why it needs a completely different data structure underneath it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Inverted Index",
+          "text": "2. The Inverted Index"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283103036-440962134.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283103036-440962134.png",
+          "alt": "An inverted index maps each term to the documents that contain it"
+        },
+        {
+          "type": "paragraph",
+          "content": "A normal database table is organized row by row: for every document, here is its full text. An <strong>inverted index</strong> flips that relationship, hence the name: for every distinct word, here is the list of documents that contain it, called a <strong>postings list</strong>."
+        },
+        {
+          "type": "paragraph",
+          "content": "Searching for a word becomes a direct lookup instead of a scan. Find the term in the index, in something close to constant time, and you already have the exact list of documents containing it, without ever touching a document that does not."
+        },
+        {
+          "type": "paragraph",
+          "content": "This platform's Bloom Filters, B-Trees, and LSM Trees lesson covers how storage engines organize data for fast lookups in general. An inverted index is that same instinct, structure the data around what you actually search by, applied specifically to words inside text rather than to a single indexed column."
+        },
+        {
+          "type": "paragraph",
+          "content": "Combining terms is just set operations on postings lists. A search for fast bike intersects the postings list for fast with the postings list for bike, and whatever document ids appear in both lists are candidates. This is why an inverted index scales so well: the work is proportional to how many documents contain the search terms, not to how many documents exist in total."
+        },
+        {
+          "type": "code",
+          "content": "term: \"fast\"   -> postings: [doc1, doc2, doc7]\nterm: \"bike\"   -> postings: [doc2, doc9]\n\"fast bike\"    -> intersect([doc1, doc2, doc7], [doc2, doc9]) -> [doc2]",
+          "code": {
+            "language": "text",
+            "content": "term: \"fast\"   -> postings: [doc1, doc2, doc7]\nterm: \"bike\"   -> postings: [doc2, doc9]\n\"fast bike\"    -> intersect([doc1, doc2, doc7], [doc2, doc9]) -> [doc2]"
+          },
+          "codes": {
+            "text": "term: \"fast\"   -> postings: [doc1, doc2, doc7]\nterm: \"bike\"   -> postings: [doc2, doc9]\n\"fast bike\"    -> intersect([doc1, doc2, doc7], [doc2, doc9]) -> [doc2]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Elasticsearch is built on top of <strong>Apache Lucene</strong>, the underlying library that actually implements the inverted index and the low level search machinery. Elasticsearch adds the distributed layer on top: sharding, replication, a REST API, and cluster coordination, none of which Lucene alone provides."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Documents, Indices, Shards, and Replicas",
+          "text": "3. Documents, Indices, Shards, and Replicas"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283105070-669817791.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283105070-669817791.png",
+          "alt": "An index splits into shards, each shard replicated for safety and read capacity"
+        },
+        {
+          "type": "paragraph",
+          "content": "Elasticsearch stores data as JSON <strong>documents</strong>, grouped into an <strong>index</strong>, which is roughly analogous to a table in a relational database. Each document gets its fields analyzed and written into the inverted index automatically the moment it is indexed."
+        },
+        {
+          "type": "paragraph",
+          "content": "A single machine cannot hold an unlimited amount of data or serve unlimited query traffic, so an index is split into <strong>shards</strong>, each an independent, self contained inverted index holding a portion of the documents. This is conceptually the same idea as database sharding, already covered in its own lesson on this platform: split the data so no single node has to hold or serve all of it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Each shard is also <strong>replicated</strong>, meaning a copy of it lives on another node. Replicas exist for two reasons at once: if a node holding the primary shard dies, a replica gets promoted and no data is lost, and read queries can be served from any replica, spreading query load across more machines than the primary shards alone could handle."
+        },
+        {
+          "type": "heading3",
+          "content": "Choosing shard count",
+          "text": "Choosing shard count"
+        },
+        {
+          "type": "paragraph",
+          "content": "Shard count is set when an index is created and is expensive to change later, so it deserves real thought rather than a default. Too many shards for a small dataset wastes overhead, since every shard carries its own memory and file handle cost. Too few shards for a large, fast growing dataset limits how far the index can scale out and how quickly it can recover after a node failure."
+        },
+        {
+          "type": "note",
+          "title": "Reindexing is the usual fix for a bad shard count",
+          "content": "Because shard count is fixed per index, growing past it usually means creating a new index with more shards and reindexing the data into it, rather than resizing the existing one in place."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. How Text Becomes Searchable: Analyzers",
+          "text": "4. How Text Becomes Searchable: Analyzers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530155-697811123.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530155-697811123.png",
+          "alt": "Raw text passes through a pipeline before it becomes searchable index terms"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a document is indexed, its text fields do not go into the inverted index as is. They pass through an <strong>analyzer</strong>, a pipeline that breaks text into individual terms and normalizes them so that searches match sensibly."
+        },
+        {
+          "type": "heading3",
+          "content": "Tokenization",
+          "text": "Tokenization"
+        },
+        {
+          "type": "paragraph",
+          "content": "The first step, <strong>tokenization</strong>, splits raw text into individual words, called tokens. The sentence Fast Delivery Guaranteed becomes three separate tokens: Fast, Delivery, Guaranteed."
+        },
+        {
+          "type": "heading3",
+          "content": "Normalization filters",
+          "text": "Normalization filters"
+        },
+        {
+          "type": "paragraph",
+          "content": "Each token then passes through filters. Lowercasing turns Fast and fast into the same term, so a search is not accidentally case sensitive. <strong>Stemming</strong> reduces words to a common root, so running, runs, and ran can all match a search for run. Stop word removal can drop extremely common words like the and is that add noise without adding meaning."
+        },
+        {
+          "type": "code",
+          "content": "\"Fast Delivery Guaranteed\"\n  -> tokenize: [Fast, Delivery, Guaranteed]\n  -> lowercase: [fast, delivery, guaranteed]\n  -> stem: [fast, deliveri, guarante]",
+          "code": {
+            "language": "text",
+            "content": "\"Fast Delivery Guaranteed\"\n  -> tokenize: [Fast, Delivery, Guaranteed]\n  -> lowercase: [fast, delivery, guaranteed]\n  -> stem: [fast, deliveri, guarante]"
+          },
+          "codes": {
+            "text": "\"Fast Delivery Guaranteed\"\n  -> tokenize: [Fast, Delivery, Guaranteed]\n  -> lowercase: [fast, delivery, guaranteed]\n  -> stem: [fast, deliveri, guarante]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The exact same analyzer runs on a search query at query time, which is why searching for guarantee still matches a document containing guaranteed. Query and document text go through the identical normalization pipeline, so they end up speaking the same normalized vocabulary."
+        },
+        {
+          "type": "heading3",
+          "content": "Custom analyzers",
+          "text": "Custom analyzers"
+        },
+        {
+          "type": "paragraph",
+          "content": "The default analyzer works well for ordinary prose, but a product SKU field, a code snippet field, or a non English language field often needs its own custom analyzer, tuned tokenization rules, a different stemmer, or no stemming at all. Applying English stemming rules to something like a SKU can quietly break exact match search on it, which is a common early mistake."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. How a Query Executes: Filtering vs Scoring",
+          "text": "5. How a Query Executes: Filtering vs Scoring"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530155-495968226.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530155-495968226.png",
+          "alt": "Filter context asks yes or no, query context asks how relevant"
+        },
+        {
+          "type": "paragraph",
+          "content": "Elasticsearch queries run in one of two contexts, and knowing which one a clause belongs in matters both for correctness and for speed."
+        },
+        {
+          "type": "paragraph",
+          "content": "A <strong>filter context</strong> asks a strictly yes or no question: does this document's status equal published, does this price fall within a range. Filter clauses do not affect ranking at all, and because the answer is binary, Elasticsearch can cache the result and skip relevance computation entirely, making filters very fast."
+        },
+        {
+          "type": "paragraph",
+          "content": "A <strong>query context</strong> asks how well a document matches, and produces a relevance score rather than a plain yes or no. Searching the title field for wireless headphones runs in query context, since some documents are a better match than others and the ranking itself is the point."
+        },
+        {
+          "type": "paragraph",
+          "content": "A well built search request usually combines both: filter to status equals published and category equals electronics first, cheaply shrinking the candidate set, then score only that shrunk set by how well it matches the actual search text. Filtering first and scoring second is the standard shape of an efficient search query."
+        },
+        {
+          "type": "code",
+          "content": "{\n  \"query\": {\n    \"bool\": {\n      \"filter\": [ { \"term\": { \"status\": \"published\" } } ],\n      \"must\":   [ { \"match\": { \"title\": \"wireless headphones\" } } ]\n    }\n  }\n}",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"query\": {\n    \"bool\": {\n      \"filter\": [ { \"term\": { \"status\": \"published\" } } ],\n      \"must\":   [ { \"match\": { \"title\": \"wireless headphones\" } } ]\n    }\n  }\n}"
+          },
+          "codes": {
+            "json": "{\n  \"query\": {\n    \"bool\": {\n      \"filter\": [ { \"term\": { \"status\": \"published\" } } ],\n      \"must\":   [ { \"match\": { \"title\": \"wireless headphones\" } } ]\n    }\n  }\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Relevance Scoring: TF-IDF and BM25",
+          "text": "6. Relevance Scoring: TF-IDF and BM25"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once a document is a candidate, Elasticsearch needs a number describing how relevant it is, and that number comes from a scoring formula. The classic starting point is <strong>TF-IDF</strong>, term frequency times inverse document frequency."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Term frequency</strong> is simple: the more times a search term appears in a document, the more relevant that document probably is to that term. <strong>Inverse document frequency</strong> is the balancing force: a term that appears in almost every document, like the, carries little signal and gets down weighted, while a rare term that appears in only a few documents is a strong, distinguishing signal when it does show up."
+        },
+        {
+          "type": "paragraph",
+          "content": "Elasticsearch's default scoring algorithm today is <strong>BM25</strong>, a refinement of the same TF-IDF idea. BM25 caps out the benefit of repeating a term many times, since a document that repeats headphones fifty times is not fifty times more relevant than one that mentions it three times, and it also accounts for document length, so a short document matching a term is not unfairly penalized against a much longer one."
+        },
+        {
+          "type": "note",
+          "title": "You rarely tune the formula, you tune the query",
+          "content": "Most teams never touch the internals of BM25 directly. The real day to day lever is which fields you search, how you weight them relative to each other, and which clauses run in filter versus query context."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"TF-IDF\",\"BM25\"],\"rows\":[[\"Term frequency growth\",\"Grows without a cap\",\"Saturates, extra repeats add diminishing weight\"],[\"Document length\",\"Not accounted for by default\",\"Normalizes so long documents are not unfairly favored\"],[\"Where it is used\",\"The classical formula, still common in teaching\",\"The Elasticsearch default in modern versions\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Keeping Elasticsearch in Sync With the Primary Database",
+          "text": "7. Keeping Elasticsearch in Sync With the Primary Database"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530477-327482059.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530477-327482059.png",
+          "alt": "Changes flow from the primary database into Elasticsearch through a CDC stream"
+        },
+        {
+          "type": "paragraph",
+          "content": "Elasticsearch is almost never the primary source of truth. A relational or document database still owns the real data, and Elasticsearch holds a searchable copy of it. That split immediately raises a hard question: how do you keep the copy from drifting out of sync with the source it was built from?"
+        },
+        {
+          "type": "paragraph",
+          "content": "The naive answer is a <strong>dual write</strong>: whenever the application writes to the primary database, it also writes to Elasticsearch right after. This looks fine until the second write fails, the process crashes between the two writes, or the writes land out of order under load, and now the search index quietly disagrees with the database it is supposed to mirror, with nothing forcing anyone to notice."
+        },
+        {
+          "type": "paragraph",
+          "content": "The more reliable answer is <strong>CDC based sync</strong>, using the Change Data Capture pattern covered in its own lesson on this platform. Rather than the application writing to two places at once, a CDC stream reads the database's own change log and pushes each change into Elasticsearch as a separate, decoupled step. If Elasticsearch falls behind or goes down, changes simply queue up and catch up later, instead of being silently dropped."
+        },
+        {
+          "type": "note",
+          "title": "Make the write into Elasticsearch itself idempotent",
+          "content": "Index documents using the same id as the primary database's row. A replayed or duplicate CDC event then simply overwrites the same document with the same content, rather than creating a duplicate entry."
+        },
+        {
+          "type": "paragraph",
+          "content": "Even with CDC in place, it is worth running an occasional reconciliation job that compares record counts or checksums between the primary database and Elasticsearch, the same defensive habit worth applying anywhere two systems are supposed to agree. Sync mechanisms are reliable, not infallible, and a cheap periodic check catches the rare case something still slipped through."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Elasticsearch vs a Database's Built-in Full-Text Search",
+          "text": "8. Elasticsearch vs a Database's Built-in Full-Text Search"
+        },
+        {
+          "type": "paragraph",
+          "content": "Postgres has a full text search feature, and MySQL has its own too. Reaching for a dedicated search engine is not automatic just because search exists somewhere in the requirements."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Database full text search\",\"Elasticsearch\"],\"rows\":[[\"Setup cost\",\"None, it is already there\",\"A separate system to run and keep in sync\"],[\"Relevance quality\",\"Basic ranking, fewer tuning knobs\",\"BM25 plus rich, tunable relevance controls\"],[\"Scale\",\"Tied to the primary database's capacity\",\"Scales independently via shards and replicas\"],[\"Features\",\"Simple text matching\",\"Fuzzy matching, autocomplete, aggregations, facets\"],[\"Best for\",\"Light search on a small to mid size table\",\"Search as a genuine product feature at scale\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "If search is a secondary feature on a table that is not huge, the database's built in full text search is often the right call precisely because it avoids running and syncing a second system. Reach for Elasticsearch once search becomes a core product experience: heavy query volume, relevance quality that actually matters to users, or features like typo tolerance and faceted filtering that a database engine was never built to offer."
+        },
+        {
+          "type": "paragraph",
+          "content": "Operational cost is the other half of this decision that is easy to underweight. Elasticsearch is another distributed system to monitor, upgrade, and keep in sync, with its own failure modes, and that ongoing cost only pays for itself once search is doing enough real work to justify it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Beyond Search: Aggregations",
+          "text": "9. Beyond Search: Aggregations"
+        },
+        {
+          "type": "paragraph",
+          "content": "Elasticsearch's usefulness does not stop at finding documents. The same shards that make search fast also make it a strong engine for <strong>aggregations</strong>: bucketing and summarizing large document sets, such as average price per category, or count of orders per day, computed across millions of documents in roughly the same time it takes to run the search itself."
+        },
+        {
+          "type": "code",
+          "content": "{\n  \"query\": { \"match\": { \"category\": \"electronics\" } },\n  \"aggs\": {\n    \"avg_price\": { \"avg\": { \"field\": \"price\" } },\n    \"by_brand\": { \"terms\": { \"field\": \"brand.keyword\" } }\n  }\n}",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"query\": { \"match\": { \"category\": \"electronics\" } },\n  \"aggs\": {\n    \"avg_price\": { \"avg\": { \"field\": \"price\" } },\n    \"by_brand\": { \"terms\": { \"field\": \"brand.keyword\" } }\n  }\n}"
+          },
+          "codes": {
+            "json": "{\n  \"query\": { \"match\": { \"category\": \"electronics\" } },\n  \"aggs\": {\n    \"avg_price\": { \"avg\": { \"field\": \"price\" } },\n    \"by_brand\": { \"terms\": { \"field\": \"brand.keyword\" } }\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This is what powers the filter sidebar on most shopping sites, the one showing how many results exist per brand or price range next to the checkboxes. Running that same kind of count grouped by breakdown as a live query against a large primary database, on every single search, would be far more expensive than running it against an index already organized around exactly this kind of lookup."
+        },
+        {
+          "type": "paragraph",
+          "content": "Aggregations come in two broad flavors: <strong>metric</strong> aggregations compute a single number, like an average or a sum, and <strong>bucket</strong> aggregations group documents into categories, like terms or price ranges, and both can nest inside each other, such as an average price bucketed by brand."
+        },
+        {
+          "type": "paragraph",
+          "content": "This dual role, search engine and lightweight real time analytics engine, is a large part of why Elasticsearch shows up in dashboards and observability tools too, not only in product search boxes. Log analysis platforms lean heavily on exactly this aggregation capability to summarize huge volumes of log lines into charts."
+        },
+        {
+          "type": "note",
+          "title": "Aggregations run on the filtered set, not the whole index",
+          "content": "An aggregation combines naturally with the filter and query contexts from the previous section, summarizing only the documents that already matched, which keeps it fast even over a large total dataset."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Autocomplete and Search-as-You-Type",
+          "text": "10. Autocomplete and Search-as-You-Type"
+        },
+        {
+          "type": "paragraph",
+          "content": "Autocomplete looks like a small feature but hides a distinct indexing problem. A relevance search over full sentences is the wrong tool for the different job of matching a partial prefix as someone is still typing it."
+        },
+        {
+          "type": "paragraph",
+          "content": "The common approach indexes <strong>edge n-grams</strong>, meaning a word like search gets pre-broken into every leading prefix at index time: s, se, sea, sear, and so on. A query for sea then matches instantly through a normal term lookup against those precomputed prefixes, rather than trying to pattern match a partial string against full words at query time."
+        },
+        {
+          "type": "paragraph",
+          "content": "Elasticsearch also offers a purpose built <strong>completion suggester</strong>, a specialized in memory structure built specifically for this prefix matching use case, returning suggestions fast enough to feel instant as a user types, which is the whole point of an autocomplete box."
+        },
+        {
+          "type": "code",
+          "content": "\"suggest\": {\n  \"headphones-suggest\": {\n    \"prefix\": \"wire\",\n    \"completion\": { \"field\": \"suggest\" }\n  }\n}",
+          "code": {
+            "language": "json",
+            "content": "\"suggest\": {\n  \"headphones-suggest\": {\n    \"prefix\": \"wire\",\n    \"completion\": { \"field\": \"suggest\" }\n  }\n}"
+          },
+          "codes": {
+            "json": "\"suggest\": {\n  \"headphones-suggest\": {\n    \"prefix\": \"wire\",\n    \"completion\": { \"field\": \"suggest\" }\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Both approaches trade some indexing cost for fast reads: edge n-grams inflate the index size since every prefix of every word is stored separately, and the completion suggester keeps its structure in memory for speed. That tradeoff is usually well worth it, since autocomplete latency is one of the most user visible numbers in a search experience."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Elasticsearch in a System Design Interview",
+          "text": "11. Elasticsearch in a System Design Interview"
+        },
+        {
+          "type": "paragraph",
+          "content": "Design a search autocomplete, design a product search, design a log search system. These prompts all point at the same underlying decision, and showing you understand the tradeoff rather than just the product name is what separates a strong answer."
+        },
+        {
+          "type": "list",
+          "content": "[\"State why a plain database query cannot serve relevance ranked text search at the required scale or quality.\",\"Explain the inverted index at a conceptual level, without needing to reimplement Lucene on the whiteboard.\",\"Describe documents, indices, shards, and replicas, and tie shards back to database sharding the interviewer already knows.\",\"Address sync explicitly: dual write is fragile, CDC based sync is the reliable answer, and say why.\",\"For autocomplete specifically, mention edge n-grams or a completion suggester rather than a generic fuzzy search.\"]",
+          "items": [
+            "State why a plain database query cannot serve relevance ranked text search at the required scale or quality.",
+            "Explain the inverted index at a conceptual level, without needing to reimplement Lucene on the whiteboard.",
+            "Describe documents, indices, shards, and replicas, and tie shards back to database sharding the interviewer already knows.",
+            "Address sync explicitly: dual write is fragile, CDC based sync is the reliable answer, and say why.",
+            "For autocomplete specifically, mention edge n-grams or a completion suggester rather than a generic fuzzy search."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "note",
+          "title": "Showing you know the tradeoff, not just the tool",
+          "content": "Explicitly saying a database's built in full text search might be enough for this scenario, before reaching for Elasticsearch, signals that you pick tools deliberately rather than by reflex."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Common Mistakes with Elasticsearch in Production",
+          "text": "12. Common Mistakes with Elasticsearch in Production"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most Elasticsearch incidents are not exotic distributed systems failures. They are a handful of well known traps that catch teams using it for the first time."
+        },
+        {
+          "type": "list",
+          "content": "[\"Treating Elasticsearch as the primary data store instead of a derived, rebuildable copy, then losing data it was never meant to be the source of truth for.\",\"Dual writing to the database and Elasticsearch without a reconciliation mechanism, letting the two silently drift apart.\",\"Running scoring queries over an unfiltered dataset, when a cheap filter first would have shrunk the candidate set dramatically.\",\"Ignoring shard sizing, either too many tiny shards wasting overhead, or too few oversized shards that cannot rebalance or recover quickly.\",\"Using the wrong analyzer for the language or domain, such as English stemming rules applied to product SKUs, breaking exact match search.\",\"Skipping a reconciliation check between the primary database and the index, and only discovering drift when a customer reports a missing search result.\"]",
+          "items": [
+            "Treating Elasticsearch as the primary data store instead of a derived, rebuildable copy, then losing data it was never meant to be the source of truth for.",
+            "Dual writing to the database and Elasticsearch without a reconciliation mechanism, letting the two silently drift apart.",
+            "Running scoring queries over an unfiltered dataset, when a cheap filter first would have shrunk the candidate set dramatically.",
+            "Ignoring shard sizing, either too many tiny shards wasting overhead, or too few oversized shards that cannot rebalance or recover quickly.",
+            "Using the wrong analyzer for the language or domain, such as English stemming rules applied to product SKUs, breaking exact match search.",
+            "Skipping a reconciliation check between the primary database and the index, and only discovering drift when a customer reports a missing search result."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "Elasticsearch is fast because it is specialized. Treat it like a general purpose database and you lose the specialization without gaining any of the safety a real primary datastore gives you."
+        },
+        {
+          "type": "note",
+          "title": "Most incidents trace back to one of these five",
+          "content": "Before reaching for exotic tuning, check dual write drift, missing filters, and shard sizing first. They account for the large majority of real world Elasticsearch problems teams run into."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Common Questions",
+          "text": "13. Common Questions"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Can Elasticsearch replace my primary database?</strong> Generally no. It is optimized for search and analytics, not for transactional guarantees or being the single source of truth. Keep a primary database as the system of record and treat the search index as a derived, rebuildable copy."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>How fresh does the search index need to be?</strong> It depends entirely on the product. A support ticket search tolerating a few seconds of staleness is very different from an inventory search that must reflect a sale the instant it happens. CDC based sync can be tuned for near real time delivery, but there is always some lag between a write and its appearance in the index."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Why not just add a full text index to my existing database?</strong> For light search needs, that is often the right call. Reach for Elasticsearch once you need relevance tuning, typo tolerance, faceted filtering, or scale that would strain the primary database if search queries ran directly against it."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>What happens if the Elasticsearch index gets corrupted or falls badly out of sync?</strong> Because it holds a derived copy, the standard recovery is a full reindex from the primary database. This is exactly why CDC based sync matters: it makes reindexing from the source of truth a routine, expected operation rather than a crisis."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Is BM25 the only scoring option?</strong> No, Elasticsearch allows custom scoring functions and boosting specific fields or conditions, but BM25 is the sensible default for the large majority of search use cases and most teams never need to replace it."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Are aggregations a replacement for a proper analytics database?</strong> Not for heavy, ad hoc analytical workloads spanning huge historical datasets, that is still a job for a data warehouse. Aggregations shine for fast, real time summaries layered on top of a search result, like the filter counts next to a product listing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "14. Key Takeaways",
+          "text": "14. Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"Elasticsearch is built on Apache Lucene for the core index, and adds sharding, replication, and a REST API on top of it.\",\"SQL LIKE queries cannot efficiently do relevance ranked text search, since they scan rows instead of jumping to matching terms.\",\"An inverted index maps each term to the documents containing it, turning search into a fast lookup instead of a full scan.\",\"Elasticsearch structures data as documents inside indices, split into shards for scale and replicated for safety and read throughput.\",\"Analyzers tokenize and normalize text at both index time and query time, which is why stemmed and lowercased matches work.\",\"Filter context answers yes or no cheaply, query context computes a relevance score, and efficient queries filter first, score second.\",\"BM25 scores relevance using term frequency balanced against how common a term is across all documents, plus document length.\",\"Elasticsearch should be a derived, rebuildable copy of a primary database, kept in sync through CDC rather than a fragile dual write.\",\"Reach for a database's built in full text search for light needs, and for Elasticsearch once search becomes a real product feature.\"]",
+          "items": [
+            "Elasticsearch is built on Apache Lucene for the core index, and adds sharding, replication, and a REST API on top of it.",
+            "SQL LIKE queries cannot efficiently do relevance ranked text search, since they scan rows instead of jumping to matching terms.",
+            "An inverted index maps each term to the documents containing it, turning search into a fast lookup instead of a full scan.",
+            "Elasticsearch structures data as documents inside indices, split into shards for scale and replicated for safety and read throughput.",
+            "Analyzers tokenize and normalize text at both index time and query time, which is why stemmed and lowercased matches work.",
+            "Filter context answers yes or no cheaply, query context computes a relevance score, and efficient queries filter first, score second.",
+            "BM25 scores relevance using term frequency balanced against how common a term is across all documents, plus document length.",
+            "Elasticsearch should be a derived, rebuildable copy of a primary database, kept in sync through CDC rather than a fragile dual write.",
+            "Reach for a database's built in full text search for light needs, and for Elasticsearch once search becomes a real product feature."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Search feels like magic from the outside, an instant, ranked answer to a vague question typed into a box. Underneath, it is a specialized index, a careful text pipeline, and a sync strategy that refuses to let the copy drift from the truth."
+        }
+      ]
+    }
+  ]
+}

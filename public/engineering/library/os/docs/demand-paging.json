@@ -1,0 +1,337 @@
+{
+  "title": "Demand Paging",
+  "slug": "demand-paging",
+  "content": [
+    {
+      "id": "demand-paging",
+      "title": "Demand Paging",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "Virtual memory promises a process more address space than physical RAM could ever hold, but a promise alone loads nothing into real memory. Demand paging is the mechanism that actually keeps that promise: instead of pulling a process's entire address space into RAM the instant it starts, the operating system loads pages one at a time, only when they are actually touched. Nothing arrives before it is needed, and most programs, it turns out, never touch every page they could theoretically reach in a single run."
+        },
+        {
+          "type": "paragraph",
+          "content": "This chapter walks through demand paging end to end: how the valid and invalid bit on every page table entry tracks what is really resident in RAM, the exact sequence the operating system follows when a page fault occurs, why the faulting instruction has to be fully restarted rather than resumed, and what this buys a real program at startup. It closes by contrasting demand paging with pre paging, a proactive alternative, and by naming the single most common page fault interview question you should be ready to answer from memory."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968440-667963469.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968440-667963469.png",
+          "alt": "demand-paging",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968440-667963469.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Core Idea, Loading Pages Only When They Are Touched",
+          "text": "1. The Core Idea, Loading Pages Only When They Are Touched"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most straightforward way to run a process is to load its entire address space into physical RAM before it executes a single instruction. Every page gets a frame, all at once, whether or not the program will ever touch it. This is simple to reason about, but it is wasteful in two ways: it delays the moment execution can actually begin, since nothing runs until everything is loaded, and it can require far more physical RAM than the program's real, working needs."
+        },
+        {
+          "type": "paragraph",
+          "content": "Demand paging rejects that eager approach entirely. Instead of loading everything up front, the operating system loads a page into RAM only at the exact moment the process actually references it for the first time, on demand. Every other page stays wherever it was before execution began, typically on disk, until the process happens to touch it too, if it ever does at all."
+        },
+        {
+          "type": "paragraph",
+          "content": "This works because of a simple, well documented observation about how real programs behave: most programs never touch every page they could theoretically reach in a single run. Error handling code that never triggers, rarely used branches, unused library functions, and huge data structures that are only partially scanned all sit untouched for the entire life of the process. Demand paging is built entirely around exploiting that observation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Valid and Invalid Bit, Tracking What Is Actually In RAM",
+          "text": "2. The Valid and Invalid Bit, Tracking What Is Actually In RAM"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every page table entry carries one extra piece of information beyond the frame number: a single bit, usually called the valid bit, that records whether the page it describes currently has a real physical frame behind it. A page marked valid is genuinely resident in RAM right now, and its frame number can be trusted and used immediately. A page marked invalid has no frame behind it at all, its contents live somewhere on disk instead."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-956986239.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-956986239.png",
+          "alt": "The Valid and Invalid Bit, Tracking What Is Actually In RAM",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-956986239.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a process is first loaded, demand paging starts from the most extreme possible position: every single page table entry is initialized to invalid, since literally nothing has been brought into RAM yet. There is no partial preload, no guessing which pages the process will need first. The page table exists, fully formed, but every entry points at nothing until the process itself proves, by touching a page, that it actually needs it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-860128583.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-860128583.png",
+          "alt": "The Valid and Invalid Bit, Tracking What Is Actually In RAM",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-860128583.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the mechanism that makes loading only what gets touched a concrete, checkable rule rather than a vague intention. Hardware checks the valid bit on every single memory access, automatically, at electronic speed, and it is that check, not any software polling loop, that decides whether a page needs to be brought in."
+        },
+        {
+          "type": "note",
+          "title": "In one sentence",
+          "content": "The valid bit on a page table entry is the single source of truth for whether a page is really in RAM right now. Valid means trust the frame number. Invalid means trap to the operating system first."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Valid Bit\",\"Meaning\",\"What Hardware Does\"],\"rows\":[[\"1, valid\",\"Page is currently resident in a physical frame\",\"Uses the frame number directly to complete the memory access\"],[\"0, invalid\",\"Page is not in RAM right now, most likely still on disk\",\"Traps to the operating system, a page fault, before the access can complete\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Full Page Fault Handling Sequence, Step by Step",
+          "text": "3. The Full Page Fault Handling Sequence, Step by Step"
+        },
+        {
+          "type": "paragraph",
+          "content": "A page fault sounds alarming, but it is simply the hardware's way of telling the operating system that a particular page is not here yet and needs to be fetched. The sequence that follows is one of the most important pieces of mechanism in the entire memory management story, and it always proceeds in the same fixed order."
+        },
+        {
+          "type": "paragraph",
+          "content": "It begins the instant the CPU generates a logical address that falls on a page marked invalid. The memory management hardware notices immediately and traps to the operating system rather than letting the access complete, and this hardware trap is the page fault itself. The OS fault handler then takes over and has to decide, first, whether this is actually a legitimate reference to a real page that simply is not loaded yet, or an illegal access to memory the process was never allowed to touch at all. An illegal access ends the process outright."
+        },
+        {
+          "type": "paragraph",
+          "content": "Once the OS confirms the reference is legitimate, it needs a physical frame to hold the incoming page. If a free frame already exists, it is used immediately. If RAM is completely full, the OS must first evict an existing page to make room, a decision governed by a page replacement algorithm, covered in its own dedicated module later, since choosing badly here has real performance consequences. Either way, the OS then schedules a disk read to bring the needed page into that frame, updates the page table entry to valid with the correct frame number, and only then lets execution continue."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-960177048.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-960177048.png",
+          "alt": "The Full Page Fault Handling Sequence, Step by Step",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-960177048.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"The CPU generates a logical address for a page marked invalid.\",\"Hardware traps to the operating system, and this trap is the page fault.\",\"The OS checks whether the reference is legitimate or an illegal access.\",\"If illegal, the process is terminated.\",\"If legitimate, the OS finds a free frame, or evicts an existing page if RAM is full.\",\"The OS schedules a disk read to bring the missing page into that frame.\",\"The page table entry is updated to valid with the correct frame number.\",\"The instruction that originally triggered the fault is restarted from the beginning.\"]",
+          "items": [
+            "The CPU generates a logical address for a page marked invalid.",
+            "Hardware traps to the operating system, and this trap is the page fault.",
+            "The OS checks whether the reference is legitimate or an illegal access.",
+            "If illegal, the process is terminated.",
+            "If legitimate, the OS finds a free frame, or evicts an existing page if RAM is full.",
+            "The OS schedules a disk read to bring the missing page into that frame.",
+            "The page table entry is updated to valid with the correct frame number.",
+            "The instruction that originally triggered the fault is restarted from the beginning."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "code",
+          "content": "// Simplified pseudocode for a demand paging fault handler\n\nvoid handle_page_fault(int page_number) {\n    if (!is_legitimate_reference(page_number)) {\n        terminate_process(SEGMENTATION_FAULT);\n        return;\n    }\n\n    int frame;\n    if (free_frame_available()) {\n        frame = allocate_free_frame();\n    } else {\n        int victim = choose_victim_frame();   // a page replacement algorithm decides\n        write_back_if_dirty(victim);\n        mark_page_invalid(frame_to_page(victim));\n        frame = victim;\n    }\n\n    read_page_from_disk(page_number, frame);\n    page_table[page_number].valid = true;\n    page_table[page_number].frame = frame;\n\n    restart_faulting_instruction();   // start over, never resume mid instruction\n}",
+          "code": "// Simplified pseudocode for a demand paging fault handler\n\nvoid handle_page_fault(int page_number) {\n    if (!is_legitimate_reference(page_number)) {\n        terminate_process(SEGMENTATION_FAULT);\n        return;\n    }\n\n    int frame;\n    if (free_frame_available()) {\n        frame = allocate_free_frame();\n    } else {\n        int victim = choose_victim_frame();   // a page replacement algorithm decides\n        write_back_if_dirty(victim);\n        mark_page_invalid(frame_to_page(victim));\n        frame = victim;\n    }\n\n    read_page_from_disk(page_number, frame);\n    page_table[page_number].valid = true;\n    page_table[page_number].frame = frame;\n\n    restart_faulting_instruction();   // start over, never resume mid instruction\n}",
+          "codes": {
+            "c": "// Simplified pseudocode for a demand paging fault handler\n\nvoid handle_page_fault(int page_number) {\n    if (!is_legitimate_reference(page_number)) {\n        terminate_process(SEGMENTATION_FAULT);\n        return;\n    }\n\n    int frame;\n    if (free_frame_available()) {\n        frame = allocate_free_frame();\n    } else {\n        int victim = choose_victim_frame();   // a page replacement algorithm decides\n        write_back_if_dirty(victim);\n        mark_page_invalid(frame_to_page(victim));\n        frame = victim;\n    }\n\n    read_page_from_disk(page_number, frame);\n    page_table[page_number].valid = true;\n    page_table[page_number].frame = frame;\n\n    restart_faulting_instruction();   // start over, never resume mid instruction\n}"
+          }
+        },
+        {
+          "type": "note",
+          "title": "A fault is not a crash",
+          "content": "Despite the name, a page fault handled correctly is not an error condition, and it does not mean anything has gone wrong. It is a normal, expected, and extremely frequent part of how virtual memory operates. A typical process can generate a large number of page faults over its lifetime without anything being wrong at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Restart, Not Resume, Why The Whole Instruction Starts Over",
+          "text": "4. Restart, Not Resume, Why The Whole Instruction Starts Over"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once the missing page is loaded and the page table entry is marked valid again, the operating system does not try to pick up execution from the exact point inside the instruction where the fault happened. It restarts the entire faulting instruction from its very beginning, as if it had never been attempted at all."
+        },
+        {
+          "type": "paragraph",
+          "content": "This distinction matters because many instructions touch memory more than once, and some touch several different pages within a single instruction, for example an instruction that copies a block of data from one location to another, or one that reads two separate operands before combining them. If only the specific access that faulted were retried while leaving earlier partial effects of that same instruction in place, the process's internal state could easily end up inconsistent or simply wrong."
+        },
+        {
+          "type": "paragraph",
+          "content": "Restarting from the beginning sidesteps that problem entirely. By the time the instruction runs again, every page it needs, including the one that just faulted, is now valid and resident, so the second attempt runs straight through without interruption. The process itself never even knows the restart happened, it simply looks, from the outside, like that one instruction took a little longer than usual."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-764376749.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-764376749.png",
+          "alt": "Restart, Not Resume, Why The Whole Instruction Starts Over",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968441-764376749.png"
+        },
+        {
+          "type": "blockQuote",
+          "content": "The faulting instruction is restarted from the beginning, never resumed partway through. By the time it runs again, every page it touches is already valid."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. A Worked Example, A Program's First Few Page Faults",
+          "text": "5. A Worked Example, A Program's First Few Page Faults"
+        },
+        {
+          "type": "paragraph",
+          "content": "Tracing through the very first moments after a process is loaded makes the whole mechanism concrete. The process has just been created, its page table exists, and, as established earlier, every single entry in it is marked invalid. Not one page has been brought into RAM yet."
+        },
+        {
+          "type": "paragraph",
+          "content": "The very first instruction the CPU tries to execute already lives on some page of that address space, and since every page starts invalid, that very first fetch immediately triggers a page fault. The OS brings that one page in, marks it valid, and restarts the instruction, which now runs successfully. Execution then proceeds normally, using only that first page, until the program reaches a point where it reads or jumps into a second page it has not touched before, triggering a second, completely separate page fault."
+        },
+        {
+          "type": "paragraph",
+          "content": "That second page is loaded the same way, and execution continues again. This pattern repeats, a handful of times or hundreds of times depending on the program, each fault bringing in exactly one more page the process has proven it actually needs by trying to use it. Gradually, the set of pages actually resident in RAM converges on the program's real working set, the pages it is genuinely using during this run, without the OS ever having had to guess in advance which pages those would be."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968442-604234895.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968442-604234895.png",
+          "alt": "A Worked Example, A Program's First Few Page Faults",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968442-604234895.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. The Startup and Memory Footprint Payoff",
+          "text": "6. The Startup and Memory Footprint Payoff"
+        },
+        {
+          "type": "paragraph",
+          "content": "The practical payoff of all this becomes obvious with real numbers. Consider a program whose total address space spans 1000 pages, but which, during a typical run, only ever actually touches 50 of them, the rest being rarely used error paths, unused features, or data that simply never gets scanned this time."
+        },
+        {
+          "type": "paragraph",
+          "content": "Under pure demand paging, that program only ever pages in those 50 pages, never the other 950. It never pays the cost, in time or in physical RAM, of loading code and data it was never going to use. Compare that to eagerly loading the entire address space at startup, which would mean 1000 separate disk reads and 1000 frames of RAM committed before the program could even begin, regardless of how much of that effort turns out to be wasted."
+        },
+        {
+          "type": "paragraph",
+          "content": "The result is both a faster time to first instruction and a dramatically smaller real memory footprint, since RAM only ever holds the pages a process is genuinely using at any given moment, not everything it could conceivably ever touch."
+        },
+        {
+          "type": "code",
+          "content": "total_pages = 1000;\npages_actually_touched = 50;\n\npages_never_loaded = total_pages-pages_actually_touched;\n// pages_never_loaded = 950\n\n// only 50 disk reads happen across the entire run\n// instead of 1000 disk reads at startup under eager loading",
+          "code": "total_pages = 1000;\npages_actually_touched = 50;\n\npages_never_loaded = total_pages-pages_actually_touched;\n// pages_never_loaded = 950\n\n// only 50 disk reads happen across the entire run\n// instead of 1000 disk reads at startup under eager loading",
+          "codes": {
+            "c": "total_pages = 1000;\npages_actually_touched = 50;\n\npages_never_loaded = total_pages-pages_actually_touched;\n// pages_never_loaded = 950\n\n// only 50 disk reads happen across the entire run\n// instead of 1000 disk reads at startup under eager loading"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968442-843553490.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968442-843553490.png",
+          "alt": "The Startup and Memory Footprint Payoff",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968442-843553490.png"
+        },
+        {
+          "type": "note",
+          "title": "A familiar comparison",
+          "content": "You do not need to read every chapter of a thousand page textbook to pass tomorrow's exam on chapter three. Demand paging applies exactly that same instinct to memory: bring in only the part that is actually being used right now."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. The Real Cost of a Page Fault",
+          "text": "7. The Real Cost of a Page Fault"
+        },
+        {
+          "type": "paragraph",
+          "content": "None of this comes for free. Every single page fault requires an actual disk access to bring the missing page in, and a disk access is orders of magnitude slower than a normal RAM access, the difference between nanoseconds and milliseconds, a gap of roughly a million times or more depending on the storage hardware involved."
+        },
+        {
+          "type": "paragraph",
+          "content": "That gap is why page fault frequency matters so much in practice. A process that faults constantly, because its real working set genuinely does not fit in the RAM available to it, spends the overwhelming majority of its time waiting on disk instead of doing useful computation. This condition has its own name, thrashing, and it is one of the clearest ways a system's performance can collapse."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is also exactly why the quality of the page replacement algorithm used when RAM is full genuinely matters, and why it earns its own dedicated module later. Evicting the wrong page, one that will actually be needed again very soon, just turns straight back into another expensive fault a moment later. A good replacement algorithm keeps the pages most likely to be reused resident, and lets the ones least likely to be reused go."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Operation\",\"Typical Latency\",\"Roughly\"],\"rows\":[[\"RAM access\",\"Tens of nanoseconds\",\"The baseline, extremely fast\"],[\"Disk access to service a page fault\",\"Several milliseconds\",\"Hundreds of thousands of times slower than RAM\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968776-635464661.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968776-635464661.png",
+          "alt": "The Real Cost of a Page Fault",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968776-635464661.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Pre Paging, A Contrasting Strategy",
+          "text": "8. Pre Paging, A Contrasting Strategy"
+        },
+        {
+          "type": "paragraph",
+          "content": "Demand paging is reactive by design, it never loads a page until that page is actually touched. Pre paging takes the opposite philosophical stance. Instead of waiting for each individual page to be referenced, the operating system predicts, using patterns like sequential access or a process's recent history, which pages are likely to be needed soon and loads several of them into RAM together, all at once, ahead of time."
+        },
+        {
+          "type": "paragraph",
+          "content": "The motivation is straightforward: every page fault carries the overhead of a hardware trap and an OS context switch into the fault handler, on top of the disk read itself. Pre paging tries to reduce the total number of separate fault interruptions a process generates by grouping several page loads into one proactive batch instead of many individual reactive ones."
+        },
+        {
+          "type": "paragraph",
+          "content": "The tradeoff is just as straightforward. Because pre paging is a prediction, it can guess wrong. Pages loaded in anticipation of being needed sometimes never get touched at all, which wastes both the disk read that brought them in and the RAM frame they now occupy for nothing. Demand paging never makes that particular mistake, since it only ever loads a page after proving, by an actual access, that it is needed."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968776-39935529.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968776-39935529.png",
+          "alt": "Pre Paging, A Contrasting Strategy",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408968776-39935529.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Demand Paging\",\"Pre Paging\"],\"rows\":[[\"When pages load\",\"Only after the page is actually referenced\",\"In anticipation, before any reference occurs\"],[\"Risk of wasted loads\",\"Essentially none, every load was proven necessary\",\"Real, a predicted page may never actually be used\"],[\"Typical use case\",\"The general default strategy for most processes\",\"Situations with predictable access patterns, such as sequential file reads\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Common Mistakes and Interview Angle",
+          "text": "9. Common Mistakes and Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "A few misunderstandings come up again and again once this topic reaches practice, and they are worth naming directly."
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming a page fault always means something has gone wrong or the process has crashed. A page fault that is handled correctly is a completely normal, expected, and frequent part of how virtual memory works, not an error condition.\",\"Forgetting that the faulting instruction must be fully restarted from the beginning, not resumed partway through. Resuming mid instruction risks leaving earlier partial effects of that same instruction in an inconsistent state.\",\"Confusing demand paging with pre paging. Demand paging only ever loads a page after it has actually been touched. Pre paging loads pages in anticipation, before any reference has occurred.\",\"Treating every page fault as equally cheap. A page fault that requires an actual disk read is orders of magnitude slower than a normal memory access, and frequent faulting is a serious performance problem, not a minor one.\"]",
+          "items": [
+            "Assuming a page fault always means something has gone wrong or the process has crashed. A page fault that is handled correctly is a completely normal, expected, and frequent part of how virtual memory works, not an error condition.",
+            "Forgetting that the faulting instruction must be fully restarted from the beginning, not resumed partway through. Resuming mid instruction risks leaving earlier partial effects of that same instruction in an inconsistent state.",
+            "Confusing demand paging with pre paging. Demand paging only ever loads a page after it has actually been touched. Pre paging loads pages in anticipation, before any reference has occurred.",
+            "Treating every page fault as equally cheap. A page fault that requires an actual disk read is orders of magnitude slower than a normal memory access, and frequent faulting is a serious performance problem, not a minor one."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Interview angle",
+          "content": "Interviewers reach for page fault handling constantly because it touches hardware, the operating system, and disk I/O all in one sequence. Be ready to walk through it completely from memory: the invalid page table entry, the hardware trap, the legitimacy check, finding or freeing a frame, the disk read, updating the page table entry to valid, and restarting, never resuming, the faulting instruction. This is one of the single most commonly asked deep operating systems interview questions, and being able to narrate it cleanly, step by step, without hesitating, is genuinely worth rehearsing."
+        },
+        {
+          "type": "paragraph",
+          "content": "Demand paging is what turns virtual memory from a promise into working reality. Everything else in this module, page replacement algorithms, thrashing, and swapping, builds directly on the fault handling sequence introduced here."
+        }
+      ]
+    }
+  ]
+}

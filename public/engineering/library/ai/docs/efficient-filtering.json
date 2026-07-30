@@ -1,0 +1,481 @@
+{
+  "slug": "efficient-filtering",
+  "title": "Efficient Filtering",
+  "content": [
+    {
+      "id": "efficient-filtering",
+      "title": "Efficient Filtering",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Everything you learned in the filtering lesson still applies here. Boolean masks, <code>.query()</code>, <code>.isin()</code>, all of that syntax stays exactly the same. What changes now is the DataFrame under your feet. A filter that returns in a blink on a thousand row DataFrame does not automatically return in a blink on a DataFrame with ten million rows, and if that filter sits inside a pipeline that runs every few minutes or every time a user loads a dashboard, the slow version does not just cost you once. It costs you every single run, forever, until someone notices and fixes it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666353530-955195456.png",
+          "alt": "A filter running fine at 1000 rows but taking noticeably longer at 10 million rows inside a pipeline that runs repeatedly",
+          "caption": "The same filter, two very different scales, and a cost that compounds every time the pipeline runs.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Introduction",
+          "id": "introduction"
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson is not about learning new filtering syntax. You already have all of that from the earlier filtering lesson. This lesson is about understanding what actually happens underneath <code>df[mask]</code>, <code>df.query(...)</code>, and <code>df.loc[...]</code> once the DataFrame gets big, so you can make an informed choice instead of a default one."
+        },
+        {
+          "type": "paragraph",
+          "text": "Scale changes the calculus in a very physical way. Filtering a thousand rows means checking a thousand values, something a modern CPU does before you can blink. Filtering ten million rows means checking ten million values, and if that happens inside a loop, a scheduled job, or an API endpoint that gets hit thousands of times a day, those milliseconds add up into real minutes and real infrastructure cost."
+        },
+        {
+          "type": "note",
+          "title": "This builds directly on the filtering lesson",
+          "content": "If any of df[mask], .query(), or .isin() feels unfamiliar, go back to the filtering lesson first. Here we assume you can already write all three correctly, and we are only asking a different question: which one is fastest at scale, and why."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Boolean Masking vs query Performance",
+          "id": "boolean-masking-vs-query-performance"
+        },
+        {
+          "type": "paragraph",
+          "text": "You already know that <code>df[(df.a > 5) & (df.b == \"west\")]</code> and <code>df.query(\"a > 5 and b == 'west'\")</code> return identical results. What most people never learn is that on a genuinely large DataFrame, these two lines are not doing the same amount of work under the hood, and the gap between them is real and measurable, not just a matter of taste."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.1 What a Chained Boolean Mask Creates Along the Way",
+          "id": "chained-boolean-mask-intermediates"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every time you write <code>(df.a > 5) & (df.b == \"west\")</code>, pandas evaluates it in stages, exactly like Python evaluates any expression left to right. <code>df.a > 5</code> runs first and produces a brand new boolean Series sitting in memory. <code>df.b == \"west\"</code> runs next and produces a second brand new boolean Series sitting in memory. Only then does <code>&</code> combine those two temporary Series into a third boolean Series, which finally gets used to index the DataFrame."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "mask = (df[\"price\"] > 100) & (df[\"category\"] == \"electronics\") & (df[\"in_stock\"])\nresult = df[mask]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Three conditions here means at least three intermediate boolean arrays get built and thrown away, one per condition plus the combined result. On a ten million row DataFrame, each one of those intermediate arrays holds ten million booleans, however briefly. None of this shows up in your code, but it all shows up in your runtime."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666355177-98034914.png",
+          "alt": "Two separate conditions each producing their own temporary boolean array before being combined into a final mask",
+          "caption": "A chained mask does not evaluate as one step, it builds several throwaway arrays on the way there.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.2 How query Avoids Those Intermediates",
+          "id": "query-avoids-intermediates"
+        },
+        {
+          "type": "paragraph",
+          "text": "<code>df.query()</code> takes a different path entirely. Instead of building the expression up piece by piece in Python, it parses your condition string and, when the optional <strong>numexpr</strong> library is installed, hands the whole expression to numexpr as one unit. numexpr is a C level expression evaluator built specifically to evaluate array expressions like this in a single pass, without materializing every intermediate step as its own array."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "result = df.query(\"price > 100 and category == 'electronics' and in_stock\")"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666356524-524256756.png",
+          "alt": "A query string being parsed once and evaluated by numexpr in a single pass instead of building intermediate arrays",
+          "caption": "One parse, one evaluation pass, no throwaway arrays along the way.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "numexpr is optional, but usually already there",
+          "content": "pandas falls back to its own evaluator if numexpr is not installed, and query() still returns correct results either way. The performance advantage specifically comes from numexpr being available, which it is by default in most standard scientific Python installs. Run import numexpr if you want to confirm it is present in your environment."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.3 When This Difference Actually Shows Up",
+          "id": "when-the-difference-shows-up"
+        },
+        {
+          "type": "paragraph",
+          "text": "On a DataFrame with a few thousand rows, you will not feel any of this. The overhead of parsing a query string can even make query() slightly slower than a simple mask on tiny data. The gap opens up specifically once you are dealing with large row counts and multiple chained conditions, which is exactly the situation where those extra intermediate arrays start costing real time and real memory. A single, simple condition on modest data is not where this decision matters much. Big data with several combined conditions is where it does."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Why the Index Matters for Filtering",
+          "id": "why-the-index-matters-for-filtering"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every filter technique covered so far scans data to find matching rows in some form. There is one filtering approach that can skip almost all of that scanning entirely, and it depends on something you might not think of as a filtering tool at all: the DataFrame's index."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.1 Filtering a Regular Column Is a Full Scan",
+          "id": "filtering-a-regular-column-is-a-full-scan"
+        },
+        {
+          "type": "paragraph",
+          "text": "When you filter on a regular column with a boolean mask, pandas has no shortcut available. It has to check every single row's value against your condition, one by one, because as far as pandas knows, the values could be in any order at all. This is called a full scan, and its cost grows in a straight line with the number of rows. Ten times the rows means roughly ten times the work."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666357801-907386478.png",
+          "alt": "A regular column filter scanning every row one by one compared to a sorted index filter jumping straight to the matching range",
+          "caption": "Same question, two very different amounts of work to answer it.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.2 Setting the Filter Column as the Index",
+          "id": "setting-the-filter-column-as-the-index"
+        },
+        {
+          "type": "paragraph",
+          "text": "If you find yourself repeatedly filtering on the same column, for example looking up rows by <code>user_id</code> or by date, setting that column as the DataFrame's index and filtering with <code>.loc</code> instead of a boolean mask changes the game entirely."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "df_indexed = df.set_index(\"user_id\")\nrows = df_indexed.loc[482913]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This alone helps, because .loc on an index uses pandas' internal index structures rather than comparing every value in a plain column. But the real gain shows up once that index is sorted."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.3 A Sorted Index Lets Pandas Binary Search",
+          "id": "a-sorted-index-lets-pandas-binary-search"
+        },
+        {
+          "type": "paragraph",
+          "text": "If you know anything about how a database index works, this next part will feel familiar. A database index keeps values in sorted order specifically so lookups can jump straight to the relevant rows instead of reading the entire table. A sorted pandas index does the exact same thing. Once <code>df_indexed.index</code> is sorted, .loc can perform something close to a binary search: check the middle, decide which half contains your target, check the middle of that half, and keep narrowing in, matching rows in a handful of comparisons instead of scanning millions of them one at a time."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "df_sorted = df_indexed.sort_index()\nrows = df_sorted.loc[482913]   # binary search style lookup, not a full scan"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666359177-150566970.png",
+          "alt": "A database table with an index jumping straight to matching rows, next to a sorted pandas index doing the same thing with loc",
+          "caption": "The same idea you already trust in a database, just applied inside a DataFrame.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "An unsorted index does not get the full benefit",
+          "content": "df_indexed.index.is_monotonic_increasing tells you whether your index is actually sorted. An unsorted index still gives some benefit from .loc over a plain boolean mask, but you only get the full binary search style speed once the index is sorted, so call sort_index() once up front if you are going to be doing repeated lookups."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Category Dtype and Filtering Speed",
+          "id": "category-dtype-and-filtering-speed"
+        },
+        {
+          "type": "paragraph",
+          "text": "You have already seen category dtype from the memory angle, storing each unique value once instead of repeating full strings across every row. That memory saving is real, but there is a separate, equally real performance benefit specifically for filtering that is worth understanding on its own terms."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.1 Comparing Integer Codes Instead of Full Strings",
+          "id": "comparing-integer-codes-instead-of-full-strings"
+        },
+        {
+          "type": "paragraph",
+          "text": "When you filter <code>df[df[\"status\"] == \"cancelled\"]</code> on a plain object column, pandas compares the full string \"cancelled\" against the full string stored in every single row. When status is category dtype, pandas does not compare strings at all during the filter. It looks up which small integer code corresponds to \"cancelled\" once, and then compares that one small integer against the integer code stored in every row. Comparing integers is simply cheaper than comparing strings, and that difference gets repeated once per row."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666360516-10452366.png",
+          "alt": "An object column comparing full strings row by row next to a category column comparing small integer codes row by row",
+          "caption": "Same comparison, but one side is comparing whole words and the other is comparing small numbers.",
+          "size": "medium"
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "df[\"status\"] = df[\"status\"].astype(\"category\")\nresult = df[df[\"status\"] == \"cancelled\"]   # compares int codes internally, not strings"
+          }
+        },
+        {
+          "type": "note",
+          "title": "The conversion itself is not free",
+          "content": "Converting a column to category dtype costs some work up front, building that mapping from value to code. It pays off when you are going to filter, group, or compare that column many times afterward, not for a column you touch once and discard."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Chaining Filters: Order Matters",
+          "id": "chaining-filters-order-matters"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a real filter involves several conditions chained together, the order you write those conditions in can change how much total work pandas ends up doing, even though the final result is identical either way."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.1 Apply the Cheapest, Most Selective Filter First",
+          "id": "apply-the-cheapest-most-selective-filter-first"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a ten million row orders table. You want orders where region equals \"west\", which matches maybe two million rows, and status equals \"refunded\", which matches only about twenty thousand rows. If you apply the region filter first, every subsequent condition still has to work through two million rows. If you apply the status filter first, you shrink the working set down to twenty thousand rows immediately, and every condition after that only has twenty thousand rows to check instead of millions."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666361829-483480141.png",
+          "alt": "A broad filter applied first leaving millions of rows for the selective filter to still scan through",
+          "caption": "Filtering broad first means the narrow filter still has to do the heavy lifting.",
+          "size": "medium"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666363134-227519663.png",
+          "alt": "A selective filter applied first shrinking the data down early so remaining filters have far less to scan",
+          "caption": "Filtering narrow first means every filter after it inherits a much smaller problem.",
+          "size": "medium"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is not a pandas specific trick. It is the same intuition behind putting your most restrictive WHERE clause first in a database query, or checking the cheapest, most likely to fail condition first in an if statement so you can skip expensive checks entirely. Shrink the data early, and every later step inherits a smaller problem."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# less ideal: broad filter first, the narrow filter still scans millions of rows\nresult = df[(df[\"region\"] == \"west\") & (df[\"status\"] == \"refunded\")]\n\n# better: apply the more selective condition first where practical\nnarrow = df[df[\"status\"] == \"refunded\"]\nresult = narrow[narrow[\"region\"] == \"west\"]"
+          }
+        },
+        {
+          "type": "note",
+          "title": "How do you know which filter is more selective",
+          "content": "A quick df[\"status\"].value_counts() or df[\"region\"].value_counts() before you write the filter tells you roughly how many rows each condition will leave behind. The condition with the smallest matching count is your most selective one, and it is usually worth applying first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Worked Example: Three Ways to Filter a Large DataFrame",
+          "id": "worked-example-three-ways-to-filter"
+        },
+        {
+          "type": "paragraph",
+          "text": "Let's put the boolean mask, query(), and an indexed .loc lookup side by side on the same reasonably large synthetic DataFrame and see how they actually compare."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "6.1 Setting Up the Synthetic Data",
+          "id": "setting-up-the-synthetic-data"
+        },
+        {
+          "type": "paragraph",
+          "text": "Ten million rows is enough to make the differences between these approaches show up clearly without needing anything exotic. Here is a synthetic orders style DataFrame with a numeric column to filter on, a category style column, and an id column we will use as the index for the third approach."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\nimport pandas as pd\n\nn = 10_000_000\nrng = np.random.default_rng(0)\n\ndf = pd.DataFrame({\n    \"order_id\": np.arange(n),\n    \"amount\": rng.uniform(1, 1000, n),\n    \"region\": rng.choice([\"west\", \"east\", \"north\", \"south\"], n),\n})"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666364464-605915052.png",
+          "alt": "The same large synthetic DataFrame being filtered three different ways: chained boolean mask, query with numexpr, and an indexed loc lookup",
+          "caption": "Three approaches, one dataset, so the comparison is fair.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "6.2 Chained Boolean Mask",
+          "id": "chained-boolean-mask-approach"
+        },
+        {
+          "type": "paragraph",
+          "text": "The approach you already know best. A straightforward chained condition on the plain columns."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "%timeit df[(df[\"amount\"] > 900) & (df[\"region\"] == \"west\")]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "6.3 query with numexpr",
+          "id": "query-with-numexpr-approach"
+        },
+        {
+          "type": "paragraph",
+          "text": "The exact same logical filter, expressed as a query string instead."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "%timeit df.query(\"amount > 900 and region == 'west'\")"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "6.4 Indexed loc Lookup",
+          "id": "indexed-loc-lookup-approach"
+        },
+        {
+          "type": "paragraph",
+          "text": "For a fair look at the index approach, imagine order_id is the value you look up by most often. Set it as a sorted index once, then repeatedly look up by it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "df_indexed = df.set_index(\"order_id\").sort_index()\n%timeit df_indexed.loc[482913]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This is not solving the exact same problem as the range condition above, it is a targeted lookup rather than a range filter, which is exactly the kind of access pattern where a sorted index earns its keep the most."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "6.5 What to Expect, Order of Magnitude",
+          "id": "what-to-expect-order-of-magnitude"
+        },
+        {
+          "type": "paragraph",
+          "text": "Run this yourself and the exact numbers will depend on your machine, your pandas version, and whether numexpr is installed, so treat any specific millisecond figure with suspicion, including anyone else's. What holds up consistently across machines is the ordering. The chained boolean mask is typically the slowest of the range based approaches, since it builds the most intermediate arrays. query() with numexpr available usually comes in noticeably faster on the same range condition, often by a factor that is genuinely worth caring about on a ten million row DataFrame, though not so dramatic that it matters on small data. The indexed .loc lookup, when it is doing a targeted lookup on a sorted index rather than a broad range scan, tends to be faster still, often by an order of magnitude, because it is barely scanning anything at all."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666365749-170840328.png",
+          "alt": "The chained boolean mask as the baseline speed, query noticeably faster, and the indexed loc lookup fastest by a wide margin",
+          "caption": "The general ordering holds up across machines even when the exact numbers do not.",
+          "size": "medium"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"What it does under the hood\",\"Best suited for\"],\"rows\":[[\"Chained boolean mask\",\"Builds one temporary array per condition, then combines them\",\"Small to medium data, quick one off filters\"],[\"query with numexpr\",\"Evaluates the whole expression in one C level pass, no per condition temp arrays\",\"Large data, several chained conditions\"],[\"Indexed loc on a sorted index\",\"Binary search style lookup straight to matching rows\",\"Repeated lookups on the same column, especially by key or id\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Benchmark on your own data before trusting any of this",
+          "content": "These are honest, general tendencies, not guarantees. The size of the gap depends heavily on row count, how many conditions you are chaining, whether numexpr is installed, and whether your index is actually sorted. %timeit on your real DataFrame with your real filter is worth more than any number in this lesson."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Decision Guide: Which Approach to Reach For",
+          "id": "decision-guide-which-approach-to-reach-for"
+        },
+        {
+          "type": "paragraph",
+          "text": "None of this means you should rewrite every filter in your codebase today. It means you now have a real basis for choosing, instead of picking whichever syntax you remembered first."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783666367092-489203787.png",
+          "alt": "A small decision flow: small data uses a boolean mask, large chained conditions use query, and repeated lookups use a sorted index",
+          "caption": "When in doubt, match the tool to the actual shape of the problem, not habit.",
+          "size": "medium"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Situation\",\"Reach for\"],\"rows\":[[\"Small or medium DataFrame, a filter you run once\",\"A plain boolean mask, it is simple and the overhead does not matter\"],[\"Large DataFrame, several chained conditions\",\"query with numexpr installed\"],[\"Repeated lookups by the same column, over and over\",\"Set that column as a sorted index and use loc\"],[\"A column with a small fixed set of repeated string values that you filter or group on often\",\"Convert it to category dtype first\"],[\"Any chain of multiple conditions on large data\",\"Order the conditions from most selective to least selective\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Recap",
+          "id": "recap"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Filtering performance barely matters on small DataFrames and matters a great deal on large ones, especially inside a pipeline that runs repeatedly.",
+            "A chained boolean mask builds a separate temporary array for every condition before combining them, which costs real time and memory at scale.",
+            "query() can hand the whole expression to numexpr as one C level pass, skipping those intermediate arrays, and this is a real measurable difference on large, multi condition filters.",
+            "Filtering on a sorted index with loc can be dramatically faster than filtering the same data as a regular column, because pandas can binary search instead of scanning every row, the same idea behind a database index.",
+            "category dtype speeds up filtering itself, not just memory, because comparisons happen on small integer codes instead of full strings.",
+            "When chaining multiple filters, apply the cheapest, most selective condition first so every later condition has less data left to check."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

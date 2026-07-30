@@ -1,0 +1,441 @@
+{
+  "slug": "lsm-trees",
+  "title": "LSM Trees",
+  "content": [
+    {
+      "id": "lsm-trees",
+      "title": "LSM Trees",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "A B+ Tree, covered elsewhere in this section, is an excellent general-purpose structure, but it has one real weakness: every single write potentially means updating a page somewhere in the middle of a large file on disk, a random write, which is a genuinely expensive operation compared to simply appending to the end of a file. An <strong>LSM Tree</strong>, short for <strong>Log-Structured Merge Tree</strong>, is a storage engine design built around a different idea entirely: never do a random write, only ever append sequentially, and deal with the organizational mess that creates later, in the background."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283501565-253108950.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283501565-253108950.png",
+          "alt": "A B-Tree write means a random disk seek to update a specific page; an LSM Tree write is a simple sequential append, dramatically faster",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283501565-253108950.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What an LSM Tree Actually Is",
+          "text": "1. What an LSM Tree Actually Is"
+        },
+        {
+          "type": "paragraph",
+          "content": "An LSM Tree is not really one single data structure, it is an overall strategy combining a few pieces: an in-memory sorted structure that absorbs new writes instantly, periodic flushes of that structure to disk as immutable files, and a background process that continuously merges those files back together over time. The name comes directly from that last part, the \"merge\" in log-structured merge tree."
+        },
+        {
+          "type": "paragraph",
+          "content": "It helps to think of this as a deliberate shift in when the real work of organizing data happens, a B-Tree does that organizing work synchronously, on every single write, while an LSM Tree defers and batches that same organizing work into occasional, larger compaction passes running in the background."
+        },
+        {
+          "type": "paragraph",
+          "content": "The log in log-structured also refers to something specific worth naming, the memtable flush process and the write-ahead log together mean the entire write path is fundamentally log-oriented, sequential appends, rather than in-place modification, all the way from the very first byte written to the eventual sstable it ends up in."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Problem It Solves: Random Writes Are Expensive",
+          "text": "2. The Problem It Solves: Random Writes Are Expensive"
+        },
+        {
+          "type": "paragraph",
+          "content": "Picture a B+ Tree with a billion entries. A single insert can mean touching a leaf page somewhere in the middle of a massive file, an operation whose exact disk location depends entirely on where that key happens to sort. Across millions of writes touching effectively random locations throughout the file, this random-access pattern is dramatically slower than writing the same amount of data sequentially, one append after another, especially on spinning disks, though the gap remains meaningful even on modern SSDs."
+        },
+        {
+          "type": "paragraph",
+          "content": "An LSM Tree sidesteps this entirely for the write path: no write ever needs to seek to a specific location on disk, it always just appends to whatever is currently being written, sequentially, from start to end."
+        },
+        {
+          "type": "paragraph",
+          "content": "This distinction matters most under sustained, heavy write load, a system doing a modest, steady trickle of writes may never notice the difference between random and sequential disk access. The gap becomes decisive specifically under the kind of high-throughput ingestion, logging pipelines, metrics collection, event streams, that LSM Trees are most commonly reached for in the first place."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth being fair to modern SSDs here, they handle random access far better than traditional spinning disks did, which has narrowed but not eliminated the gap, sequential writes still generally outperform random ones, and at the scale a large distributed database operates, that remaining gap is still worth designing around deliberately."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Memtable: Writes Start in Memory",
+          "text": "3. The Memtable: Writes Start in Memory"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283505431-891941867.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283505431-891941867.png",
+          "alt": "Every write lands first in an in-memory sorted structure, acknowledged back to the client almost instantly",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283505431-891941867.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every write to an LSM Tree first lands in the <strong>memtable</strong>, an in-memory sorted structure (often a balanced tree or a skip list) that can be updated extremely quickly since it never touches disk at all. The write is acknowledged back to the caller the moment it lands in the memtable, which is why LSM Trees are known for exceptionally fast write throughput."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283508824-177027766.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283508824-177027766.png",
+          "alt": "Deleting a key does not remove it immediately, it writes a special tombstone marker that gets cleaned up properly during a later compaction",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283508824-177027766.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Deletes in an LSM Tree cannot simply erase data in place, since SSTables are immutable once written. Instead, a delete writes a special <strong>tombstone</strong> record marking that key as deleted. Reads treat a tombstone as \"this key does not exist,\" even though older SSTables further down might still physically contain the original value, and the space is only actually reclaimed once a future compaction pass processes and discards it."
+        },
+        {
+          "type": "paragraph",
+          "content": "A skip list is a particularly common choice for the memtable specifically, since it supports fast, ordered inserts and lookups with a simpler concurrency story than a balanced tree, letting multiple threads read and write it safely with less coordination overhead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Flushing to Disk: SSTables",
+          "text": "4. Flushing to Disk: SSTables"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283511482-353019664.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283511482-353019664.png",
+          "alt": "Once the memtable fills up, its entire sorted contents get written to disk as one new, immutable file, and a fresh memtable takes over",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283511482-353019664.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Memory is finite, so once the memtable grows past a configured size, its entire contents get flushed to disk as one single, sorted, <strong>immutable</strong> file, called an <strong>SSTable</strong> (Sorted String Table). Immutable is the key word here, once written, an SSTable is never modified again, only eventually replaced entirely during compaction. A fresh, empty memtable takes over immediately, ready to absorb new writes while the flush happens."
+        },
+        {
+          "type": "paragraph",
+          "content": "The size threshold that triggers a flush is itself a tunable trade-off, a larger memtable absorbs more writes before needing to flush, reducing how often flushes happen, at the cost of a larger chunk of unflushed data at risk if the write-ahead log itself were ever to be lost or corrupted."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Why immutability actually helps",
+          "text": "4.1 Why immutability actually helps"
+        },
+        {
+          "type": "paragraph",
+          "content": "Immutable files are simpler to reason about and safer to work with concurrently, since nothing ever changes underneath a reader mid-read, there is no need for locks or coordination to protect against another process modifying a file while it is being read. This same principle, immutable data being easier to reason about safely, shows up repeatedly across distributed systems design, not just here."
+        },
+        {
+          "type": "paragraph",
+          "content": "It also simplifies backups and replication considerably, copying an immutable file to another machine or to cold storage is trivially safe, there is no risk of copying a file mid-modification and ending up with a corrupted, half-written copy on the other end."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Why Reads Can Be Slower",
+          "text": "5. Why Reads Can Be Slower"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030016-467046658.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030016-467046658.png",
+          "alt": "A read has to check the memtable, and then potentially many separate sstables, newest first, until it finds the key or exhausts every file",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030016-467046658.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the real trade-off an LSM Tree makes. Over time, a database accumulates many separate SSTable files on disk, each one immutable and covering some slice of the keyspace. A single read for one key might, in the worst case, need to check the memtable and then every single SSTable, starting from the newest (since a more recent write should shadow an older one for the same key), until it either finds the key or has checked everywhere and confirmed it does not exist."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth being precise about what \"check every SSTable\" actually costs, in a well-compacted system with a reasonable number of files and Bloom filters in place, this is not nearly as bad as it sounds, most files get skipped instantly via their Bloom filter, and only a small handful of genuine candidates ever need an actual disk read."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is also why point lookups and range scans behave somewhat differently in an LSM Tree compared to a range scan in a B+ Tree, a range scan here has to merge results across the memtable and every relevant sstable in the correct sorted order, rather than simply walking one linked chain of leaves."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Compaction: Merging SSTables Over Time",
+          "text": "6. Compaction: Merging SSTables Over Time"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030018-657932273.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030018-657932273.png",
+          "alt": "A background process periodically merges multiple smaller sstables into fewer, larger ones, discarding duplicate or deleted entries along the way",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030018-657932273.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "To keep the number of SSTables from growing without bound, a background <strong>compaction</strong> process continuously merges smaller SSTables into fewer, larger ones. During this merge, if the same key appears in multiple files (an update happened after the original write), only the newest value is kept, and if a key was explicitly deleted (marked with a special <strong>tombstone</strong> entry), it can finally be dropped entirely once compaction confirms no older reference to it still matters."
+        },
+        {
+          "type": "paragraph",
+          "content": "Compaction is what keeps read performance from degrading forever, fewer, larger, well-organized files mean fewer files a read has to check, at the cost of real background CPU and disk I/O spent doing the merging itself."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Size-tiered compaction",
+          "text": "6.1 Size-tiered compaction"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283517371-662616299.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283517371-662616299.png",
+          "alt": "Several similarly sized sstables get merged together into one larger one once enough of them accumulate",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283517371-662616299.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "One common compaction strategy waits until several SSTables of roughly similar size accumulate, then merges them all together into one larger SSTable. This is simple and keeps write amplification low, but can allow more SSTables to build up at any given moment than a stricter strategy would tolerate."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Leveled compaction",
+          "text": "6.2 Leveled compaction"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030018-479836927.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030018-479836927.png",
+          "alt": "Data is organized into levels, each one larger and with less key overlap than the last, keeping reads more predictable",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030018-479836927.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "An alternative, leveled compaction, organizes SSTables into distinct levels, where each level is meaningfully larger than the one above it, and data within a level is kept non-overlapping. This bounds how many files a read might need to check far more tightly than size-tiered compaction does, at the cost of more total write amplification, since data gets rewritten more times as it moves down through the levels."
+        },
+        {
+          "type": "paragraph",
+          "content": "Size-tiered compaction tends to suit heavily write-oriented workloads where read predictability matters less than raw write throughput, since it keeps write amplification low at the cost of occasionally having more files around for a read to check. Leveled compaction, by contrast, tends to suit workloads where read latency matters more, or where storage space is at more of a premium, since it keeps far tighter control over how many files, and how much redundant data, can accumulate at any given time."
+        },
+        {
+          "type": "paragraph",
+          "content": "Compaction has to be tuned carefully in production, running it too aggressively steals I/O bandwidth from real user traffic, running it too conservatively lets read performance degrade as files accumulate, most systems expose explicit throttling controls specifically to keep this background work from competing too heavily with live requests."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Using Bloom Filters to Speed Up Reads",
+          "text": "7. Using Bloom Filters to Speed Up Reads"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283520615-801964836.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283520615-801964836.png",
+          "alt": "A small Bloom filter per SSTable lets a read skip files that definitely do not contain the key, without touching disk at all",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283520615-801964836.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is exactly the use case introduced under Bloom Filters elsewhere in this section. Each SSTable keeps a small Bloom filter summarizing which keys it contains. Before actually reading a file from disk, the read path checks that file Bloom filter first, and if it confidently says \"definitely not here,\" the entire disk read for that file is skipped. Since Bloom filters live in memory and are extremely cheap to check, this dramatically cuts down the number of real disk reads a lookup ends up needing."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth being clear that Bloom filters help avoid unnecessary disk reads specifically, they do nothing to reduce how many SSTables might need to be checked in memory, the actual reduction in real I/O is the whole benefit, and it is a substantial one in a system with many accumulated files."
+        },
+        {
+          "type": "paragraph",
+          "content": "The false-positive tuning discussed under Bloom Filters applies directly here too, a slightly higher false-positive rate means slightly more wasted disk reads for files that turn out not to have the key after all, while a lower rate costs more memory per sstable, the same fundamental trade-off, just applied at the scale of an entire storage engine."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Durability: The Write-Ahead Log",
+          "text": "8. Durability: The Write-Ahead Log"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283522218-907435524.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283522218-907435524.png",
+          "alt": "Every write hits a durable log before it hits the memtable, so a crash before the next flush loses nothing",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283522218-907435524.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "There is an obvious risk in this design: the memtable lives purely in memory, so a crash before the next flush would lose every write that landed there. This is solved with a <strong>Write-Ahead Log</strong>, covered in full detail as its own topic in this section, every write is appended to a durable log on disk before it touches the memtable, so recovery after a crash simply means replaying that log to rebuild whatever the memtable held at the moment of the crash."
+        },
+        {
+          "type": "paragraph",
+          "content": "This pairing, an in-memory structure for speed plus a durable log for safety, is a recurring pattern across storage engine design generally, not unique to LSM Trees, the same idea protects the memtable here that protects a database buffer pool in a traditional B-Tree engine."
+        },
+        {
+          "type": "paragraph",
+          "content": "Once a memtable is safely flushed to disk as an sstable, the corresponding portion of the write-ahead log becomes unnecessary and can be discarded, keeping the log itself from growing without bound, the same checkpointing idea covered in full under Write-Ahead Logging."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. LSM Trees vs B-Trees: The Real Trade-off",
+          "text": "9. LSM Trees vs B-Trees: The Real Trade-off"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283524479-633376184.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283524479-633376184.png",
+          "alt": "The two structures make opposite trade-offs: a B-Tree favors reads, an LSM Tree favors writes",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785283524479-633376184.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Property\",\"B-Tree\",\"LSM Tree\"],\"rows\":[[\"Write pattern\",\"In-place, random disk writes\",\"Sequential, append-only\"],[\"Write throughput\",\"Lower\",\"Higher\"],[\"Read throughput\",\"Higher, one clear path to data\",\"Can be lower, may check several files\"],[\"Background cost\",\"Minimal, splits are localized\",\"Compaction runs continuously\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Neither structure is universally better, they optimize for opposite ends of the same trade-off. A workload dominated by writes, logging, metrics, event ingestion, tends to favor an LSM Tree. A workload dominated by reads, or one needing very predictable, low read latency, tends to favor a B+ Tree."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth resisting the temptation to declare one of these structures simply better, both have remained in active, widespread use for decades precisely because neither dominates the other, they represent two different, equally valid answers to the same underlying constraint about disk access costs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 Write amplification, the hidden cost",
+          "text": "9.1 Write amplification, the hidden cost"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth naming the cost LSM Trees introduce in exchange for fast writes: the same piece of data can be rewritten multiple times as it moves through successive rounds of compaction, called <strong>write amplification</strong>. A single logical write might, over its lifetime, actually be written to disk several times total as compaction repeatedly merges it into larger files. This is the real trade being made, deferring and batching the cost of organizing data, rather than eliminating that cost entirely."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is worth quantifying loosely when discussing trade-offs, depending on the compaction strategy and configuration, a single logical write might ultimately be rewritten anywhere from a handful to several dozen times over its lifetime as it moves through successive compaction passes, a real, measurable cost that tuning aims to control, not eliminate entirely."
+        },
+        {
+          "type": "paragraph",
+          "content": "Some systems additionally track and expose write amplification as a first-class operational metric precisely because of this, letting an operator notice and react to it climbing unexpectedly, rather than only discovering the effect indirectly through rising disk I/O or slower compaction cycles."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Real-World Usage",
+          "text": "10. Real-World Usage"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"System\",\"Notes\"],\"rows\":[[\"Cassandra\",\"Built around an LSM Tree storage engine from the ground up\"],[\"RocksDB / LevelDB\",\"Widely embedded LSM Tree libraries used inside many other databases\"],[\"HBase\",\"LSM-based, modeled closely on Google Bigtable\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is also worth knowing that RocksDB, originally built at Facebook as a fork of LevelDB, has become something of a common building block itself, embedded inside many other databases and systems, including parts of MySQL, CockroachDB, and Kafka Streams state stores, which is a large part of why understanding the LSM Tree model has value well beyond any single named database."
+        },
+        {
+          "type": "paragraph",
+          "content": "Cassandra in particular popularized many of the specific tuning knobs discussed on this page, choice of compaction strategy, bloom filter false-positive rate, memtable size, as first-class, user-facing configuration options, which is a good place to look for concrete, hands-on examples of these ideas in practice."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Common Mistakes",
+          "text": "11. Common Mistakes"
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming compaction is optional or can simply be disabled, without it, read performance degrades steadily as SSTables accumulate without bound.\",\"Forgetting that a delete is not instant space reclamation, a tombstone still occupies space until a future compaction actually removes the underlying data.\",\"Choosing an LSM Tree engine for a read-heavy workload without accounting for the real read amplification cost across multiple SSTables.\"]",
+          "items": [
+            "Assuming compaction is optional or can simply be disabled, without it, read performance degrades steadily as SSTables accumulate without bound.",
+            "Forgetting that a delete is not instant space reclamation, a tombstone still occupies space until a future compaction actually removes the underlying data.",
+            "Choosing an LSM Tree engine for a read-heavy workload without accounting for the real read amplification cost across multiple SSTables."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "list",
+          "content": "[\"Under-provisioning background compaction resources, leaving compaction perpetually behind and the number of sstables growing unchecked.\",\"Writing extremely large values directly into an LSM Tree meant for small, frequent updates, which can distort compaction behavior and read performance.\"]",
+          "items": [
+            "Under-provisioning background compaction resources, leaving compaction perpetually behind and the number of sstables growing unchecked.",
+            "Writing extremely large values directly into an LSM Tree meant for small, frequent updates, which can distort compaction behavior and read performance."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "A further mistake is treating every LSM Tree configuration as interchangeable, the choice between size-tiered and leveled compaction alone can meaningfully shift the read versus write balance of the same underlying engine, tuning this deliberately to the actual workload matters as much as choosing an LSM Tree in the first place."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. HLD Interview: How to Talk About This",
+          "text": "12. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "Strong answers lead with the actual mechanism, sequential writes to a memtable and periodic flushes, rather than jumping straight to naming Cassandra or RocksDB. Explaining why reads can be slower, and how Bloom filters and compaction both work together to counteract that, shows the trade-off is genuinely understood, not just memorized as \"LSM trees are for fast writes.\""
+        },
+        {
+          "type": "blockQuote",
+          "content": "An LSM Tree does not avoid the cost of organizing data, it just defers that cost to a background process, trading a guaranteed cost on every write for an occasional, amortized one during compaction."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is also worth being ready to discuss when an LSM Tree would be the wrong choice, a workload dominated by point lookups on a stable, rarely-changing dataset gains little from write optimizations it does not need, while paying a real read-path cost it did not have to accept, exactly the kind of nuance that distinguishes a thoughtful answer from a one-sided one."
+        },
+        {
+          "type": "paragraph",
+          "content": "A good closing point is naming a concrete scenario where the choice is obvious in one direction, a time-series metrics ingestion pipeline writing millions of data points a second is a clean fit for an LSM Tree, while a banking ledger doing frequent point lookups on account balances leans naturally toward a B+ Tree instead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "Key Takeaways",
+          "text": "Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"An LSM Tree avoids expensive random disk writes by only ever appending sequentially, first to an in-memory memtable, then to immutable SSTables on disk.\",\"This makes writes very fast, at the cost of reads potentially needing to check multiple SSTables.\",\"Compaction continuously merges SSTables in the background, keeping read performance from degrading indefinitely.\",\"Bloom filters per SSTable let reads skip files that definitely do not contain a key, without a real disk read.\",\"A Write-Ahead Log protects the in-memory memtable from being lost entirely on a crash.\",\"LSM Trees and B+ Trees make opposite trade-offs, LSM favors write throughput, B+ Trees favor read predictability.\"]",
+          "items": [
+            "An LSM Tree avoids expensive random disk writes by only ever appending sequentially, first to an in-memory memtable, then to immutable SSTables on disk.",
+            "This makes writes very fast, at the cost of reads potentially needing to check multiple SSTables.",
+            "Compaction continuously merges SSTables in the background, keeping read performance from degrading indefinitely.",
+            "Bloom filters per SSTable let reads skip files that definitely do not contain a key, without a real disk read.",
+            "A Write-Ahead Log protects the in-memory memtable from being lost entirely on a crash.",
+            "LSM Trees and B+ Trees make opposite trade-offs, LSM favors write throughput, B+ Trees favor read predictability."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Read this topic alongside B-Trees and B+ Trees and Write-Ahead Logging in this same section, together the three cover the full spectrum of how a modern storage engine actually persists data safely and efficiently, from the moment a write happens to how it eventually settles into its long-term, organized form on disk."
+        },
+        {
+          "type": "paragraph",
+          "content": "Once the memtable-flush-compaction cycle clicks conceptually, it becomes much easier to reason about why a given LSM-backed database behaves the way it does under load, occasional latency spikes during heavy compaction, strong write throughput even under sustained pressure, and a real, tunable trade surface between read and write performance rather than a single fixed personality."
+        }
+      ]
+    }
+  ]
+}

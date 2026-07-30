@@ -1,0 +1,593 @@
+{
+  "slug": "data-durability-and-replication",
+  "title": "Data Durability and Replication",
+  "content": [
+    {
+      "id": "data-durability-and-replication",
+      "title": "Data Durability and Replication",
+      "blocks": [
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every system that stores data eventually has to answer an uncomfortable question. If a disk fails at three in the morning, if a rack loses power, if an entire data center goes dark during a storm, does the data the application already told a user was saved still exist afterward. Data durability and replication are the two ideas that let engineering teams answer that question with a number instead of a hope."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson is about the mechanics of keeping data alive across failures, and about the family of trade offs that every replication scheme has to make. None of the strategies covered here are free. Every one of them trades some combination of write latency, storage cost, and operational complexity for a stronger guarantee that data will still be there tomorrow."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Durability is a promise about the past. It says that a write, once acknowledged, will still be recoverable no matter what breaks next."
+        },
+        {
+          "type": "paragraph",
+          "content": "Systems designers run into this topic constantly, whether they are building a payments ledger, a chat application, a metrics pipeline, or a search index. The specific numbers change from one system to the next, but the underlying questions are always the same ones this lesson works through in order."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Durability Versus Availability",
+          "text": "2. Durability Versus Availability"
+        },
+        {
+          "type": "paragraph",
+          "content": "Durability and availability sound similar and get confused constantly, but they answer different questions. Durability asks whether data still exists somewhere, recoverable, after a failure. Availability asks whether the system can currently respond to a request at all. A system can be durable but unavailable, and it can be available but not durable, and mixing these two properties up is one of the most common mistakes in system design interviews."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Durability, the data survives",
+          "text": "2.1 Durability, the data survives"
+        },
+        {
+          "type": "paragraph",
+          "content": "A write is durable if, once it has been acknowledged to the caller, it will not be lost even if the machine that first received it crashes a moment later. Durability is fundamentally about surviving failure. It says nothing about how quickly you can read that data back, or whether the system is currently online to serve that read."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Availability, the system responds",
+          "text": "2.2 Availability, the system responds"
+        },
+        {
+          "type": "paragraph",
+          "content": "A system is available if it can accept and answer requests right now. An in memory cache with no replication at all can be extremely available while a request stream is flowing normally, and completely non durable, because a single crash wipes out everything it was holding. Conversely, a distributed ledger might refuse writes during a network partition to protect durability, sacrificing availability for the duration of that partition."
+        },
+        {
+          "type": "note",
+          "title": "A concrete way to remember the split",
+          "content": "Durability answers \"did we lose it.\" Availability answers \"can you reach it right now.\" A system can fail either question independently of the other."
+        },
+        {
+          "type": "paragraph",
+          "content": "This distinction matters because the engineering techniques that improve one do not automatically improve the other, and sometimes actively work against it. Waiting for three replicas to confirm a write before acknowledging it improves durability, but it can reduce availability during a partition, because now three nodes have to be reachable instead of one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Why a Single Copy Is Never Durable Enough",
+          "text": "3. Why a Single Copy Is Never Durable Enough"
+        },
+        {
+          "type": "paragraph",
+          "content": "Any data stored on exactly one disk, on exactly one machine, is one hardware failure away from being gone. Disks fail. Even enterprise grade drives report annual failure rates in the low single digit percentages, which sounds small until you are running tens of thousands of them, at which point disk failures become a routine daily event rather than a rare one."
+        },
+        {
+          "type": "paragraph",
+          "content": "Replication is the most direct answer to this problem. Instead of storing one copy of a write, a system stores several copies, on separate disks, separate machines, and ideally separate physical locations, so that the loss of any one copy does not mean the loss of the data. The interesting design questions all live in exactly how those copies are kept in sync, and exactly when a write is considered safely stored."
+        },
+        {
+          "type": "list",
+          "content": "[\"How many copies are kept, and where are they physically located\",\"Does the system wait for copies to be written before telling the caller the write succeeded\",\"Which copy, if any, is treated as the authoritative source of truth\",\"What happens to reads and writes while some copies are unreachable\"]",
+          "items": [
+            "How many copies are kept, and where are they physically located",
+            "Does the system wait for copies to be written before telling the caller the write succeeded",
+            "Which copy, if any, is treated as the authoritative source of truth",
+            "What happens to reads and writes while some copies are unreachable"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Replication Strategies",
+          "text": "4. Replication Strategies"
+        },
+        {
+          "type": "paragraph",
+          "content": "There are three broad topologies for organizing replicas, and almost every real system fits into one of them. They differ in who is allowed to accept writes and how those writes propagate to everyone else."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030428-833466441.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030428-833466441.png",
+          "alt": "Progression from single leader replication with one writer, to multi leader with several writers, to leaderless replication"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Single leader replication",
+          "text": "4.1 Single leader replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "One node, the leader, accepts all writes. It then streams those writes to every other node, called followers or replicas, which apply them in the same order. Reads can be served from the leader or, with some staleness risk, from a follower. This is by far the most common setup in practical systems, used by most relational databases and by systems like traditional master replica MySQL or PostgreSQL deployments."
+        },
+        {
+          "type": "paragraph",
+          "content": "The appeal of single leader replication is simplicity. There is never a question of which write wins if two clients write to the same record at the same time, because there is only ever one node accepting writes in the first place. The downside is that the leader is a single point of coordination, and if it fails, someone or something has to promote a follower to be the new leader, a process called failover that is notoriously easy to get wrong."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Multi leader replication",
+          "text": "4.2 Multi leader replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "More than one node accepts writes, typically one leader per data center or per region, and each leader replicates its writes to the others. This helps write latency for geographically distributed users, since a write in Europe does not have to cross an ocean to reach a single leader in the United States before being acknowledged. It also introduces a real problem, write conflicts. If the same record is modified in two regions at nearly the same time, the system needs an explicit rule for resolving the conflict, whether that is last write wins by timestamp, a merge function, or flagging it for manual resolution."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 Leaderless replication",
+          "text": "4.3 Leaderless replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "Any node can accept a read or a write, and the client, or a coordinator on its behalf, contacts several nodes directly and reconciles the results itself. Systems like Amazon Dynamo, and databases inspired by it such as Cassandra and Riak, use this model. It trades away the simplicity of a single leader for very high write availability, since there is no leader whose failure can block writes at all. This is also the model that makes quorum based replication, covered in detail shortly, the natural way to reason about correctness."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Topology\",\"Who accepts writes\",\"Main strength\",\"Main risk\"],\"rows\":[[\"Single leader\",\"One designated node\",\"Simple ordering, no write conflicts\",\"Leader is a bottleneck and failover point\"],[\"Multi leader\",\"One node per region\",\"Low write latency across regions\",\"Conflicting writes need resolution\"],[\"Leaderless\",\"Any node\",\"High write availability, no single point of failure\",\"Requires quorum logic to stay consistent\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Synchronous Versus Asynchronous Replication",
+          "text": "5. Synchronous Versus Asynchronous Replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "Independent of which topology a system uses, every replication scheme has to decide when to tell the client a write succeeded. This is the synchronous versus asynchronous question, and it is one of the most consequential single decisions in a storage system's design."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Synchronous replication",
+          "text": "5.1 Synchronous replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "The leader waits for one or more replicas to confirm they have durably applied a write before it acknowledges that write to the client. If the replicas are down, or slow, the client waits too. The benefit is a clean guarantee, once a client hears success, the data is on more than one machine, full stop."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285461057-904992684.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285461057-904992684.png",
+          "alt": "Synchronous replication showing a leader waiting for acknowledgements from both replicas before acknowledging the client write"
+        },
+        {
+          "type": "paragraph",
+          "content": "The cost is latency and, in some failure modes, availability. If a replica that the leader is waiting on becomes unreachable, the write cannot complete until that replica comes back, or until the system is reconfigured to stop waiting on it. Systems that use fully synchronous replication to every replica are rare in practice for exactly this reason, a single slow node would slow down every write in the system."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Asynchronous replication",
+          "text": "5.2 Asynchronous replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "The leader acknowledges the write to the client as soon as it has applied the write locally, then sends the write to replicas in the background. This keeps write latency low and largely independent of replica health, since the client never waits on them at all."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285463056-766017935.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285463056-766017935.png",
+          "alt": "Asynchronous replication showing the leader acknowledging the client immediately while replicas apply the write later with a lag"
+        },
+        {
+          "type": "paragraph",
+          "content": "The cost is a durability gap. If the leader crashes after acknowledging a write but before that write reaches any replica, the write is gone, even though the client was already told it succeeded. This window is often called the replication lag, and in a healthy system it is usually small, milliseconds to low seconds, but it is never exactly zero."
+        },
+        {
+          "type": "note",
+          "title": "A middle ground exists",
+          "content": "Many production systems pick semi synchronous replication, waiting for acknowledgement from at least one replica, often the closest one, while remaining asynchronous to the rest. This bounds the worst case data loss without paying the full latency cost of waiting for every copy."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Property\",\"Synchronous replication\",\"Asynchronous replication\"],\"rows\":[[\"Write latency\",\"Higher, bounded by slowest required replica\",\"Lower, independent of replica speed\"],[\"Durability on leader crash\",\"Strong, data already on other nodes\",\"Weak, recent writes can be lost\"],[\"Behavior when a replica is down\",\"Writes can stall or be rejected\",\"Writes proceed normally\"],[\"Typical use case\",\"Financial and other critical records\",\"High throughput logs and analytics\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Quorum Based Replication",
+          "text": "6. Quorum Based Replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "Leaderless systems, and some leader based ones, formalize the synchronous versus asynchronous trade off using quorums. A quorum scheme is described by three numbers. N is the total number of replicas holding a piece of data. W is the number of replicas that must acknowledge a write before it is considered successful. R is the number of replicas a read must contact before returning a result."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030432-872508179.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030432-872508179.png",
+          "alt": "A quorum write where a client contacts three nodes and the write succeeds once acknowledgements from W of N nodes are received"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 The core guarantee",
+          "text": "6.1 The core guarantee"
+        },
+        {
+          "type": "paragraph",
+          "content": "If a system always chooses W plus R to be greater than N, then any read quorum and any write quorum are guaranteed to overlap in at least one node. That overlapping node has necessarily seen the most recent successful write, so at least one of the nodes a read contacts will have the latest value. This is the entire mathematical basis for calling a quorum configuration strongly consistent for reads after writes."
+        },
+        {
+          "type": "code",
+          "content": "function quorumMet(acksReceived, W) {\n  return acksReceived >= W;\n}\n\nfunction writeQuorum(nodes, W) {\n  let acks = 0;\n  for (const node of nodes) {\n    if (node.write(value)) acks++;\n    if (quorumMet(acks, W)) return \"write succeeded\";\n  }\n  return \"write failed, quorum not reached\";\n}\n\n// Example: N = 5, W = 3, R = 3\n// W + R = 6 > N = 5, so every read quorum overlaps every write quorum",
+          "code": {
+            "language": "javascript",
+            "content": "function quorumMet(acksReceived, W) {\n  return acksReceived >= W;\n}\n\nfunction writeQuorum(nodes, W) {\n  let acks = 0;\n  for (const node of nodes) {\n    if (node.write(value)) acks++;\n    if (quorumMet(acks, W)) return \"write succeeded\";\n  }\n  return \"write failed, quorum not reached\";\n}\n\n// Example: N = 5, W = 3, R = 3\n// W + R = 6 > N = 5, so every read quorum overlaps every write quorum"
+          },
+          "codes": {
+            "javascript": "function quorumMet(acksReceived, W) {\n  return acksReceived >= W;\n}\n\nfunction writeQuorum(nodes, W) {\n  let acks = 0;\n  for (const node of nodes) {\n    if (node.write(value)) acks++;\n    if (quorumMet(acks, W)) return \"write succeeded\";\n  }\n  return \"write failed, quorum not reached\";\n}\n\n// Example: N = 5, W = 3, R = 3\n// W + R = 6 > N = 5, so every read quorum overlaps every write quorum"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Common quorum configurations",
+          "text": "6.2 Common quorum configurations"
+        },
+        {
+          "type": "list",
+          "content": "[\"N = 3, W = 2, R = 2, a common default that tolerates one node being down while still overlapping reads and writes\",\"N = 5, W = 3, R = 3, tolerates two nodes being down and is a common choice for higher availability clusters\",\"N = 3, W = 1, R = 1, prioritizes latency heavily and gives up the overlap guarantee entirely\",\"N = 3, W = 3, R = 1, behaves close to synchronous replication to all nodes on the write path\"]",
+          "items": [
+            "N = 3, W = 2, R = 2, a common default that tolerates one node being down while still overlapping reads and writes",
+            "N = 5, W = 3, R = 3, tolerates two nodes being down and is a common choice for higher availability clusters",
+            "N = 3, W = 1, R = 1, prioritizes latency heavily and gives up the overlap guarantee entirely",
+            "N = 3, W = 3, R = 1, behaves close to synchronous replication to all nodes on the write path"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "content": "Choosing W and R is really choosing where to spend a latency budget. A larger W means a write waits on more nodes and is slower but safer. A larger R means a read contacts more nodes and is slower but less likely to return stale data. Systems tune these numbers per workload rather than using one fixed answer everywhere."
+        },
+        {
+          "type": "note",
+          "title": "Quorums do not eliminate failure modes entirely",
+          "content": "A quorum overlap guarantees a read will see the latest acknowledged write under normal conditions, but concurrent writes, clock skew, and network partitions can still produce subtle consistency edge cases, which is why quorum systems are usually paired with version vectors or timestamps to resolve conflicting values at the overlapping node."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Erasure Coding as an Alternative to Full Replication",
+          "text": "7. Erasure Coding as an Alternative to Full Replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "Replicating data three or more times is simple but expensive. Storing three full copies of every byte means paying three times the raw storage cost, sometimes more once cross region copies are added. For very large datasets, that storage bill becomes the dominant cost of the entire system, which is exactly the problem erasure coding was built to solve."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 How erasure coding works",
+          "text": "7.1 How erasure coding works"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of storing full copies, an erasure coded system splits a piece of data into several fragments and computes additional parity fragments derived mathematically from the original data, similar in spirit to how RAID 6 protects disks. A common scheme, written as k of n, splits data into k data fragments and adds extra parity fragments so that any k of the total n fragments are enough to reconstruct the original data."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285466412-687501119.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285466412-687501119.png",
+          "alt": "Erasure coding splitting an original data block into three data fragments plus two parity fragments, any three of five rebuild the data"
+        },
+        {
+          "type": "paragraph",
+          "content": "A typical configuration might use 6 data fragments and 3 parity fragments, meaning any 6 of the 9 total fragments reconstruct the original. This tolerates the loss of any 3 fragments, similar durability to triple replication, while only using 1.5 times the original storage instead of 3 times."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Storage overhead\",\"Fragments lost tolerated\",\"Rebuild cost on failure\"],\"rows\":[[\"Triple replication\",\"3x raw size\",\"Any 2 of 3 copies\",\"Simple copy of one full replica\"],[\"6 of 9 erasure coding\",\"1.5x raw size\",\"Any 3 of 9 fragments\",\"Compute intensive reconstruction from remaining fragments\"],[\"No redundancy\",\"1x raw size\",\"None\",\"Not recoverable\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 The trade off erasure coding makes",
+          "text": "7.2 The trade off erasure coding makes"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Much lower storage overhead than full replication for the same durability target\",\"Reconstructing data after a failure requires reading multiple fragments and doing computation, slower than reading a single replica\"],[\"Well suited to cold or infrequently accessed data where rebuild time is less urgent\",\"Higher CPU cost on both write and repair paths compared to a plain copy\"],[\"Widely used by large scale object storage systems for exactly this cost reason\",\"Less well suited to hot, latency sensitive data that needs the fastest possible read path\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is why large object storage systems, the kind backing cold archives and infrequently read files, lean heavily on erasure coding, while systems serving latency sensitive hot data, like an active database or a cache, almost always prefer straightforward replication despite its higher storage cost."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. How Many Nines of Durability, and What That Actually Means",
+          "text": "8. How Many Nines of Durability, and What That Actually Means"
+        },
+        {
+          "type": "paragraph",
+          "content": "Cloud storage providers publish durability figures as a string of nines, and it is worth being precise about what those numbers mean in practice, because the number by itself is easy to misread."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Eleven nines of annual durability means an expected loss rate of about one object out of every hundred billion stored per year, not a guarantee that nothing will ever be lost."
+        },
+        {
+          "type": "list",
+          "content": "[\"Three nines, 99.9 percent, means roughly one in a thousand objects at risk annually, far too low for any serious storage system\",\"Nine nines, 99.9999999 percent, is a commonly cited bar for durable managed storage services\",\"Eleven nines, 99.999999999 percent, is the figure widely quoted by major cloud object storage offerings\"]",
+          "items": [
+            "Three nines, 99.9 percent, means roughly one in a thousand objects at risk annually, far too low for any serious storage system",
+            "Nine nines, 99.9999999 percent, is a commonly cited bar for durable managed storage services",
+            "Eleven nines, 99.999999999 percent, is the figure widely quoted by major cloud object storage offerings"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "These numbers are statistical expectations built from modeled failure rates of disks, network paths, and data centers, combined with the specific replication or erasure coding scheme in use. They are not a promise that a specific byte will never be lost, they describe the aggregate expected loss rate across an enormous number of stored objects over a year."
+        },
+        {
+          "type": "note",
+          "title": "Durability numbers describe storage, not the whole application",
+          "content": "A storage layer advertising eleven nines of durability says nothing about application level bugs, a bad delete request, or a compromised credential deleting data on purpose. Those failure modes need separate protections such as versioning, backups, and access controls, entirely outside the replication scheme itself."
+        },
+        {
+          "type": "paragraph",
+          "content": "The practical takeaway for a system designer is that nines of durability describe the storage substrate's resistance to hardware and infrastructure failure, and that number should be matched to how catastrophic actually losing that data would be. A social media photo losing a small fraction of a percent occasionally is an inconvenience. A bank losing a fraction of a percent of transaction records is a regulatory and business failure."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. The Trade Off Between Durability and Write Latency",
+          "text": "9. The Trade Off Between Durability and Write Latency"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every technique in this lesson so far, more replicas, larger write quorums, synchronous acknowledgement, extra parity fragments, buys additional durability at the cost of something else, usually write latency, sometimes availability, sometimes raw storage cost. There is no configuration that maximizes all of these simultaneously."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 Where the latency cost comes from",
+          "text": "9.1 Where the latency cost comes from"
+        },
+        {
+          "type": "paragraph",
+          "content": "A write acknowledged only after it reaches a second data center in a different region has to pay for that network round trip, which is measured in tens of milliseconds at best across a continent, before the client can be told the write is safe. A write acknowledged the moment it hits local disk on a single machine can return in well under a millisecond. That gap, from under a millisecond to tens of milliseconds, is the direct price of cross region durability."
+        },
+        {
+          "type": "list",
+          "content": "[\"Writing to local disk only, fastest, weakest durability, lost if that machine fails before replicating\",\"Writing to a quorum of replicas in the same data center, moderate latency, survives a single machine failure\",\"Writing to a quorum spanning multiple data centers or regions, highest latency, survives an entire data center outage\"]",
+          "items": [
+            "Writing to local disk only, fastest, weakest durability, lost if that machine fails before replicating",
+            "Writing to a quorum of replicas in the same data center, moderate latency, survives a single machine failure",
+            "Writing to a quorum spanning multiple data centers or regions, highest latency, survives an entire data center outage"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 There is no universally correct point on this curve",
+          "text": "9.2 There is no universally correct point on this curve"
+        },
+        {
+          "type": "paragraph",
+          "content": "The right point on this curve depends entirely on what a lost write actually costs the business. A dropped analytics event might cost nothing measurable. A dropped payment record can cost real money and trigger a compliance investigation. Good system design does not pick one durability setting for an entire system, it picks a setting per data class, matching the guarantee to the actual cost of loss."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Worked Example, Financial Ledger Versus Analytics Log",
+          "text": "10. Worked Example, Financial Ledger Versus Analytics Log"
+        },
+        {
+          "type": "paragraph",
+          "content": "A concrete way to see these trade offs collide is to design the replication strategy for two very different pieces of data living in the same company, a financial ledger recording money movements, and an analytics log recording page views."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030433-141034382.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030433-141034382.png",
+          "alt": "A financial ledger write using synchronous quorum replication across regions against an analytics log write using asynchronous single region replication"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.1 The financial ledger",
+          "text": "10.1 The financial ledger"
+        },
+        {
+          "type": "example-box",
+          "title": "Designing for the ledger",
+          "text": "Every transaction must be durable the instant it is acknowledged, because a lost transaction record is a lost dollar amount that a customer or a regulator will eventually ask about. The design uses synchronous quorum replication across at least three availability zones, with W set so that a write is only acknowledged after a majority of zones confirm it, and it stores an additional copy in a second geographic region to survive a full region outage. Write latency lands in the tens of milliseconds range, an acceptable cost given that ledger writes are not on the critical path of a user facing page load. Erasure coding is not used here, because ledger data is comparatively small in volume and the priority is fast, simple recovery, not minimizing storage cost."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.2 The analytics log",
+          "text": "10.2 The analytics log"
+        },
+        {
+          "type": "example-box",
+          "title": "Designing for the log",
+          "text": "A page view event losing a small fraction of a percent during a rare crash is invisible in aggregate reporting and costs nothing meaningful. The design uses asynchronous replication within a single region, acknowledging a write as soon as it lands on local disk and streaming it to two other nodes in the background. This keeps ingestion latency extremely low, which matters because the log receives an enormous volume of events per second. Because the dataset is large and mostly write once, read rarely, it is a strong candidate for erasure coding once it moves from a hot recent window into cold long term storage, trading a bit of read latency for a large reduction in storage cost."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Design choice\",\"Financial ledger\",\"Analytics log\"],\"rows\":[[\"Replication mode\",\"Synchronous quorum, multi region\",\"Asynchronous, single region\"],[\"Write latency budget\",\"Tens of milliseconds, acceptable\",\"Sub millisecond, critical\"],[\"Acceptable data loss\",\"Effectively none\",\"Small, bounded fraction acceptable\"],[\"Cold storage technique\",\"Full replication retained\",\"Erasure coding once data cools\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Neither design is more sophisticated than the other, they are both correct for what they protect. The skill being tested here, in an interview or in a real architecture review, is recognizing that a single replication strategy applied blindly across an entire system is almost always wrong for at least one of its data classes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. How This Comes Up in System Design Interviews",
+          "text": "11. How This Comes Up in System Design Interviews"
+        },
+        {
+          "type": "paragraph",
+          "content": "Durability and replication questions show up constantly in system design interviews, usually disguised inside a broader prompt like design a URL shortener, design a chat application, or design a payments system. The interviewer is rarely asking you to recite the definition of durability, they are checking whether you instinctively separate different data by how badly its loss would hurt."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.1 Questions worth asking out loud",
+          "text": "11.1 Questions worth asking out loud"
+        },
+        {
+          "type": "list",
+          "content": "[\"What actually happens to the business or the user if this specific piece of data is lost\",\"Is a small bounded amount of data loss acceptable in exchange for lower latency or lower cost\",\"Does this data need to survive the loss of an entire data center, or just a single disk\",\"Is this data hot and frequently read, or cold and rarely touched, since that changes whether erasure coding makes sense\"]",
+          "items": [
+            "What actually happens to the business or the user if this specific piece of data is lost",
+            "Is a small bounded amount of data loss acceptable in exchange for lower latency or lower cost",
+            "Does this data need to survive the loss of an entire data center, or just a single disk",
+            "Is this data hot and frequently read, or cold and rarely touched, since that changes whether erasure coding makes sense"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.2 A strong answer pattern",
+          "text": "11.2 A strong answer pattern"
+        },
+        {
+          "type": "paragraph",
+          "content": "A strong candidate explicitly states a durability target before choosing a mechanism, rather than jumping straight to \"we will use three replicas\" as a reflex. Saying something like, this data cannot tolerate loss so I will use synchronous replication to a quorum across at least two availability zones, accepting the added write latency, demonstrates that the mechanism is following from a requirement rather than being a memorized default."
+        },
+        {
+          "type": "note",
+          "title": "A common interview trap",
+          "content": "Treating every dataset in a system the same way, applying the same replication factor and consistency model to both the core transactional data and a secondary logging or caching layer, is a signal that a candidate has not connected the mechanism back to the actual cost of losing that specific data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Common Mistakes",
+          "text": "12. Common Mistakes"
+        },
+        {
+          "type": "list",
+          "content": "[\"Treating durability and availability as the same property, when a system can fail either one independently of the other\",\"Assuming asynchronous replication has zero data loss risk just because replication lag is usually small\",\"Choosing a write quorum without checking that W plus R exceeds N, silently losing the read after write guarantee\",\"Applying the same replication strategy to every dataset in a system regardless of how costly losing each one actually is\",\"Treating nines of durability as a guarantee about a single object rather than a statistical expectation across a large population\",\"Reaching for erasure coding on small, frequently read, latency sensitive data where its rebuild cost outweighs its storage savings\"]",
+          "items": [
+            "Treating durability and availability as the same property, when a system can fail either one independently of the other",
+            "Assuming asynchronous replication has zero data loss risk just because replication lag is usually small",
+            "Choosing a write quorum without checking that W plus R exceeds N, silently losing the read after write guarantee",
+            "Applying the same replication strategy to every dataset in a system regardless of how costly losing each one actually is",
+            "Treating nines of durability as a guarantee about a single object rather than a statistical expectation across a large population",
+            "Reaching for erasure coding on small, frequently read, latency sensitive data where its rebuild cost outweighs its storage savings"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Summary",
+          "text": "13. Summary"
+        },
+        {
+          "type": "paragraph",
+          "content": "Durability is a promise that acknowledged data survives failure, and availability is a separate promise that the system can currently respond, and confusing the two leads to poorly reasoned designs. Replication is the primary tool for durability, organized into single leader, multi leader, and leaderless topologies, each with different trade offs around write conflicts and failover."
+        },
+        {
+          "type": "paragraph",
+          "content": "Synchronous replication buys strong durability at the cost of write latency, while asynchronous replication buys low latency at the cost of a small window of potential loss. Quorum based replication formalizes this trade off with the W plus R greater than N rule, and erasure coding offers a way to reach strong durability at a fraction of the storage cost of full replication, at the price of more expensive reconstruction on failure."
+        },
+        {
+          "type": "paragraph",
+          "content": "None of these techniques is correct in isolation. The actual design skill is matching the mechanism to the cost of losing a specific piece of data, which is exactly what separates a thoughtful answer from a memorized one, whether in a production architecture or in a system design interview."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "Key Takeaway",
+          "text": "Key Takeaway"
+        },
+        {
+          "type": "paragraph",
+          "content": "Data durability is not a single setting you turn up to maximum everywhere, it is a budget you spend deliberately, trading write latency, storage cost, and operational complexity for a specific, justified guarantee that a specific piece of data will survive whatever fails next."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,955 @@
+{
+  "slug": "grpc-deep-dive",
+  "title": "gRPC Deep Dive",
+  "content": [
+    {
+      "id": "grpc-deep-dive",
+      "title": "gRPC Deep Dive",
+      "blocks": [
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "The story starts with a REST API that worked perfectly until it didn't."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275457528-27282475.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275457528-27282475.png",
+          "alt": "A REST API built on JSON works fine until serialization overhead and lack of streaming catch up with it at scale"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">You're building a microservices platform. Fifty services. Each one talks to several others. You're using REST with JSON.&nbsp;</span><span style=\"letter-spacing: -0.003em;\">It works. </span><b style=\"letter-spacing: -0.003em;\">Until you look at the numbers:</b><span style=\"letter-spacing: -0.003em;\"> your JSON serialisation is consuming 15% of CPU across the fleet. Your largest payload a user profile with nested objects is 4.2 KB of JSON. You're making 200,000 service-to-service calls per second.&nbsp;</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">Each call has HTTP/1.1 overhead. Each response gets parsed twice once by the network layer, once into your language's objects.&nbsp;</span><b style=\"letter-spacing: -0.003em;\">Then a new requirement: </b><span style=\"letter-spacing: -0.003em;\">a service needs to stream real-time location updates to 10,000 clients simultaneously.&nbsp;</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">With <b>REST</b>, you'd either poll (expensive) or use WebSockets (stateful, complex). You need bidirectional streaming. You need it to be fast. You need it to be typed so that when Service&nbsp;</span>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "A sends a&nbsp;<code>LocationUpdate</code>&nbsp;to Service B, both sides agree on exactly what fields exist and what types they are at compile time, not runtime."
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>This is exactly the problem gRPC was built to solve.</b>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What gRPC actually is ?",
+          "text": "1. What gRPC actually is ?"
+        },
+        {
+          "type": "paragraph",
+          "content": "gRPC is a high-performance, open-source RPC (Remote Procedure Call) framework developed by Google. It lets you call functions on remote services as if they were local with strong typing, code generation, and efficient binary serialisation baked in."
+        },
+        {
+          "type": "paragraph",
+          "content": "The name:&nbsp;<strong>gRPC Remote Procedure Calls</strong>&nbsp;(recursive acronym, like GNU). Originally stood for \"Google RPC.\""
+        },
+        {
+          "type": "paragraph",
+          "content": "Three things define gRPC:"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong style=\\\"letter-spacing: -0.003em;\\\">Protocol Buffers:</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;the interface definition language and binary serialisation format. You define your messages and services in a&nbsp;</span><code style=\\\"letter-spacing: -0.003em;\\\">.proto</code><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;file. The compiler generates client and server code in your language of choice.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">HTTP/2:</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;the transport layer. Unlike HTTP/1.1 (one request per connection, text headers), HTTP/2 multiplexes multiple requests over a single connection, compresses headers, and supports server push.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Code generation:</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;you never write serialisation logic. You write a&nbsp;</span><code style=\\\"letter-spacing: -0.003em;\\\">.proto</code><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;file.&nbsp;</span><code style=\\\"letter-spacing: -0.003em;\\\">protoc</code><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;generates everything else.</span><br>\"]",
+          "items": [
+            "<strong style=\"letter-spacing: -0.003em;\">Protocol Buffers:</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;the interface definition language and binary serialisation format. You define your messages and services in a&nbsp;</span><code style=\"letter-spacing: -0.003em;\">.proto</code><span style=\"letter-spacing: -0.003em;\">&nbsp;file. The compiler generates client and server code in your language of choice.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">HTTP/2:</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;the transport layer. Unlike HTTP/1.1 (one request per connection, text headers), HTTP/2 multiplexes multiple requests over a single connection, compresses headers, and supports server push.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Code generation:</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;you never write serialisation logic. You write a&nbsp;</span><code style=\"letter-spacing: -0.003em;\">.proto</code><span style=\"letter-spacing: -0.003em;\">&nbsp;file.&nbsp;</span><code style=\"letter-spacing: -0.003em;\">protoc</code><span style=\"letter-spacing: -0.003em;\">&nbsp;generates everything else.</span><br>"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275459659-946594719.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275459659-946594719.png",
+          "alt": "gRPC is defined by Protocol Buffers, HTTP/2, and generated code that lets you call a remote service like a local function"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Protocol Buffers ( Heart of gRPC )",
+          "text": "2. Protocol Buffers ( Heart of gRPC )"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Before understanding gRPC, you first need to understand<strong>Protocol Buffers (Protobuf)</strong>. Protobuf is the data format that gRPC uses to send messages between the client and server. It is compact, fast, and much smaller than JSON."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "code",
+          "content": "syntax = \"proto3\";\n\nservice UserService {\n\n  rpc GetUser (GetUserRequest) returns (User);\n  rpc StreamUsers (StreamRequest) returns (stream User);\n}\n\nmessage GetUserRequest {\n\n  int64 user_id = 1;\n}\n\nmessage User {\n\n  int64  user_id   = 1;\n  string name      = 2;\n  string email     = 3;\n  int32  age       = 4;\n  bool   is_active = 5;\n\n}",
+          "code": "syntax = \"proto3\";\n\nservice UserService {\n\n  rpc GetUser (GetUserRequest) returns (User);\n  rpc StreamUsers (StreamRequest) returns (stream User);\n}\n\nmessage GetUserRequest {\n\n  int64 user_id = 1;\n}\n\nmessage User {\n\n  int64  user_id   = 1;\n  string name      = 2;\n  string email     = 3;\n  int32  age       = 4;\n  bool   is_active = 5;\n\n}",
+          "codes": {
+            "javascript": "syntax = \"proto3\";\n\nservice UserService {\n\n  rpc GetUser (GetUserRequest) returns (User);\n  rpc StreamUsers (StreamRequest) returns (stream User);\n}\n\nmessage GetUserRequest {\n\n  int64 user_id = 1;\n}\n\nmessage User {\n\n  int64  user_id   = 1;\n  string name      = 2;\n  string email     = 3;\n  int32  age       = 4;\n  bool   is_active = 5;\n\n}",
+            "python": "syntax = \"proto3\";\n\nservice UserService {\n\n  rpc GetUser (GetUserRequest) returns (User);\n  rpc StreamUsers (StreamRequest) returns (stream User);\n}\n\nmessage GetUserRequest {\n\n  int64 user_id = 1;\n}\n\nmessage User {\n\n  int64  user_id   = 1;\n  string name      = 2;\n  string email     = 3;\n  int32  age       = 4;\n  bool   is_active = 5;\n\n}",
+            "java": "syntax = \"proto3\";\n\nservice UserService {\n\n  rpc GetUser (GetUserRequest) returns (User);\n  rpc StreamUsers (StreamRequest) returns (stream User);\n}\n\nmessage GetUserRequest {\n\n  int64 user_id = 1;\n}\n\nmessage User {\n\n  int64  user_id   = 1;\n  string name      = 2;\n  string email     = 3;\n  int32  age       = 4;\n  bool   is_active = 5;\n\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "First, you define your API in a&nbsp;<strong><code>.proto</code></strong>&nbsp;file.&nbsp;<span style=\"letter-spacing: -0.003em;\">In this file, you describe:</span>"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Services:</strong>&nbsp;the operations the server provides.\",\"<strong>RPC methods:&nbsp;</strong>the functions clients can call.\",\"<strong>Messages:&nbsp;</strong>the request and response data structures.\"]",
+          "items": [
+            "<strong>Services:</strong>&nbsp;the operations the server provides.",
+            "<strong>RPC methods:&nbsp;</strong>the functions clients can call.",
+            "<strong>Messages:&nbsp;</strong>the request and response data structures."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "In this <b>example</b>:"
+        },
+        {
+          "type": "paragraph",
+          "content": "<code>UserService</code>&nbsp;is the service. <code>GetUser()</code>&nbsp;returns details of a single user. <code>StreamUsers()</code>&nbsp;continuously sends multiple users using streaming. <code>GetUserRequest</code>&nbsp;is the request message containing&nbsp;<code>user_id</code>. <code>User</code>&nbsp;is the response message containing fields like&nbsp;<code>user_id</code>,&nbsp;<code>name</code>,&nbsp;<code>email</code>,&nbsp;<code>age</code>, and&nbsp;<code>is_active</code>.",
+          "text": "<code>UserService</code>&nbsp;is the service. <code>GetUser()</code>&nbsp;returns details of a single user. <code>StreamUsers()</code>&nbsp;continuously sends multiple users using streaming. <code>GetUserRequest</code>&nbsp;is the request message containing&nbsp;<code>user_id</code>. <code>User</code>&nbsp;is the response message containing fields like&nbsp;<code>user_id</code>,&nbsp;<code>name</code>,&nbsp;<code>email</code>,&nbsp;<code>age</code>, and&nbsp;<code>is_active</code>."
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice each field has a number (<code>1</code>,&nbsp;<code>2</code>,&nbsp;<code>3</code>, ...). These are&nbsp;<strong>field IDs</strong>&nbsp;used during binary serialization. They make the data compact and also allow new fields to be added later without breaking older clients."
+        },
+        {
+          "type": "paragraph",
+          "content": "After writing the&nbsp;<code>.proto</code>&nbsp;file, you run the&nbsp;<strong><code>protoc</code>&nbsp;compiler</strong>.&nbsp;<span style=\"letter-spacing: -0.003em;\">The compiler automatically generates:</span>"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Server stub:</strong>&nbsp;where you write your business logic.\",\"<strong>Client stub:</strong>&nbsp;which lets the client call the server like a normal function.\",\"<strong>Serialization and deserialization code:</strong>&nbsp;to convert objects into binary data and back.\",\"<strong>Language-specific classes:</strong>&nbsp;for Java, Go, C++, Python, etc.\"]",
+          "items": [
+            "<strong>Server stub:</strong>&nbsp;where you write your business logic.",
+            "<strong>Client stub:</strong>&nbsp;which lets the client call the server like a normal function.",
+            "<strong>Serialization and deserialization code:</strong>&nbsp;to convert objects into binary data and back.",
+            "<strong>Language-specific classes:</strong>&nbsp;for Java, Go, C++, Python, etc."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "As a developer, you only write the server logic and call the generated client methods. gRPC automatically handles networking, serialization, deserialization, and communication between the client and server."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Why binary serialisation is so much faster",
+          "text": "3. Why binary serialisation is so much faster"
+        },
+        {
+          "type": "paragraph",
+          "content": "Binary serialization reduces payload size, CPU usage, and network overhead, making gRPC much faster than JSON-based APIs."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "1. JSON",
+          "text": "1. JSON"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275461420-445114794.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275461420-445114794.png",
+          "alt": "JSON repeats field names in every message, growing the payload to 167 bytes for this example"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "JSON stores&nbsp;<strong>field names&nbsp;</strong>(<code>user_id</code>,<code>name</code>,<code>email</code>) in every message, making the payload larger."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "code",
+          "content": "{\n\n\"user_id\": 12345,\n\"name\": \"Alice Smith\",\n\"email\": \"alice@ex.com\",\n\"age\": 29,\n\"is_active\": true\n\n}",
+          "code": "{\n\n\"user_id\": 12345,\n\"name\": \"Alice Smith\",\n\"email\": \"alice@ex.com\",\n\"age\": 29,\n\"is_active\": true\n\n}",
+          "codes": {
+            "javascript": "{\n\n\"user_id\": 12345,\n\"name\": \"Alice Smith\",\n\"email\": \"alice@ex.com\",\n\"age\": 29,\n\"is_active\": true\n\n}",
+            "python": "{\n\n\"user_id\": 12345,\n\"name\": \"Alice Smith\",\n\"email\": \"alice@ex.com\",\n\"age\": 29,\n\"is_active\": true\n\n}",
+            "java": "{\n\n\"user_id\": 12345,\n\"name\": \"Alice Smith\",\n\"email\": \"alice@ex.com\",\n\"age\": 29,\n\"is_active\": true\n\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "It also requires text parsing and type conversion before the application can use the data."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "2. Protocol Buffers",
+          "text": "2. Protocol Buffers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275462977-884331987.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275462977-884331987.png",
+          "alt": "Protobuf sends only field numbers, no names at all, shrinking the same message to 42 bytes"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Protocol Buffers use&nbsp;<strong>field numbers&nbsp;</strong>instead of field names, so the payload is much smaller (42 bytes vs 167 bytes)."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "code",
+          "content": "field 1 (int64): 0x08 0xB9 0x60\nfield 2 (string): 0x12 0x0B \"Alice Smith\"\nfield 3 (string): 0x1A 0x0C \"alice@ex.com\"\nfield 4 (int32): 0x20 0x1D\nfield 5 (bool): 0x28 0x01",
+          "code": "field 1 (int64): 0x08 0xB9 0x60\nfield 2 (string): 0x12 0x0B \"Alice Smith\"\nfield 3 (string): 0x1A 0x0C \"alice@ex.com\"\nfield 4 (int32): 0x20 0x1D\nfield 5 (bool): 0x28 0x01",
+          "codes": {
+            "javascript": "field 1 (int64): 0x08 0xB9 0x60\nfield 2 (string): 0x12 0x0B \"Alice Smith\"\nfield 3 (string): 0x1A 0x0C \"alice@ex.com\"\nfield 4 (int32): 0x20 0x1D\nfield 5 (bool): 0x28 0x01",
+            "python": "field 1 (int64): 0x08 0xB9 0x60\nfield 2 (string): 0x12 0x0B \"Alice Smith\"\nfield 3 (string): 0x1A 0x0C \"alice@ex.com\"\nfield 4 (int32): 0x20 0x1D\nfield 5 (bool): 0x28 0x01",
+            "java": "field 1 (int64): 0x08 0xB9 0x60\nfield 2 (string): 0x12 0x0B \"Alice Smith\"\nfield 3 (string): 0x1A 0x0C \"alice@ex.com\"\nfield 4 (int32): 0x20 0x1D\nfield 5 (bool): 0x28 0x01"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "&nbsp;Since the data is already in binary format with known types, it is decoded much faster with less CPU usage."
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>The key insight:</b> protobuf doesn't send field names. It sends field&nbsp;<em>numbers</em>&nbsp;(the&nbsp;<code>= 1</code>,&nbsp;<code>= 2</code>&nbsp;in the&nbsp;<code>.proto</code>&nbsp;definition). Both sides already know what field 1 means it's in the compiled schema. This eliminates the single biggest source of JSON bloat: the repetition of field names in every message."
+        },
+        {
+          "type": "paragraph",
+          "content": "The performance benchmarks are consistent across languages and workloads:"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>3–10× smaller</strong>&nbsp;payload than JSON\",\"<strong>5–10× faster</strong>&nbsp;serialisation/deserialisation\",\"Significantly lower CPU usage per byte processed\"]",
+          "items": [
+            "<strong>3–10× smaller</strong>&nbsp;payload than JSON",
+            "<strong>5–10× faster</strong>&nbsp;serialisation/deserialisation",
+            "Significantly lower CPU usage per byte processed"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "At 200,000 requests per second, this difference is not academic."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. HTTP/2: Why the transport matters",
+          "text": "4. HTTP/2: Why the transport matters"
+        },
+        {
+          "type": "paragraph",
+          "content": "REST over HTTP/1.1 has a fundamental bottleneck: one request per connection at a time. If you want to make 10 concurrent requests, you open 10 connections. <b>Each connection has its own TCP handshake</b>, TLS negotiation, and connection state. Connection pools help but don't eliminate the overhead."
+        },
+        {
+          "type": "paragraph",
+          "content": "HTTP/2 changes the model completely:"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "1. HTTP/1.1: One Request Per Connection",
+          "text": "1. HTTP/1.1: One Request Per Connection"
+        },
+        {
+          "type": "paragraph",
+          "content": "In HTTP/1.1, each request typically needs its own connection. If a client sends multiple requests at the same time, it opens multiple TCP connections, and each connection requires its own handshake and resources."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275464674-709281820.png",
+          "alt": "HTTP/1.1 needs a separate connection for each concurrent request, each with its own setup cost",
+          "width": 3939,
+          "height": 1561,
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275464674-709281820.png"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "This increases latency, CPU usage, and network overhead."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "2. HTTP/2: Multiple Streams, One Connection",
+          "text": "2. HTTP/2: Multiple Streams, One Connection"
+        },
+        {
+          "type": "paragraph",
+          "content": "HTTP/2 keeps a single connection open and sends multiple requests as independent&nbsp;<strong>streams</strong>&nbsp;over that connection."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275466306-495132823.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275466306-495132823.png",
+          "alt": "HTTP/2 sends all concurrent requests as independent streams over one single connection"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "All requests and responses travel together without opening new connections, making communication much faster and more efficient."
+        },
+        {
+          "type": "heading2",
+          "content": "Why HTTP/2 is Faster",
+          "text": "Why HTTP/2 is Faster"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Only one TCP connection</strong>&nbsp;is needed for many requests.\",\"<strong>No repeated TCP/TLS handshakes</strong>, reducing latency.\",\"<strong>Multiplexing</strong>&nbsp;allows multiple requests and responses to run simultaneously.\",\"<strong>Header compression (HPACK)</strong>&nbsp;reduces repeated HTTP header size.\"]",
+          "items": [
+            "<strong>Only one TCP connection</strong>&nbsp;is needed for many requests.",
+            "<strong>No repeated TCP/TLS handshakes</strong>, reducing latency.",
+            "<strong>Multiplexing</strong>&nbsp;allows multiple requests and responses to run simultaneously.",
+            "<strong>Header compression (HPACK)</strong>&nbsp;reduces repeated HTTP header size."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "heading2",
+          "content": "How gRPC Uses HTTP/2",
+          "text": "How gRPC Uses HTTP/2"
+        },
+        {
+          "type": "paragraph",
+          "content": "gRPC uses HTTP/2 by default. Services keep one long-lived connection between them, and all RPC calls are sent over that connection."
+        },
+        {
+          "type": "paragraph",
+          "content": "This reduces connection overhead, lowers latency, and improves throughput, making it ideal for high-frequency microservice communication."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. The 4 communication patterns",
+          "text": "5. The 4 communication patterns"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is one of gRPC's most significant advantages over REST. REST has one pattern: request-response. gRPC has four."
+        },
+        {
+          "type": "heading2",
+          "content": "1. Unary RPC (One Request → One Response)",
+          "text": "1. Unary RPC (One Request → One Response)"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275467840-874129782.png",
+          "alt": "Unary RPC is the simplest pattern, one request in, one response back, just like a typical REST call",
+          "width": 1601,
+          "height": 390,
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275467840-874129782.png"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Unary RPC</strong>&nbsp;is the simplest gRPC communication pattern. The client sends&nbsp;<strong>one request</strong>, and the server returns&nbsp;<strong>one response</strong>. It works just like a REST API and is the default communication pattern."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Example:</strong>&nbsp;Get user details, login, create an order."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "<span style=\"letter-spacing: -0.003em;\">2. Server Streaming RPC (One Request → Many Responses)</span>",
+          "text": "<span style=\"letter-spacing: -0.003em;\">2. Server Streaming RPC (One Request → Many Responses)</span>"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275469321-926721608.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275469321-926721608.png",
+          "alt": "Server streaming RPC answers one request with many responses delivered over time"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "In&nbsp;<strong>Server Streaming RPC</strong>, the client sends&nbsp;<strong>one request</strong>, but the server returns&nbsp;<strong>multiple responses</strong>&nbsp;as a continuous stream. This is useful when data is generated over time."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Example:</strong>&nbsp;Live location updates, stock prices, notifications."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "3. Client Streaming RPC (Many Requests → One Response)",
+          "text": "3. Client Streaming RPC (Many Requests → One Response)"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275470869-865602724.png",
+          "alt": "Client streaming RPC sends many requests before the server replies with one final response",
+          "width": 1793,
+          "height": 800,
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275470869-865602724.png"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "In&nbsp;<strong>Client Streaming RPC</strong>, the client sends&nbsp;<strong>multiple requests</strong>&nbsp;as a stream, and the server processes them all before returning&nbsp;<strong>one final response</strong>."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Example:</strong>&nbsp;Uploading a large file, sending sensor readings, batch data processing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "4. Bidirectional Streaming RPC (Many Requests ↔ Many Responses)",
+          "text": "4. Bidirectional Streaming RPC (Many Requests ↔ Many Responses)"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275472557-753349059.png",
+          "alt": "Bidirectional streaming lets both sides send messages continuously over the same connection, neither waiting on the other",
+          "width": 1664,
+          "height": 1210,
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275472557-753349059.png"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "In&nbsp;<strong>Bidirectional Streaming RPC</strong>, both the client and server send&nbsp;<strong>multiple messages simultaneously</strong>&nbsp;over the same connection. Neither side has to wait for the other, making it ideal for real-time communication."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Example:</strong>&nbsp;Chat applications, multiplayer games, live collaboration tools."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "In<code>.proto</code>"
+        },
+        {
+          "type": "code",
+          "content": "service ChatService {\n\n  // Bidirectional streaming\n  rpc Chat (stream ChatMessage) returns (stream ChatMessage);\n  \n  // Server streaming\n  rpc Subscribe (SubscribeRequest) returns (stream Event);\n  \n  // Client streaming\n  rpc Upload (stream Chunk) returns (UploadResult);\n}",
+          "code": "service ChatService {\n\n  // Bidirectional streaming\n  rpc Chat (stream ChatMessage) returns (stream ChatMessage);\n  \n  // Server streaming\n  rpc Subscribe (SubscribeRequest) returns (stream Event);\n  \n  // Client streaming\n  rpc Upload (stream Chunk) returns (UploadResult);\n}",
+          "codes": {
+            "javascript": "service ChatService {\n\n  // Bidirectional streaming\n  rpc Chat (stream ChatMessage) returns (stream ChatMessage);\n  \n  // Server streaming\n  rpc Subscribe (SubscribeRequest) returns (stream Event);\n  \n  // Client streaming\n  rpc Upload (stream Chunk) returns (UploadResult);\n}",
+            "python": "service ChatService {\n\n  // Bidirectional streaming\n  rpc Chat (stream ChatMessage) returns (stream ChatMessage);\n  \n  // Server streaming\n  rpc Subscribe (SubscribeRequest) returns (stream Event);\n  \n  // Client streaming\n  rpc Upload (stream Chunk) returns (UploadResult);\n}",
+            "java": "service ChatService {\n\n  // Bidirectional streaming\n  rpc Chat (stream ChatMessage) returns (stream ChatMessage);\n  \n  // Server streaming\n  rpc Subscribe (SubscribeRequest) returns (stream Event);\n  \n  // Client streaming\n  rpc Upload (stream Chunk) returns (UploadResult);\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "<span style=\"font-size: 2.5rem; letter-spacing: -0.003em;\">6. Metadata, Deadlines, and Cancellation</span><br>",
+          "text": "<span style=\"font-size: 2.5rem; letter-spacing: -0.003em;\">6. Metadata, Deadlines, and Cancellation</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "gRPC provides built-in features like metadata, deadlines, and cancellation to make communication between services faster and more reliable."
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>Metadata:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">Metadata is similar to HTTP headers. It carries extra information such as authentication tokens, trace IDs, user details, or request context along with every gRPC request. The framework automatically passes this information between services, so developers don't need to send it manually every time.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>Deadlines:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">A deadline defines the maximum time a request is allowed to run. If a client sends a request with a 500ms deadline, every downstream service must finish its work within that time.&nbsp;</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">If any service becomes slow, gRPC automatically cancels the remaining calls and returns a&nbsp;</span><strong style=\"letter-spacing: -0.003em;\"><code>DEADLINE_EXCEEDED</code></strong><span style=\"letter-spacing: -0.003em;\">&nbsp;error instead of waiting indefinitely. This prevents slow services from consuming unnecessary CPU, memory, and threads.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\"></span>"
+        },
+        {
+          "type": "code",
+          "content": "Client: GetOrder(id, deadline=500ms)\n\n  → OrderService: GetOrder handler\n\n    → InventoryService: CheckStock(derived deadline=350ms)\n\n      → DB: query (deadline exceeded → cancel)\n\n    ← InventoryService: DEADLINE_EXCEEDED\n\n  ← OrderService: DEADLINE_EXCEEDED\n\n← Client: error (didn't waste 500ms waiting)",
+          "code": "Client: GetOrder(id, deadline=500ms)\n\n  → OrderService: GetOrder handler\n\n    → InventoryService: CheckStock(derived deadline=350ms)\n\n      → DB: query (deadline exceeded → cancel)\n\n    ← InventoryService: DEADLINE_EXCEEDED\n\n  ← OrderService: DEADLINE_EXCEEDED\n\n← Client: error (didn't waste 500ms waiting)",
+          "codes": {
+            "javascript": "Client: GetOrder(id, deadline=500ms)\n\n  → OrderService: GetOrder handler\n\n    → InventoryService: CheckStock(derived deadline=350ms)\n\n      → DB: query (deadline exceeded → cancel)\n\n    ← InventoryService: DEADLINE_EXCEEDED\n\n  ← OrderService: DEADLINE_EXCEEDED\n\n← Client: error (didn't waste 500ms waiting)",
+            "python": "Client: GetOrder(id, deadline=500ms)\n\n  → OrderService: GetOrder handler\n\n    → InventoryService: CheckStock(derived deadline=350ms)\n\n      → DB: query (deadline exceeded → cancel)\n\n    ← InventoryService: DEADLINE_EXCEEDED\n\n  ← OrderService: DEADLINE_EXCEEDED\n\n← Client: error (didn't waste 500ms waiting)",
+            "java": "Client: GetOrder(id, deadline=500ms)\n\n  → OrderService: GetOrder handler\n\n    → InventoryService: CheckStock(derived deadline=350ms)\n\n      → DB: query (deadline exceeded → cancel)\n\n    ← InventoryService: DEADLINE_EXCEEDED\n\n  ← OrderService: DEADLINE_EXCEEDED\n\n← Client: error (didn't waste 500ms waiting)"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>Cancellation:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">If the client no longer needs the response, it can cancel the request at any time. For example, if a user closes the application while a request is still running, gRPC immediately stops the request and also cancels all downstream service calls.&nbsp;</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">This frees server resources quickly and avoids doing work that is no longer needed. Unlike REST, where the server may continue processing even after the client disconnects, gRPC stops the entire request chain automatically.</span>"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Error handling&nbsp;",
+          "text": "7. Error handling&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "REST errors are HTTP status codes: 200, 400, 404, 500. These are lossy. A 500 could mean hundreds of different things. gRPC has a richer status model with 16 well-defined codes:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275474143-457127620.png",
+          "alt": "gRPC replaces the ambiguity of a REST 500 error with 16 specific, well-defined status codes",
+          "width": 1457,
+          "height": 1014,
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275474143-457127620.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b style=\"letter-spacing: -0.003em;\">The key distinction from REST:</b><span style=\"letter-spacing: -0.003em;\">&nbsp;</span><code style=\"letter-spacing: -0.003em;\">UNAVAILABLE</code><span style=\"letter-spacing: -0.003em;\">&nbsp;explicitly signals \"retry me.\"&nbsp;</span><code style=\"letter-spacing: -0.003em;\">FAILED_PRECONDITION</code><span style=\"letter-spacing: -0.003em;\">&nbsp;explicitly signals \"don't retry fix your state first.\" REST's 503 is ambiguous about whether retry is appropriate. gRPC's codes tell the client exactly what to do.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Interceptors ( gRPC's middleware )",
+          "text": "8. Interceptors ( gRPC's middleware )"
+        },
+        {
+          "type": "paragraph",
+          "content": "gRPC has an interceptor pattern equivalent to middleware in HTTP frameworks. Interceptors run before and after every call, on both client and server sides."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396027810-68311003.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396027810-68311003.png",
+          "alt": "Interceptors run on both the client and server side, wrapping every call the same way middleware wraps an HTTP request"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong style=\\\"letter-spacing: -0.003em;\\\">Authentication:</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;validate the JWT or API key on every incoming call. Attach the authenticated principal to the call context. The handler code never touches auth tokens directly.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Distributed tracing:</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;extract trace IDs from incoming metadata, start a span, propagate the trace ID to all downstream calls. Every gRPC call appears in your distributed trace automatically.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Retry:</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;automatically retry calls that return&nbsp;</span><code style=\\\"letter-spacing: -0.003em;\\\">UNAVAILABLE</code><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;with exponential backoff. The handler never knows a retry happened.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Logging:</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;log every call's method, duration, status code, and error. Gives you observability on every RPC with zero code in handlers.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Circuit breaking:</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;if a downstream is returning errors above a threshold, open the circuit and return errors locally rather than calling the downstream.</span><br>\"]",
+          "items": [
+            "<strong style=\"letter-spacing: -0.003em;\">Authentication:</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;validate the JWT or API key on every incoming call. Attach the authenticated principal to the call context. The handler code never touches auth tokens directly.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Distributed tracing:</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;extract trace IDs from incoming metadata, start a span, propagate the trace ID to all downstream calls. Every gRPC call appears in your distributed trace automatically.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Retry:</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;automatically retry calls that return&nbsp;</span><code style=\"letter-spacing: -0.003em;\">UNAVAILABLE</code><span style=\"letter-spacing: -0.003em;\">&nbsp;with exponential backoff. The handler never knows a retry happened.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Logging:</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;log every call's method, duration, status code, and error. Gives you observability on every RPC with zero code in handlers.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Circuit breaking:</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;if a downstream is returning errors above a threshold, open the circuit and return errors locally rather than calling the downstream.</span><br>"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. gRPC Web",
+          "text": "9. gRPC Web"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>gRPC-Web allows browser applications to communicate</b> with gRPC services, even though browsers do not natively support the gRPC protocol."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396027810-618315155.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396027810-618315155.png",
+          "alt": "A browser cannot speak HTTP/2 directly, so gRPC-Web routes through a proxy that translates to a real gRPC call"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">A normal gRPC client uses&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">HTTP/2</strong><span style=\"letter-spacing: -0.003em;\">, but web browsers do not expose the low-level HTTP/2 features required by gRPC. Because of this limitation, a browser cannot directly call a gRPC server.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "To solve this,&nbsp;<strong>gRPC-Web</strong>&nbsp;is used."
+        },
+        {
+          "type": "paragraph",
+          "content": "When the browser sends a request, it first goes to a&nbsp;<strong>gRPC-Web proxy</strong>&nbsp;(commonly&nbsp;<strong>Envoy</strong>). The proxy converts the&nbsp;<strong>gRPC-Web request</strong>&nbsp;into a normal&nbsp;<strong>gRPC (HTTP/2)</strong>&nbsp;request and forwards it to the backend server.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "The server processes the request and sends the response back through the proxy, which converts it into a format the browser understands."
+        },
+        {
+          "type": "paragraph",
+          "content": "This allows web applications to use gRPC services without changing the backend."
+        },
+        {
+          "type": "heading2",
+          "content": "Streaming Support",
+          "text": "Streaming Support"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "gRPC-web supports unary and server streaming only no client streaming or bidirectional streaming (because HTTP/1.1 doesn't support arbitrary streaming from client to server).&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "For browser applications that need bidirectional streaming, you still need WebSockets."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. When to use gRPC&nbsp;",
+          "text": "10. When to use gRPC&nbsp;"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275481843-717233933.png",
+          "alt": "The common production pattern is REST for the public-facing edge and gRPC for internal service-to-service calls",
+          "width": 1736,
+          "height": 780,
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785275481843-717233933.png"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "The pattern that almost every large system uses:&nbsp;<strong>REST at the edge, gRPC internally</strong>.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "The public API that developers integrate with is REST over HTTP/1.1 developer-friendly, cacheable, curl-able. The service-to-service communication behind the API gateway is gRPC efficient, typed, streaming-capable."
+        },
+        {
+          "type": "paragraph",
+          "content": "Google, Netflix, Uber, Lyft, and Dropbox all follow this pattern. The edge is REST (or GraphQL). The interior is gRPC."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Schema evolution: how to change protos without breaking clients",
+          "text": "11. Schema evolution: how to change protos without breaking clients"
+        },
+        {
+          "type": "paragraph",
+          "content": "One of protobuf's most important properties:&nbsp;<strong>backward and forward compatibility</strong>. You can add new fields to messages without breaking existing clients."
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>Rules for safe evolution:</b>"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Never reuse field numbers:</strong>&nbsp;field 3 always means the same thing\",\"<strong>Add new fields as optional:</strong>&nbsp;old clients ignore unknown fields\",\"<strong>Never remove fields:</strong>&nbsp;mark them as deprecated and stop populating them\",\"<strong>Never change field types:</strong>&nbsp;especially not&nbsp;<code>int32</code>&nbsp;to&nbsp;<code>string</code>\"]",
+          "items": [
+            "<strong>Never reuse field numbers:</strong>&nbsp;field 3 always means the same thing",
+            "<strong>Add new fields as optional:</strong>&nbsp;old clients ignore unknown fields",
+            "<strong>Never remove fields:</strong>&nbsp;mark them as deprecated and stop populating them",
+            "<strong>Never change field types:</strong>&nbsp;especially not&nbsp;<code>int32</code>&nbsp;to&nbsp;<code>string</code>"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "code",
+          "content": "message User {\n  int64  user_id    = 1;\n  string name       = 2;\n  string email      = 3;\n  // Added in v2 — old clients ignore this\n  string phone      = 4;\n  // Added in v3\n  repeated string tags = 5;\n}",
+          "code": "message User {\n  int64  user_id    = 1;\n  string name       = 2;\n  string email      = 3;\n  // Added in v2 — old clients ignore this\n  string phone      = 4;\n  // Added in v3\n  repeated string tags = 5;\n}",
+          "codes": {
+            "javascript": "message User {\n  int64  user_id    = 1;\n  string name       = 2;\n  string email      = 3;\n  // Added in v2 — old clients ignore this\n  string phone      = 4;\n  // Added in v3\n  repeated string tags = 5;\n}",
+            "python": "message User {\n  int64  user_id    = 1;\n  string name       = 2;\n  string email      = 3;\n  // Added in v2 — old clients ignore this\n  string phone      = 4;\n  // Added in v3\n  repeated string tags = 5;\n}",
+            "java": "message User {\n  int64  user_id    = 1;\n  string name       = 2;\n  string email      = 3;\n  // Added in v2 — old clients ignore this\n  string phone      = 4;\n  // Added in v3\n  repeated string tags = 5;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Old clients compiled against v1 receive a v3 message.&nbsp;<span style=\"letter-spacing: -0.003em;\">They see fields 1, 2, 3. Fields 4 and 5 are unknown protobuf silently skips them.&nbsp;</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "The old client works correctly. New clients compiled against v3 receive a v1 message. Fields 4 and 5 are absent they get zero values. This is safe if you design your service logic to handle absent optional fields."
+        },
+        {
+          "type": "blockQuote",
+          "content": "This is far superior to REST versioning, where you typically need parallel&nbsp;<code>/v1/</code>&nbsp;and&nbsp;<code>/v2/</code>&nbsp;API paths, duplicated handlers, and explicit migration windows."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. gRPC in HLD",
+          "text": "12. gRPC in HLD"
+        },
+        {
+          "type": "paragraph",
+          "content": "gRPC is mainly used for fast and efficient communication between internal services in large distributed systems."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<b style=\\\"letter-spacing: -0.003em;\\\">Service Mesh:&nbsp;</b><span style=\\\"letter-spacing: -0.003em;\\\">In a service mesh like&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">Istio</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;or&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">Envoy</strong><span style=\\\"letter-spacing: -0.003em;\\\">, microservices communicate with each other using gRPC. The service mesh automatically handles security, load balancing, retries, and circuit breaking.</span><br>\",\"<b style=\\\"letter-spacing: -0.003em;\\\">API Gateway:&nbsp;</b><span style=\\\"letter-spacing: -0.003em;\\\">External clients usually send&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">REST/JSON</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;requests. The API Gateway converts these requests into&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">gRPC</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;calls for internal services, giving clients a simple API while keeping internal communication fast.</span><br>\",\"<b style=\\\"letter-spacing: -0.003em;\\\">Streaming Pipelines:&nbsp;</b><span style=\\\"letter-spacing: -0.003em;\\\">For real-time applications like live tracking, notifications, or stock prices, gRPC streaming sends updates continuously over a single connection instead of creating a new request each time.</span><br>\",\"<b style=\\\"letter-spacing: -0.003em;\\\">Mobile Backends:&nbsp;</b><span style=\\\"letter-spacing: -0.003em;\\\">Mobile apps use gRPC because it sends smaller binary messages and reuses the same connection, reducing network usage, improving speed, and saving battery.</span><br>\"]",
+          "items": [
+            "<b style=\"letter-spacing: -0.003em;\">Service Mesh:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">In a service mesh like&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">Istio</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;or&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">Envoy</strong><span style=\"letter-spacing: -0.003em;\">, microservices communicate with each other using gRPC. The service mesh automatically handles security, load balancing, retries, and circuit breaking.</span><br>",
+            "<b style=\"letter-spacing: -0.003em;\">API Gateway:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">External clients usually send&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">REST/JSON</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;requests. The API Gateway converts these requests into&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">gRPC</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;calls for internal services, giving clients a simple API while keeping internal communication fast.</span><br>",
+            "<b style=\"letter-spacing: -0.003em;\">Streaming Pipelines:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">For real-time applications like live tracking, notifications, or stock prices, gRPC streaming sends updates continuously over a single connection instead of creating a new request each time.</span><br>",
+            "<b style=\"letter-spacing: -0.003em;\">Mobile Backends:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">Mobile apps use gRPC because it sends smaller binary messages and reuses the same connection, reducing network usage, improving speed, and saving battery.</span><br>"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. HLD Interview ( How to Talk About gRPC )",
+          "text": "13. HLD Interview ( How to Talk About gRPC )"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<b style=\\\"letter-spacing: -0.003em;\\\">Protocol Choice:&nbsp;</b><span style=\\\"letter-spacing: -0.003em;\\\">For communication between microservices, I would use&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">gRPC</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;because it is faster and more efficient than REST. It uses&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">Protocol Buffers</strong><span style=\\\"letter-spacing: -0.003em;\\\">, which produce smaller payloads and lower CPU usage, while&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">HTTP/2</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;allows multiple requests over a single connection. It also provides compile-time contract validation through&nbsp;</span><code style=\\\"letter-spacing: -0.003em;\\\">.proto</code><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;files.</span><br>\",\"<b style=\\\"letter-spacing: -0.003em;\\\">Real-Time Streaming:&nbsp;</b><span style=\\\"letter-spacing: -0.003em;\\\">For real-time features like live location tracking, notifications, or chat, I would use&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">gRPC streaming</strong><span style=\\\"letter-spacing: -0.003em;\\\">. The client opens one connection and continuously receives updates, avoiding frequent polling and reducing network overhead.</span><br>\",\"<b style=\\\"letter-spacing: -0.003em;\\\">API Boundary:&nbsp;</b><span style=\\\"letter-spacing: -0.003em;\\\">I would expose&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">REST APIs</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;to external clients because they are simple, widely supported, and easy to use. Inside the system, the API Gateway converts REST requests into&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">gRPC</strong><span style=\\\"letter-spacing: -0.003em;\\\">&nbsp;calls so internal services can communicate efficiently.</span><br>\",\"<b style=\\\"letter-spacing: -0.003em;\\\">Deadlines:&nbsp;</b><span style=\\\"letter-spacing: -0.003em;\\\">Every gRPC request should have a&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">deadline</strong><span style=\\\"letter-spacing: -0.003em;\\\">. If a downstream service becomes slow, the request is automatically cancelled and the client receives a timeout error. This prevents resources from being blocked by long-running requests.</span><br>\",\"<b style=\\\"letter-spacing: -0.003em;\\\">Schema Evolution:&nbsp;</b><span style=\\\"letter-spacing: -0.003em;\\\">gRPC uses&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">Protocol Buffers</strong><span style=\\\"letter-spacing: -0.003em;\\\">, which support backward-compatible changes. We only add new fields and never reuse old field numbers, allowing new and old service versions to work together during deployments.</span><br>\"]",
+          "items": [
+            "<b style=\"letter-spacing: -0.003em;\">Protocol Choice:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">For communication between microservices, I would use&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">gRPC</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;because it is faster and more efficient than REST. It uses&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">Protocol Buffers</strong><span style=\"letter-spacing: -0.003em;\">, which produce smaller payloads and lower CPU usage, while&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">HTTP/2</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;allows multiple requests over a single connection. It also provides compile-time contract validation through&nbsp;</span><code style=\"letter-spacing: -0.003em;\">.proto</code><span style=\"letter-spacing: -0.003em;\">&nbsp;files.</span><br>",
+            "<b style=\"letter-spacing: -0.003em;\">Real-Time Streaming:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">For real-time features like live location tracking, notifications, or chat, I would use&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">gRPC streaming</strong><span style=\"letter-spacing: -0.003em;\">. The client opens one connection and continuously receives updates, avoiding frequent polling and reducing network overhead.</span><br>",
+            "<b style=\"letter-spacing: -0.003em;\">API Boundary:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">I would expose&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">REST APIs</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;to external clients because they are simple, widely supported, and easy to use. Inside the system, the API Gateway converts REST requests into&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">gRPC</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;calls so internal services can communicate efficiently.</span><br>",
+            "<b style=\"letter-spacing: -0.003em;\">Deadlines:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">Every gRPC request should have a&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">deadline</strong><span style=\"letter-spacing: -0.003em;\">. If a downstream service becomes slow, the request is automatically cancelled and the client receives a timeout error. This prevents resources from being blocked by long-running requests.</span><br>",
+            "<b style=\"letter-spacing: -0.003em;\">Schema Evolution:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">gRPC uses&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">Protocol Buffers</strong><span style=\"letter-spacing: -0.003em;\">, which support backward-compatible changes. We only add new fields and never reuse old field numbers, allowing new and old service versions to work together during deployments.</span><br>"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\"></span>"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "Final Design Choice",
+          "text": "Final Design Choice"
+        },
+        {
+          "type": "paragraph",
+          "content": "For most production systems, I would use&nbsp;<strong>REST for external APIs</strong>&nbsp;and&nbsp;<strong>gRPC for internal microservice communication</strong>. This provides a developer-friendly public API while keeping internal communication fast, efficient, and scalable."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        }
+      ]
+    }
+  ]
+}

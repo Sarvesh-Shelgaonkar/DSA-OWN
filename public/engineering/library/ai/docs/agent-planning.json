@@ -1,0 +1,490 @@
+{
+  "slug": "agent-planning",
+  "title": "Agent Planning",
+  "content": [
+    {
+      "id": "agent-planning",
+      "title": "Agent Planning",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "An agent that reacts one tool call at a time works fine for a single ask, but it stalls on anything bigger."
+        },
+        {
+          "type": "paragraph",
+          "text": "Agent planning means breaking a large goal into a sequence of smaller steps before any tool gets called, then working through that sequence one step at a time."
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP makes this easier because an agent can look at what tools, resources, and prompts a server actually offers before it commits to a plan."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why Agents Need a Plan",
+          "id": "ap-why-plan"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579404021-46356447.png",
+          "alt": "An agent queries available tools, drafts a plan, executes steps, and re-plans if needed",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Without a plan, an agent decides its next single action based only on the current prompt and whatever it just saw."
+        },
+        {
+          "type": "paragraph",
+          "text": "That works for a one step ask, but a goal like \"prepare a release report\" actually hides several smaller jobs, pulling commits, running tests, summarizing failures, and formatting output."
+        },
+        {
+          "type": "paragraph",
+          "text": "Planning forces the agent to name those smaller jobs up front, so it does not wander or repeat work it already did."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Fewer wasted tool calls, since the agent knows what it needs before it starts",
+            "Missing information gets caught early, before any real work has happened",
+            "The user gets a preview of what the agent intends to do",
+            "A failure later on is easier to isolate to one specific step"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Think of it like planning a road trip, you decide the stops before you leave the driveway, instead of picking each turn as you go."
+        },
+        {
+          "type": "paragraph",
+          "text": "A plan also gives a human reviewer something concrete to look at before any action actually happens."
+        },
+        {
+          "type": "paragraph",
+          "text": "That upfront visibility matters even more once a Human in the Loop check gets added to a risky step."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Breaking a Goal into Steps",
+          "id": "ap-decomposition"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579406285-234270439.png",
+          "alt": "One big goal breaks down into smaller ordered steps",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The first job of a planner is decomposition, splitting one large ask into an ordered list of smaller, concrete steps."
+        },
+        {
+          "type": "paragraph",
+          "text": "Each step should be small enough that a single tool call, or a short handful of them, can finish it."
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful test: if you cannot say whether a step succeeded or failed on its own, that step is still too big."
+        },
+        {
+          "type": "paragraph",
+          "text": "Decomposition does not need to be perfect on the first pass, a rough split is enough to start discovery."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "plan = [\n  {\"step\": 1, \"tool\": \"list_commits\", \"args\": {\"since\": \"last_release\"}},\n  {\"step\": 2, \"tool\": \"run_tests\", \"args\": {\"suite\": \"full\"}},\n  {\"step\": 3, \"tool\": \"summarize_failures\", \"args\": {}},\n  {\"step\": 4, \"tool\": \"format_report\", \"args\": {}},\n]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Discovery Before Deciding",
+          "id": "ap-discovery"
+        },
+        {
+          "type": "paragraph",
+          "text": "A planner that guesses which tools exist is fragile, since every MCP server can expose a different set of tools, resources, and prompts."
+        },
+        {
+          "type": "paragraph",
+          "text": "Before locking in a plan, a well built agent calls tools/list, resources/list, and prompts/list to see what is actually available right now."
+        },
+        {
+          "type": "paragraph",
+          "text": "That discovery step turns planning from a guess into a decision grounded in what the server can really do today."
+        },
+        {
+          "type": "note",
+          "title": "Discovery is cheap",
+          "content": "Listing tools, resources, and prompts is a lightweight read only call, so there is little cost to checking before every single plan."
+        },
+        {
+          "type": "paragraph",
+          "text": "Re-running discovery on every single plan also protects against a server that changed its tool set since the last connection."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Querying tools/list to Inform a Plan",
+          "id": "ap-tools-list-query"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579408197-313002870.png",
+          "alt": "A tools list query informs which steps a plan can actually include",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is an agent calling discovery first, then only building steps around tools that actually exist on the connected server."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function buildPlan(goal, mcpClient) {\n  const tools = await mcpClient.listTools();\n  const resources = await mcpClient.listResources();\n  const prompts = await mcpClient.listPrompts();\n\n  const toolNames = new Set(tools.map((t) => t.name));\n  const draftSteps = decomposeGoal(goal);\n\n  const plan = draftSteps.map((step) => {\n    if (!toolNames.has(step.tool)) {\n      return { ...step, status: 'blocked', reason: 'no matching tool found during discovery' };\n    }\n    return { ...step, status: 'ready' };\n  });\n\n  return { plan, resources, prompts };\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Any step that references a tool the server does not actually have gets flagged as blocked before the agent wastes a single call on it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Resources and Prompts as Planning Inputs",
+          "id": "ap-resources-prompts"
+        },
+        {
+          "type": "paragraph",
+          "text": "Tools are not the only planning input, resources tell the agent what data already exists that it could read instead of fetching it again."
+        },
+        {
+          "type": "paragraph",
+          "text": "Prompts published by a server can hand the agent a ready made template for a sub task, which changes what the plan even needs to include."
+        },
+        {
+          "type": "paragraph",
+          "text": "A planner that only looks at tools and ignores resources and prompts ends up reinventing steps the server already offers."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Discovery call\",\"What it reveals\",\"How it shapes the plan\"],\"rows\":[[\"tools/list\",\"Names, descriptions, and input schemas for every callable action\",\"Matches each planned step to a real tool before execution starts\"],[\"resources/list\",\"Existing data the server already holds, like files or records\",\"Lets a step read a resource instead of adding a call to fetch it\"],[\"prompts/list\",\"Ready made templates the server offers for common tasks\",\"Can replace several planned steps with one prompt driven call\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Checking all three discovery calls costs almost nothing next to the time a single bad tool call would waste."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. From Discovery to a Draft Plan",
+          "id": "ap-draft-plan"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once discovery finishes, the agent matches each sub task from decomposition against the tools and resources it just found."
+        },
+        {
+          "type": "paragraph",
+          "text": "Steps with no matching tool get flagged right away, before the agent has spent any real execution time on them."
+        },
+        {
+          "type": "paragraph",
+          "text": "The output of this stage is a draft plan, an ordered list of steps, each one tagged with the tool or resource it intends to use."
+        },
+        {
+          "type": "paragraph",
+          "text": "A draft plan is still just a proposal, nothing has actually run yet at this point."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Executing the Plan Step by Step",
+          "id": "ap-execution"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579410415-94536478.png",
+          "alt": "A plan executes one step after another toward the goal",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Execution walks the draft plan one step at a time, running the tool call for the current step and recording what comes back."
+        },
+        {
+          "type": "paragraph",
+          "text": "The agent checks the result against what the step expected before it moves on, rather than blindly advancing to the next line."
+        },
+        {
+          "type": "paragraph",
+          "text": "This check is what separates planning from a script, a script just runs top to bottom, a planning agent verifies as it goes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. When a Step Fails",
+          "id": "ap-step-failure"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579412055-423267501.png",
+          "alt": "A failed step interrupts the plan before it can continue",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A step can fail outright with an error from the tool, or it can fail quietly, returning a result that does not match what the plan expected."
+        },
+        {
+          "type": "paragraph",
+          "text": "Treating both as failures matters, because a wrong answer that looks like success is the more dangerous case to miss."
+        },
+        {
+          "type": "list",
+          "items": [
+            "The tool call itself returns an error",
+            "The result is empty when the step expected real data",
+            "A returned value falls outside a sane or expected range",
+            "The next step in the plan cannot actually use the output it just got"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Re-planning After a Failure",
+          "id": "ap-replanning"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579413700-166893765.png",
+          "alt": "A failure leads to a revised plan rather than repeating the same steps",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Re-planning means the agent revises the remaining steps in light of what just happened, instead of pretending the plan is still correct."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def run_plan(plan, mcp_client):\n    i = 0\n    while i < len(plan):\n        step = plan[i]\n        try:\n            result = mcp_client.call_tool(step[\"tool\"], step[\"args\"])\n        except ToolError as err:\n            plan = replan(plan, i, reason=str(err))\n            continue\n\n        if not matches_expectation(step, result):\n            plan = replan(plan, i, reason=\"unexpected result\")\n            continue\n\n        step[\"result\"] = result\n        i += 1\n\n    return plan"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A good re-plan usually touches only the steps after the failure point, it does not throw away work that already succeeded."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Fixed Upfront Plans vs Adaptive Plans",
+          "id": "ap-fixed-vs-adaptive"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579415638-725362420.png",
+          "alt": "A fixed upfront plan is compared against an adaptive plan",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A fixed plan is written once, before any tool runs, and the agent follows it in order no matter what results come back."
+        },
+        {
+          "type": "paragraph",
+          "text": "An adaptive plan treats each result as new information, and is willing to insert, remove, or reorder the steps that remain."
+        },
+        {
+          "type": "paragraph",
+          "text": "Fixed plans are simpler and easier to audit, adaptive plans handle surprises but cost more reasoning at every step."
+        },
+        {
+          "type": "paragraph",
+          "text": "Neither approach is universally correct, the right choice depends on how predictable the task actually is."
+        },
+        {
+          "type": "note",
+          "title": "Pick fixed when the environment is stable",
+          "content": "If tool results are reliable and the task is well understood, a fixed plan is cheaper to run and easier to review after the fact."
+        },
+        {
+          "type": "paragraph",
+          "text": "Most production agents actually use a mix, a fixed skeleton of major phases with adaptive re-planning inside each phase."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Planning and Long Running Tasks",
+          "id": "ap-long-running-connection"
+        },
+        {
+          "type": "paragraph",
+          "text": "A plan that spans hours or days needs its progress saved somewhere durable, not just held in memory."
+        },
+        {
+          "type": "paragraph",
+          "text": "The Long Running Sessions and Long Running Agents lessons cover exactly this kind of checkpointing in more depth."
+        },
+        {
+          "type": "paragraph",
+          "text": "A saved plan with a marked current step is what makes resuming after an interruption possible at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Choosing How Much to Re-plan",
+          "id": "ap-replan-scope"
+        },
+        {
+          "type": "paragraph",
+          "text": "Not every failure needs a full restart, sometimes a single step can be retried with different arguments and the rest of the plan still holds."
+        },
+        {
+          "type": "paragraph",
+          "text": "A bigger surprise, like discovering a tool no longer exists, may mean the whole remaining plan needs to be rebuilt from scratch."
+        },
+        {
+          "type": "paragraph",
+          "text": "Good agents scope the re-plan to match the size of the surprise, small mismatch, small patch, structural surprise, full rebuild."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Worked Example",
+          "id": "ap-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Goal: summarize the failed CI runs from this week and post the summary to the team channel."
+        },
+        {
+          "type": "paragraph",
+          "text": "The agent first calls tools/list and resources/list, and finds ci_runs, format_summary, and post_message, plus a resource holding the current channel roster."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Draft plan built: fetch ci_runs for the week, filter to failed runs, format_summary on the filtered set, post_message with the summary",
+            "Step one runs fine and returns twelve failed runs",
+            "Step three, format_summary, returns an empty string because the filter step actually passed zero rows through by mistake",
+            "The agent treats the empty output as a failed step, not a success, and re-plans",
+            "The re-plan adds a corrected filter step, reruns format_summary, then continues to post_message as originally planned"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "text": "Only the broken middle step gets replaced, the successful fetch and the final post step stay exactly as they were."
+        },
+        {
+          "type": "paragraph",
+          "text": "The whole recovery took one extra tool call, not a full restart of the plan."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Common Mistakes",
+          "id": "ap-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Skipping discovery and hard coding tool names, which breaks the moment a server changes its tool set",
+            "Treating any non error response as success, even when the content is empty or clearly wrong",
+            "Re-planning the entire task from scratch after every small failure, which wastes work that already succeeded",
+            "Writing a plan so vague that no single step has a clear pass or fail check",
+            "Never re-planning at all, so the agent keeps forcing a broken plan forward until it runs out of steps"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Practice",
+          "id": "ap-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take a multi step goal you already automate, like generating a weekly report, and write out its decomposition as a numbered list of steps."
+        },
+        {
+          "type": "paragraph",
+          "text": "For each step, write down what a passing result looks like and what a failing result looks like, before you write any tool calling code."
+        },
+        {
+          "type": "paragraph",
+          "text": "Then simulate one step failing on purpose and sketch what a minimal re-plan would change, versus what it would leave alone."
+        },
+        {
+          "type": "paragraph",
+          "text": "Finally, note which steps in your plan would benefit from a human approval before running."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Key Takeaway",
+          "id": "ap-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Planning turns a vague goal into a checkable sequence of steps, and MCP discovery keeps that sequence grounded in what the server can actually do right now."
+        },
+        {
+          "type": "paragraph",
+          "text": "A plan that can notice a bad result and re-plan around it will always beat a fixed script that marches forward no matter what comes back."
+        },
+        {
+          "type": "paragraph",
+          "text": "Good discovery, a checkable plan, and a willingness to re-plan are the three habits that separate a reliable agent from a fragile one."
+        }
+      ]
+    }
+  ]
+}

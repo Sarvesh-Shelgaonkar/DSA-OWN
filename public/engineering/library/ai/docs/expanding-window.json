@@ -1,0 +1,461 @@
+{
+  "slug": "expanding-window",
+  "title": "Expanding Window",
+  "content": [
+    {
+      "id": "expanding-window",
+      "title": "Expanding Window",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "You already know the mechanics of <code>.expanding()</code> from the Window Functions lesson back in Data Manipulation. It starts at the very first row, grows by one row every step, and never drops anything once that row has entered the window. That part will not get re explained here."
+        },
+        {
+          "type": "paragraph",
+          "text": "What this lesson does instead is go deep on why an ever growing window actually matters in a real time series, not as a six row toy example, but as a genuine decision you make when a metric has to hold up over the entire lifetime of a dataset, not just a recent slice of it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783664683388-402618890.png",
+          "alt": "A growing expanding window covering more rows each step next to a fixed size rolling window sliding forward",
+          "caption": "Expanding never drops a row once it has entered the window. Rolling always keeps the same width.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Introduction",
+          "id": "introduction"
+        },
+        {
+          "type": "paragraph",
+          "text": "Quick refresher on the one distinction that everything below builds on. A <strong>rolling window</strong> is a fixed size box that slides forward, forgetting its oldest row every time it picks up a new one. An <strong>expanding window</strong> never forgets a single row. It starts at row one and keeps stacking every new row on top of everything that came before it, never shrinking and never resetting."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Why lifetime metrics like a customer's total spend or a company's cumulative revenue only make sense as an expanding calculation, never a rolling one.",
+            "The actual decision point for choosing expanding over rolling in a real project, lifetime versus recent.",
+            "Why min_periods still matters for an expanding window even though the window is technically full from row one.",
+            "Using an expanding statistic's stabilization over time as a diagnostic for whether you actually have enough data.",
+            "Writing a custom aggregation function for a growing window, and a full worked example comparing lifetime spend against rolling recent spend on the same data."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Lifetime Metrics: The Real Reason Expanding Windows Exist",
+          "id": "lifetime-metrics"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every real use of <code>.expanding()</code> in a production time series traces back to the same underlying idea: some metrics are only meaningful when they are measured from the true beginning of the data, not from any recent window, no matter how generous that window is."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.1 Metrics That Only Make Sense From the Beginning",
+          "id": "metrics-from-the-beginning"
+        },
+        {
+          "type": "paragraph",
+          "text": "Think about the metrics that businesses actually report on. Plenty of them are explicitly lifetime numbers, and computing them any other way would just be wrong. A rolling version of these metrics would not be an approximation of the real thing, it would be answering a completely different question."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A customer's lifetime total spend, counted from their very first purchase, not their most recent thirty days.",
+            "A company's cumulative revenue since the day it was founded.",
+            "The total distance a vehicle has driven since it left the factory.",
+            "The total number of commits a repository has received since its very first commit."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import pandas as pd\n\nyearly_revenue = pd.Series([180000, 240000, 310000, 275000, 390000], name=\"revenue\")\ncumulative_since_founding = yearly_revenue.expanding().sum()\nprint(cumulative_since_founding)"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783664709901-391436375.png",
+          "alt": "Three years of yearly revenue each folding into one cumulative total since the company was founded",
+          "caption": "Cumulative revenue since founding only makes sense as a running total, never a recent slice.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.2 Lifetime Versus Recent: The Actual Decision Point",
+          "id": "lifetime-vs-recent-decision"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is the one question that actually decides whether you reach for expanding or rolling in a real project. Are you trying to describe everything that has ever happened, or are you trying to describe what has been happening lately? Those are two genuinely different questions, and no window size tweak turns one into the other."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Question you are asking\",\"Window type\",\"Real example\"],\"rows\":[[\"How much in total, ever\",\"Expanding\",\"A customer's lifetime total spend since their first purchase\"],[\"How much just lately\",\"Rolling\",\"A customer's rolling 30 day spend\"],[\"How has this grown since day one\",\"Expanding\",\"A company's cumulative revenue since founding\"],[\"Is this still trending the same way right now\",\"Rolling\",\"A 7 day trailing average of daily active users\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783664688544-860496294.png",
+          "alt": "First purchase ever through every purchase since building a lifetime total, next to only the last 30 days building a rolling recent spend",
+          "caption": "Lifetime total answers since the beginning. Rolling recent spend answers lately.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "Recent is a deliberate choice, not a limitation",
+          "content": "A rolling 30 day average is not missing data by accident. It is designed to forget anything older than 30 days on purpose, because the whole point is answering how is this customer behaving lately, not how much have they ever spent in total."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. min_periods in an Expanding Context",
+          "id": "min-periods-expanding-context"
+        },
+        {
+          "type": "paragraph",
+          "text": "In a rolling window, <code>min_periods</code> decides whether the very start of the series can produce a result before the window is technically full. An expanding window does not have that problem in the same way, since it is always technically full from row one onward, there is always at least one value sitting in it. That does not mean min_periods stops mattering, it just means it matters for a different reason."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.1 Full From Row One, But Not Necessarily Meaningful",
+          "id": "full-but-not-meaningful"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take a server's response time readings and watch an expanding standard deviation the moment an unusually slow request shows up early in the series."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "response_times = pd.Series([72, 68, 95, 70, 71, 69, 73, 70], name=\"response_time_ms\")\nresponse_times.expanding().std()"
+          }
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Row\",\"Response time ms\",\"Expanding std\"],\"rows\":[[\"Row 1\",\"72\",\"NaN, only one value so far\"],[\"Row 2\",\"68\",\"2.83\"],[\"Row 3\",\"95\",\"14.57\"],[\"Row 4\",\"70\",\"12.61\"],[\"Row 5\",\"71\",\"11.17\"],[\"Row 6\",\"69\",\"10.30\"],[\"Row 7\",\"73\",\"9.42\"],[\"Row 8\",\"70\",\"8.83\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Row 2 hands back a std of 2.83 from just two points, which looks perfectly reasonable sitting in a table. It is not a meaningful measure of anything yet, it is just the distance between two arbitrary numbers. Row 3 jumps to 14.57 the instant the one slow 95ms request enters the window, and from there the std steadily settles back down as more ordinary readings dilute that single outlier's influence."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783664693098-472945304.png",
+          "alt": "Two data points producing a standard deviation number that looks valid but is not yet statistically meaningful",
+          "caption": "Pandas will compute a number from two points without complaint. That does not make the number trustworthy.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "Pandas will not stop you",
+          "content": "Nothing about expanding forces you to think about whether two or three points are enough to trust a standard deviation. It will compute the number and hand it back looking exactly as valid as the one computed from two hundred points. That judgment call is entirely on you."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.2 Setting a Sensible min_periods",
+          "id": "sensible-min-periods"
+        },
+        {
+          "type": "paragraph",
+          "text": "Setting min_periods on an expanding window does not change when the window starts, it still starts at row one. What it changes is when the window is allowed to start reporting results at all, suppressing the earliest handful of statistically shaky values."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "response_times.expanding(min_periods=4).std()"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "With min_periods=4, rows one through three all come back as NaN instead of the misleading 2.83 and 14.57 you saw above. The first real number you get is the row 4 value, 12.61, which is already a meaningfully better estimate than anything computed from fewer points."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Watching a Metric Stabilize",
+          "id": "watching-metric-stabilize"
+        },
+        {
+          "type": "paragraph",
+          "text": "There is a genuinely useful diagnostic technique hiding inside the response time table above, and it is worth calling out on its own. Watch how the expanding std moves as more rows accumulate, and you get a live read on whether you have collected enough data to actually trust the number."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.1 A Running Average Settling Down as Data Accumulates",
+          "id": "running-average-settling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Look at that std sequence again: 2.83, then a spike to 14.57, then 12.61, 11.17, 10.30, 9.42, 8.83. Early on, a single unusual reading can swing the statistic wildly, because it is a huge fraction of everything the window has seen so far. As the row count grows, that same one outlier becomes a smaller and smaller fraction of the total, and the statistic calms down. Extend this same series out to five hundred readings and by the time you are a hundred rows in, one more ordinary reading barely moves the needle at all."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783664695706-70887651.png",
+          "alt": "An expanding average swinging a lot with only a few rows compared to barely moving once many rows have accumulated",
+          "caption": "The same statistic gets calmer as more data piles into the window.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.2 Using Stabilization as a Diagnostic for Enough Data",
+          "id": "stabilization-as-diagnostic"
+        },
+        {
+          "type": "paragraph",
+          "text": "This turns into a practical technique any time you are unsure whether you have enough data to trust a computed statistic, whether that is a conversion rate, an average session length, or a model evaluation metric. Plot the expanding value over time. If it is still jumping around noticeably with each new row, you do not have enough data yet. Once the line goes flat and a new row barely nudges it, you have crossed into territory where the number actually means something stable."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783664697365-267668269.png",
+          "alt": "A decision flow watching whether the expanding statistic is still jumping around or has gone flat",
+          "caption": "Still jumping around means keep collecting data. Flat means you likely have enough.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "Use min_periods and the stabilization curve together",
+          "content": "min_periods only hides the earliest handful of rows from showing up at all. Watching where the curve actually flattens out tells you when the rest of the values became trustworthy too, which is usually well after min_periods stops returning NaN."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Custom Aggregation Functions on a Growing Window",
+          "id": "custom-aggregation-expanding"
+        },
+        {
+          "type": "paragraph",
+          "text": "Back in the Aggregation lesson you wrote a plain Python function, handed it a Series, and got exactly one value back. That same idea works identically here, the only thing that changes is what the function receives on each call: instead of one fixed group, it gets whatever rows the expanding window has accumulated so far."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.1 Writing a Function for a Growing Window",
+          "id": "writing-function-growing-window"
+        },
+        {
+          "type": "paragraph",
+          "text": "Call <code>.apply()</code> on the result of <code>.expanding()</code> and hand it your own function. Pandas runs that function once per row, each time passing in every row from the start of the series up through the current one."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def expanding_range(window):\n    return window.max() - window.min()\n\nresponse_times.expanding().apply(expanding_range)"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783664700191-333635332.png",
+          "alt": "A custom function applied to a growing expanding window producing one value per row",
+          "caption": "Custom aggregation logic works on expanding windows exactly like it works on groups.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.2 A Practical Custom Expanding Metric",
+          "id": "practical-custom-expanding-metric"
+        },
+        {
+          "type": "paragraph",
+          "text": "A genuinely useful one to know is the coefficient of variation, the standard deviation divided by the mean. It tells you how noisy a series is relative to its own scale, which is a more honest read on volatility than the raw standard deviation alone, especially when you are watching that volatility shrink as more data comes in."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def expanding_cv(window):\n    return window.std() / window.mean()\n\nresponse_times.expanding(min_periods=4).apply(expanding_cv)"
+          }
+        },
+        {
+          "type": "note",
+          "title": "The same validity gotcha applies to custom functions",
+          "content": "A custom expanding function is just as happy to divide by a near zero mean from two rows as the built in std is. Set min_periods deliberately whenever your custom function involves a ratio or a spread calculation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Worked Example: Lifetime Spend Versus Rolling Recent Spend",
+          "id": "worked-example-lifetime-vs-recent"
+        },
+        {
+          "type": "paragraph",
+          "text": "Time to put the lifetime versus recent decision from section 2 side by side on one actual dataset, so the contrast stops being theoretical."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "6.1 The Dataset",
+          "id": "worked-example-dataset"
+        },
+        {
+          "type": "paragraph",
+          "text": "Ten purchases from a single customer across about six months, with one noticeably large purchase in the middle of May."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "purchases = pd.DataFrame({\n    \"date\": pd.to_datetime([\n        \"2024-01-03\", \"2024-01-20\", \"2024-02-15\", \"2024-03-01\", \"2024-03-25\",\n        \"2024-04-10\", \"2024-04-28\", \"2024-05-15\", \"2024-06-02\", \"2024-06-20\",\n    ]),\n    \"amount\": [220, 60, 45, 300, 25, 40, 15, 500, 30, 20],\n})"
+          }
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Date\",\"Amount\"],\"rows\":[[\"Jan 3, 2024\",\"220\"],[\"Jan 20, 2024\",\"60\"],[\"Feb 15, 2024\",\"45\"],[\"Mar 1, 2024\",\"300\"],[\"Mar 25, 2024\",\"25\"],[\"Apr 10, 2024\",\"40\"],[\"Apr 28, 2024\",\"15\"],[\"May 15, 2024\",\"500\"],[\"Jun 2, 2024\",\"30\"],[\"Jun 20, 2024\",\"20\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "6.2 Computing Both Side by Side",
+          "id": "computing-both-side-by-side"
+        },
+        {
+          "type": "paragraph",
+          "text": "The rolling side of this uses the same time based window syntax from the Rolling Window lesson right before this one in the module, a real 30D window anchored to the date column instead of a plain row count. Right next to it, the expanding side just accumulates everything from the start."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "purchases[\"lifetime_total\"] = purchases[\"amount\"].expanding().sum()\npurchases[\"rolling_30day_total\"] = purchases.rolling(\"30D\", on=\"date\")[\"amount\"].sum()\nprint(purchases)"
+          }
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Date\",\"Amount\",\"Lifetime total\",\"Rolling 30 day total\"],\"rows\":[[\"Jan 3, 2024\",\"220\",\"220\",\"220\"],[\"Jan 20, 2024\",\"60\",\"280\",\"280\"],[\"Feb 15, 2024\",\"45\",\"325\",\"105\"],[\"Mar 1, 2024\",\"300\",\"625\",\"345\"],[\"Mar 25, 2024\",\"25\",\"650\",\"325\"],[\"Apr 10, 2024\",\"40\",\"690\",\"65\"],[\"Apr 28, 2024\",\"15\",\"705\",\"55\"],[\"May 15, 2024\",\"500\",\"1205\",\"515\"],[\"Jun 2, 2024\",\"30\",\"1235\",\"530\"],[\"Jun 20, 2024\",\"20\",\"1255\",\"50\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783664702830-606796568.png",
+          "alt": "Purchase one building the first lifetime total and purchase two adding onto that same running total",
+          "caption": "Every new purchase lands on top of the running total, nothing ever falls off.",
+          "size": "medium"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783664705461-15781378.png",
+          "alt": "The same purchase log feeding an expanding lifetime total on one side and a rolling 30 day total on the other",
+          "caption": "One dataset, two completely different questions answered at once.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "6.3 Reading the Result",
+          "id": "reading-the-result"
+        },
+        {
+          "type": "paragraph",
+          "text": "The lifetime total column only ever climbs, from 220 all the way up to 1255, and it climbs by exactly the same amount no matter when a purchase happened. The rolling 30 day column tells a much choppier story. It spikes to 515 and 530 right after the big 500 purchase on May 15, then collapses back down to 50 once that purchase ages out past the 30 day mark, even though the lifetime total never lets go of that same 500."
+        },
+        {
+          "type": "note",
+          "title": "A high lifetime total with a near zero recent total is itself a signal",
+          "content": "A customer who spent a lot early and nothing since will show a large lifetime total next to a rolling recent total that has dropped to almost nothing. That combination alone tells you this used to be a great customer who has since gone quiet, which is exactly the kind of thing a single metric could never tell you on its own."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Choosing Between Expanding and Rolling in Practice",
+          "id": "choosing-expanding-vs-rolling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Boiled down to one table, here is the same decision from section 2.2 applied to the kinds of questions you will actually run into."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Question you are answering\",\"Reach for\",\"Why\"],\"rows\":[[\"How much has this customer ever spent\",\"expanding().sum()\",\"Lifetime value only makes sense counted from the first purchase\"],[\"How is this customer behaving lately\",\"rolling(\\\"30D\\\").sum()\",\"Recent behavior should forget anything old on purpose\"],[\"Has my running average stopped swinging\",\"expanding().mean() plotted over time\",\"Watching it flatten tells you when you have enough data\"],[\"I need logic pandas does not ship built in\",\"expanding().apply(custom_func)\",\"Same idea as a custom aggregation, just on a growing window\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783664707750-176830375.png",
+          "alt": "A decision diagram asking whether you need a metric since the very beginning to choose between expanding and rolling",
+          "caption": "The whole decision usually comes down to this one question.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Wrapping Up",
+          "id": "wrapping-up"
+        },
+        {
+          "type": "paragraph",
+          "text": "An expanding window is the right tool the moment your question is about everything that has ever happened rather than what has been happening lately. That single distinction, lifetime versus recent, is really the whole lesson."
+        },
+        {
+          "type": "list",
+          "items": [
+            "An expanding window grows from the first row and never drops a row, while a rolling window stays a fixed size and slides.",
+            "Lifetime metrics like total spend since the first purchase or cumulative revenue since founding only make sense as an expanding calculation.",
+            "min_periods still matters for expanding, not because the window is not full, but because a statistic computed on one or two points is not statistically meaningful yet.",
+            "Watching an expanding statistic flatten out over time is a genuine diagnostic for whether you have collected enough data to trust it.",
+            "expanding().apply() takes a custom function exactly like a plain aggregation does, just applied to a growing window instead of a group."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Task\",\"Code\"],\"rows\":[[\"Lifetime running total\",\"df[\\\"col\\\"].expanding().sum()\"],[\"Expanding standard deviation with a validity floor\",\"df[\\\"col\\\"].expanding(min_periods=5).std()\"],[\"Custom function on a growing window\",\"df[\\\"col\\\"].expanding().apply(custom_func)\"],[\"Time based rolling total for comparison\",\"df.rolling(\\\"30D\\\", on=\\\"date\\\")[\\\"col\\\"].sum()\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Where this goes next",
+          "content": "The next two lessons in this module, Shifting and Lag Features, build directly on the idea of a value's history, comparing a row against an earlier point in the same series instead of accumulating everything that came before it."
+        }
+      ]
+    }
+  ]
+}

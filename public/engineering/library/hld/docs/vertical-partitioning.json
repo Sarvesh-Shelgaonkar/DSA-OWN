@@ -1,0 +1,704 @@
+{
+  "slug": "vertical-partitioning",
+  "title": "Vertical Partitioning",
+  "content": [
+    {
+      "id": "vertical-partitioning",
+      "title": "Vertical Partitioning",
+      "blocks": [
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every growing application eventually hits the same wall. A single table that started with a handful of columns has, over a few years, grown into a table with thirty, forty, or even eighty columns. It stores everything about an entity in one place because that felt convenient early on. Then one day the table becomes slow, the row size becomes huge, and every simple read pulls far more data off disk than the query actually needed."
+        },
+        {
+          "type": "paragraph",
+          "content": "Vertical partitioning is one of the classic answers to this problem. Instead of splitting a table by rows, which is what horizontal partitioning and sharding do, vertical partitioning splits a table by columns. Related columns are grouped together and moved into their own table, or in a more aggressive design, into their own service and database entirely."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Vertical partitioning splits one wide table into several narrower tables, grouped by column, so each group can be stored, accessed, and scaled according to its own access pattern."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson builds up the idea from first principles. We will define the concept precisely, contrast it with horizontal partitioning, walk through the real world motivations that push teams toward it, work through a concrete example of splitting a large users table, and then cover the trade-offs, pitfalls, and the way interviewers expect you to discuss it in a system design interview."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 Real-World Analogy",
+          "text": "1.1 Real-World Analogy"
+        },
+        {
+          "type": "paragraph",
+          "content": "Think of a large filing cabinet used by a hospital front desk. It holds patient name, date of birth, insurance number, appointment history, and full medical notes, all in one folder per patient. The front desk clerk only ever needs name, date of birth, and insurance number to check someone in. The nurse needs appointment history. The doctor needs the medical notes, and those notes are legally required to be locked away with restricted access."
+        },
+        {
+          "type": "paragraph",
+          "content": "Keeping everything in one folder means every person who touches that folder, for any reason, has physical access to the most sensitive pages. It also means the folder is thick and slow to flip through even for a thirty second task like checking someone in. Splitting the folder into three separate folders by purpose, one for check in, one for scheduling, one for medical notes, is exactly the intuition behind vertical partitioning of a database table."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284559355-260929857.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284559355-260929857.png",
+          "alt": "A wide users table with forty columns being split into three narrower tables: core, preferences, and audit"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Core Concept",
+          "text": "2. Core Concept"
+        },
+        {
+          "type": "paragraph",
+          "content": "A relational table is a two dimensional structure. It has rows and columns. Any splitting strategy has to pick one of those two dimensions to cut along. Horizontal partitioning cuts along rows, so partition A might hold users with id 1 through 1000000 and partition B might hold users with id 1000001 through 2000000, but every partition has the same full set of columns."
+        },
+        {
+          "type": "paragraph",
+          "content": "Vertical partitioning cuts along columns instead. Every partition holds the same rows, or at least rows that share the same primary key, but each partition only holds a subset of the columns. The classic example is a users table with columns like id, email, password hash, full name, date of birth, bio, avatar url, notification preferences, last login timestamp, marketing consent flags, and a dozen more. Vertical partitioning groups these into logical clusters and gives each cluster its own table."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 The Two Axes of Splitting",
+          "text": "2.1 The Two Axes of Splitting"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Horizontal partitioning\",\"Vertical partitioning\"],\"rows\":[[\"What is split\",\"Rows, by a partition key\",\"Columns, by access pattern or purpose\"],[\"Schema after split\",\"Same schema repeated across shards\",\"Different schema per partition\"],[\"Typical goal\",\"Spread write and storage load across nodes\",\"Reduce row width and isolate access patterns\"],[\"Cross partition query\",\"Query hits one or more shards for the same columns\",\"Query hits one or more tables for different columns\"],[\"Common trigger\",\"Table too big to fit or to write fast enough on one node\",\"Table too wide, mixed hot and cold columns, or security separation\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Definition to remember",
+          "content": "If you are duplicating the same schema across multiple databases and routing rows by a key like user id modulo N, that is horizontal partitioning or sharding. If you are moving specific columns of the same logical entity into a separate table or database, that is vertical partitioning."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Vertical Partitioning at the Table Level vs the Service Level",
+          "text": "2.2 Vertical Partitioning at the Table Level vs the Service Level"
+        },
+        {
+          "type": "paragraph",
+          "content": "Vertical partitioning can happen at two levels. At the table level, you keep everything inside one database but split one table into several tables, still joined by a shared primary key such as user id. At the service level, you go further and move a column group into its own microservice with its own dedicated database, only reachable through an API rather than a join."
+        },
+        {
+          "type": "list",
+          "content": "[\"Table level split: users and user_preferences both live in the same PostgreSQL database, joined on user_id.\",\"Service level split: a Profile Service owns core identity data, while a separate Notification Preferences Service owns opt in and opt out flags, each with its own storage.\"]",
+          "items": [
+            "Table level split: users and user_preferences both live in the same PostgreSQL database, joined on user_id.",
+            "Service level split: a Profile Service owns core identity data, while a separate Notification Preferences Service owns opt in and opt out flags, each with its own storage."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Table level splitting is cheaper to introduce and easier to reason about because a join is still available. Service level splitting is a bigger structural change, usually adopted when the columns being separated are owned by an entirely different team or have a fundamentally different scaling profile, such as an audit log service that writes ten times more often than the core profile table."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Why and When to Use Vertical Partitioning",
+          "text": "3. Why and When to Use Vertical Partitioning"
+        },
+        {
+          "type": "paragraph",
+          "content": "Vertical partitioning is not something you reach for on day one. It is a response to specific, observable pain. The three most common motivations are uneven access frequency between columns, fundamentally different access patterns, and the need to isolate sensitive columns for security or compliance reasons."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Motivation 1: Hot Columns vs Cold Columns",
+          "text": "3.1 Motivation 1: Hot Columns vs Cold Columns"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a typical users table, a handful of columns are read on nearly every request: id, email, display name, and maybe a subscription tier flag. Other columns are read rarely: a long biography field, a JSON blob of notification preferences, or an audit trail of consent changes. If all of these columns live in the same row, every read of the hot columns still has to load the entire row off disk, because most storage engines read and cache data at the row or page granularity."
+        },
+        {
+          "type": "paragraph",
+          "content": "Splitting hot and cold columns into separate tables means the hot table stays narrow, often just a handful of small fixed width columns. A narrow table means more rows fit in a single disk page, more rows fit in the buffer cache, and the database can serve far more read throughput from the same amount of RAM."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284561261-757112417.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284561261-757112417.png",
+          "alt": "Incoming requests splitting into hot column reads served from memory cache and cold column reads served from disk"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Concrete Numbers",
+          "text": "3.2 Concrete Numbers"
+        },
+        {
+          "type": "paragraph",
+          "content": "Suppose a users table has 40 columns and an average row size of 2 kilobytes, but the 5 columns used on every authenticated request, id, email, display name, avatar url, and plan tier, only add up to 150 bytes. If those 5 columns are split into their own table, that table has an average row size of roughly 150 bytes instead of 2 kilobytes. For the same 8 gigabyte buffer cache, the database can now hold about 13 times as many rows of the hot table in memory compared to holding the full wide row."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.3 Motivation 2: Different Access Patterns",
+          "text": "3.3 Motivation 2: Different Access Patterns"
+        },
+        {
+          "type": "paragraph",
+          "content": "Some columns are read constantly but almost never written, such as a display name. Other columns are written constantly but rarely read directly by users, such as a last active timestamp updated on every request. Mixing high write frequency columns with high read frequency columns in the same row causes lock contention and cache invalidation that neither access pattern actually needs."
+        },
+        {
+          "type": "list",
+          "content": "[\"A last_seen_at column updated on every API call forces the whole row to be rewritten and invalidates any cached copy of that row.\",\"A profile bio column that changes once a month does not need to pay the cost of constant invalidation caused by an unrelated, frequently updated column.\",\"Splitting these into a core table and an activity table means the frequently written activity table can use a storage engine or caching strategy tuned for writes, while the core table stays cache friendly.\"]",
+          "items": [
+            "A last_seen_at column updated on every API call forces the whole row to be rewritten and invalidates any cached copy of that row.",
+            "A profile bio column that changes once a month does not need to pay the cost of constant invalidation caused by an unrelated, frequently updated column.",
+            "Splitting these into a core table and an activity table means the frequently written activity table can use a storage engine or caching strategy tuned for writes, while the core table stays cache friendly."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.4 Motivation 3: Security and Compliance Isolation",
+          "text": "3.4 Motivation 3: Security and Compliance Isolation"
+        },
+        {
+          "type": "paragraph",
+          "content": "Certain columns are simply more sensitive than others. A password hash, a government id number, a bank account number, or health information usually needs stricter access control, encryption at rest, and audit logging than a display name or a favorite color preference. Storing sensitive columns in the same table as everyday columns means every service and every engineer who queries the table for mundane reasons is one careless select star away from touching regulated data."
+        },
+        {
+          "type": "paragraph",
+          "content": "Vertical partitioning lets you place sensitive columns in a separate table, or a fully separate database, with its own access control list, its own encryption keys, and its own audit trail. Application code that only needs the display name never even has a connection string that can reach the sensitive table."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284562837-136785105.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284562837-136785105.png",
+          "alt": "Application service reading from a core profile store and a separately access controlled sensitive data store behind a restricted access layer"
+        },
+        {
+          "type": "note",
+          "title": "Compliance angle",
+          "content": "Regulations such as PCI DSS for payment data or HIPAA for health data often require that regulated columns be isolated with stricter controls than the rest of the schema. Vertical partitioning is frequently the mechanism used to satisfy that requirement without redesigning the entire data model."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.5 When Not to Bother",
+          "text": "3.5 When Not to Bother"
+        },
+        {
+          "type": "paragraph",
+          "content": "If a table has 8 columns and a comfortable row size of 200 bytes, and every column is read together on almost every query, vertical partitioning adds complexity for no real benefit. It earns its keep specifically when column count is high, row size is large, and access patterns genuinely diverge between column groups."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Worked Example: Splitting a Users Table",
+          "text": "4. Worked Example: Splitting a Users Table"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consider a users table that has grown over three years to 42 columns. It includes identity fields, authentication fields, profile fields, notification preferences, and an audit trail of account changes. Average row size is around 2.3 kilobytes, and the table holds 30 million rows, for roughly 69 gigabytes of raw data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Step 1: Identify Column Groups by Access Pattern",
+          "text": "4.1 Step 1: Identify Column Groups by Access Pattern"
+        },
+        {
+          "type": "list",
+          "content": "[\"Core identity: id, email, username, password hash, account status. Read on almost every authenticated request.\",\"Profile display: full name, avatar url, bio, location, website. Read on profile page views, rarely written.\",\"Notification preferences: email opt in, push opt in, digest frequency, quiet hours. Read only when sending a notification, written rarely.\",\"Audit trail: password changed at, email changed at, previous email addresses, account recovery history. Read almost never, only during security investigations.\"]",
+          "items": [
+            "Core identity: id, email, username, password hash, account status. Read on almost every authenticated request.",
+            "Profile display: full name, avatar url, bio, location, website. Read on profile page views, rarely written.",
+            "Notification preferences: email opt in, push opt in, digest frequency, quiet hours. Read only when sending a notification, written rarely.",
+            "Audit trail: password changed at, email changed at, previous email addresses, account recovery history. Read almost never, only during security investigations."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Step 2: Define the New Tables",
+          "text": "4.2 Step 2: Define the New Tables"
+        },
+        {
+          "type": "paragraph",
+          "content": "The 42 columns get grouped into four tables. Each new table keeps user_id as its primary key or a shared foreign key, so any of them can be joined back to the core table when genuinely necessary."
+        },
+        {
+          "type": "code",
+          "content": "-- Before: one wide table\nCREATE TABLE users (\n  id BIGINT PRIMARY KEY,\n  email VARCHAR(255),\n  username VARCHAR(64),\n  password_hash VARCHAR(255),\n  account_status VARCHAR(32),\n  full_name VARCHAR(128),\n  avatar_url VARCHAR(512),\n  bio TEXT,\n  location VARCHAR(128),\n  website VARCHAR(255),\n  email_opt_in BOOLEAN,\n  push_opt_in BOOLEAN,\n  digest_frequency VARCHAR(32),\n  quiet_hours_start TIME,\n  quiet_hours_end TIME,\n  password_changed_at TIMESTAMP,\n  email_changed_at TIMESTAMP,\n  previous_emails TEXT,\n  recovery_history TEXT\n  -- plus 24 more columns of mixed purpose\n);\n\n-- After: four narrower tables sharing the same primary key\nCREATE TABLE core_users (\n  id BIGINT PRIMARY KEY,\n  email VARCHAR(255),\n  username VARCHAR(64),\n  password_hash VARCHAR(255),\n  account_status VARCHAR(32)\n);\n\nCREATE TABLE user_profiles (\n  user_id BIGINT PRIMARY KEY REFERENCES core_users(id),\n  full_name VARCHAR(128),\n  avatar_url VARCHAR(512),\n  bio TEXT,\n  location VARCHAR(128),\n  website VARCHAR(255)\n);\n\nCREATE TABLE user_notification_prefs (\n  user_id BIGINT PRIMARY KEY REFERENCES core_users(id),\n  email_opt_in BOOLEAN,\n  push_opt_in BOOLEAN,\n  digest_frequency VARCHAR(32),\n  quiet_hours_start TIME,\n  quiet_hours_end TIME\n);\n\nCREATE TABLE user_audit_trail (\n  user_id BIGINT PRIMARY KEY REFERENCES core_users(id),\n  password_changed_at TIMESTAMP,\n  email_changed_at TIMESTAMP,\n  previous_emails TEXT,\n  recovery_history TEXT\n);",
+          "code": {
+            "language": "sql",
+            "content": "-- Before: one wide table\nCREATE TABLE users (\n  id BIGINT PRIMARY KEY,\n  email VARCHAR(255),\n  username VARCHAR(64),\n  password_hash VARCHAR(255),\n  account_status VARCHAR(32),\n  full_name VARCHAR(128),\n  avatar_url VARCHAR(512),\n  bio TEXT,\n  location VARCHAR(128),\n  website VARCHAR(255),\n  email_opt_in BOOLEAN,\n  push_opt_in BOOLEAN,\n  digest_frequency VARCHAR(32),\n  quiet_hours_start TIME,\n  quiet_hours_end TIME,\n  password_changed_at TIMESTAMP,\n  email_changed_at TIMESTAMP,\n  previous_emails TEXT,\n  recovery_history TEXT\n  -- plus 24 more columns of mixed purpose\n);\n\n-- After: four narrower tables sharing the same primary key\nCREATE TABLE core_users (\n  id BIGINT PRIMARY KEY,\n  email VARCHAR(255),\n  username VARCHAR(64),\n  password_hash VARCHAR(255),\n  account_status VARCHAR(32)\n);\n\nCREATE TABLE user_profiles (\n  user_id BIGINT PRIMARY KEY REFERENCES core_users(id),\n  full_name VARCHAR(128),\n  avatar_url VARCHAR(512),\n  bio TEXT,\n  location VARCHAR(128),\n  website VARCHAR(255)\n);\n\nCREATE TABLE user_notification_prefs (\n  user_id BIGINT PRIMARY KEY REFERENCES core_users(id),\n  email_opt_in BOOLEAN,\n  push_opt_in BOOLEAN,\n  digest_frequency VARCHAR(32),\n  quiet_hours_start TIME,\n  quiet_hours_end TIME\n);\n\nCREATE TABLE user_audit_trail (\n  user_id BIGINT PRIMARY KEY REFERENCES core_users(id),\n  password_changed_at TIMESTAMP,\n  email_changed_at TIMESTAMP,\n  previous_emails TEXT,\n  recovery_history TEXT\n);"
+          },
+          "codes": {
+            "sql": "-- Before: one wide table\nCREATE TABLE users (\n  id BIGINT PRIMARY KEY,\n  email VARCHAR(255),\n  username VARCHAR(64),\n  password_hash VARCHAR(255),\n  account_status VARCHAR(32),\n  full_name VARCHAR(128),\n  avatar_url VARCHAR(512),\n  bio TEXT,\n  location VARCHAR(128),\n  website VARCHAR(255),\n  email_opt_in BOOLEAN,\n  push_opt_in BOOLEAN,\n  digest_frequency VARCHAR(32),\n  quiet_hours_start TIME,\n  quiet_hours_end TIME,\n  password_changed_at TIMESTAMP,\n  email_changed_at TIMESTAMP,\n  previous_emails TEXT,\n  recovery_history TEXT\n  -- plus 24 more columns of mixed purpose\n);\n\n-- After: four narrower tables sharing the same primary key\nCREATE TABLE core_users (\n  id BIGINT PRIMARY KEY,\n  email VARCHAR(255),\n  username VARCHAR(64),\n  password_hash VARCHAR(255),\n  account_status VARCHAR(32)\n);\n\nCREATE TABLE user_profiles (\n  user_id BIGINT PRIMARY KEY REFERENCES core_users(id),\n  full_name VARCHAR(128),\n  avatar_url VARCHAR(512),\n  bio TEXT,\n  location VARCHAR(128),\n  website VARCHAR(255)\n);\n\nCREATE TABLE user_notification_prefs (\n  user_id BIGINT PRIMARY KEY REFERENCES core_users(id),\n  email_opt_in BOOLEAN,\n  push_opt_in BOOLEAN,\n  digest_frequency VARCHAR(32),\n  quiet_hours_start TIME,\n  quiet_hours_end TIME\n);\n\nCREATE TABLE user_audit_trail (\n  user_id BIGINT PRIMARY KEY REFERENCES core_users(id),\n  password_changed_at TIMESTAMP,\n  email_changed_at TIMESTAMP,\n  previous_emails TEXT,\n  recovery_history TEXT\n);"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284564394-419620101.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284564394-419620101.png",
+          "alt": "A single wide users table where every row carries every column regardless of how often each column is actually used"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284566068-995957936.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284566068-995957936.png",
+          "alt": "The same entity after vertical partitioning shown as four connected tables: core, profile, notification preferences, and a restricted audit table"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 Step 3: Measure the Impact",
+          "text": "4.3 Step 3: Measure the Impact"
+        },
+        {
+          "type": "paragraph",
+          "content": "After the split, core_users has an average row size close to 120 bytes instead of 2.3 kilobytes. For the login and authentication path, which only ever needs core_users, the working set that must be cached in memory shrinks by roughly 19 times. Login latency, which was previously dominated by loading the full wide row, drops accordingly, and far more of the hot table now fits in the same amount of RAM."
+        },
+        {
+          "type": "paragraph",
+          "content": "The audit trail table, which is written rarely and read almost never except during investigations, can now be placed on cheaper, slower storage, or even a different database engine entirely, without affecting the performance of the login path at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.4 Step 4: Update the Application Code",
+          "text": "4.4 Step 4: Update the Application Code"
+        },
+        {
+          "type": "paragraph",
+          "content": "Application code that previously did select star from users now needs to decide which of the four tables to query. A login handler only touches core_users. A profile page handler joins core_users with user_profiles. Sending a notification touches core_users and user_notification_prefs."
+        },
+        {
+          "type": "code",
+          "content": "// Before the split: one query fetched everything, even for a login check\nasync function login(email, password) {\n  const user = await db.query(\n    'SELECT * FROM users WHERE email = $1', [email]\n  );\n  return verifyPassword(password, user.password_hash);\n}\n\n// After the split: login only touches the narrow core table\nasync function login(email, password) {\n  const user = await db.query(\n    'SELECT id, password_hash, account_status FROM core_users WHERE email = $1',\n    [email]\n  );\n  return verifyPassword(password, user.password_hash);\n}\n\n// A profile page now explicitly joins core identity with display data\nasync function getProfilePage(userId) {\n  const row = await db.query(\n    'SELECT c.username, p.full_name, p.avatar_url, p.bio ' +\n    'FROM core_users c JOIN user_profiles p ON p.user_id = c.id ' +\n    'WHERE c.id = $1',\n    [userId]\n  );\n  return row;\n}",
+          "code": {
+            "language": "javascript",
+            "content": "// Before the split: one query fetched everything, even for a login check\nasync function login(email, password) {\n  const user = await db.query(\n    'SELECT * FROM users WHERE email = $1', [email]\n  );\n  return verifyPassword(password, user.password_hash);\n}\n\n// After the split: login only touches the narrow core table\nasync function login(email, password) {\n  const user = await db.query(\n    'SELECT id, password_hash, account_status FROM core_users WHERE email = $1',\n    [email]\n  );\n  return verifyPassword(password, user.password_hash);\n}\n\n// A profile page now explicitly joins core identity with display data\nasync function getProfilePage(userId) {\n  const row = await db.query(\n    'SELECT c.username, p.full_name, p.avatar_url, p.bio ' +\n    'FROM core_users c JOIN user_profiles p ON p.user_id = c.id ' +\n    'WHERE c.id = $1',\n    [userId]\n  );\n  return row;\n}"
+          },
+          "codes": {
+            "javascript": "// Before the split: one query fetched everything, even for a login check\nasync function login(email, password) {\n  const user = await db.query(\n    'SELECT * FROM users WHERE email = $1', [email]\n  );\n  return verifyPassword(password, user.password_hash);\n}\n\n// After the split: login only touches the narrow core table\nasync function login(email, password) {\n  const user = await db.query(\n    'SELECT id, password_hash, account_status FROM core_users WHERE email = $1',\n    [email]\n  );\n  return verifyPassword(password, user.password_hash);\n}\n\n// A profile page now explicitly joins core identity with display data\nasync function getProfilePage(userId) {\n  const row = await db.query(\n    'SELECT c.username, p.full_name, p.avatar_url, p.bio ' +\n    'FROM core_users c JOIN user_profiles p ON p.user_id = c.id ' +\n    'WHERE c.id = $1',\n    [userId]\n  );\n  return row;\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Joins Across Partitioned Tables",
+          "text": "5. Joins Across Partitioned Tables"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most immediate cost of vertical partitioning is that queries needing columns from more than one partition now require a join, or in the service level case, multiple network calls followed by merging in application code."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Vertical partitioning trades faster narrow queries for slower or more complex wide queries. You are betting that the narrow queries happen far more often than the wide ones."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Case 1: Same Database, Table Level Split",
+          "text": "5.1 Case 1: Same Database, Table Level Split"
+        },
+        {
+          "type": "paragraph",
+          "content": "When the split tables live in the same database, a join is still a normal SQL join. It is slightly more expensive than reading a single wide row because the database has to look up matching rows in a second table, but with an index on the shared primary key this is usually a fast operation, often a few hundred microseconds of extra latency."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Case 2: Different Databases or Services",
+          "text": "5.2 Case 2: Different Databases or Services"
+        },
+        {
+          "type": "paragraph",
+          "content": "When the split happens at the service level, there is no database level join available at all. The application has to call two services and merge the results in memory. This introduces network latency, the possibility of one call succeeding while the other fails, and the need for careful error handling around partial data."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284567827-607329852.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284567827-607329852.png",
+          "alt": "A sequence diagram of an application calling core_users and user_preferences separately and merging the two responses in application code"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.3 Handling Partial Failures",
+          "text": "5.3 Handling Partial Failures"
+        },
+        {
+          "type": "list",
+          "content": "[\"Decide what the user sees if the preferences service times out but the core profile call succeeds. A common choice is to fall back to sensible defaults rather than failing the whole page.\",\"Use timeouts and circuit breakers on each downstream call so one slow partition does not stall the entire response.\",\"Consider caching the less critical partition aggressively, since it usually changes far less often than the core identity data.\"]",
+          "items": [
+            "Decide what the user sees if the preferences service times out but the core profile call succeeds. A common choice is to fall back to sensible defaults rather than failing the whole page.",
+            "Use timeouts and circuit breakers on each downstream call so one slow partition does not stall the entire response.",
+            "Consider caching the less critical partition aggressively, since it usually changes far less often than the core identity data."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.4 Denormalization as a Mitigation",
+          "text": "5.4 Denormalization as a Mitigation"
+        },
+        {
+          "type": "paragraph",
+          "content": "A common technique to reduce the frequency of cross partition joins is to duplicate a small number of frequently needed fields into the hot table, accepting some data duplication in exchange for avoiding a join on the most common query path. For example, storing a denormalized display_name directly on a session or cache record, refreshed asynchronously when the real profile changes, avoids a join on every single page render while keeping the source of truth in the profile table."
+        },
+        {
+          "type": "note",
+          "title": "Keep this in balance",
+          "content": "Denormalizing everything defeats the purpose of the split, since you end up maintaining two copies of the same data with a synchronization problem. Only denormalize the specific fields that are read on the hottest paths."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Trade-offs",
+          "text": "6. Trade-offs"
+        },
+        {
+          "type": "paragraph",
+          "content": "Like every partitioning strategy, vertical partitioning is a deliberate trade. You give something up to gain something else, and the decision only makes sense once you can name both sides clearly."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Narrower hot tables mean more rows fit in memory, improving cache hit rate and read latency on the hottest access path.\",\"Queries that need columns from multiple partitions require a join or multiple round trips instead of one simple read.\"],[\"Cold or rarely used columns can be stored on cheaper or slower storage without affecting hot path performance.\",\"Schema changes now have to be coordinated across several tables or services instead of one.\"],[\"Sensitive columns can be isolated behind stricter access control and separate encryption without touching the rest of the schema.\",\"Transactional consistency across partitions is harder, since a single database transaction may no longer cover all the data for one logical entity.\"],[\"Different column groups can be scaled, backed up, or even migrated to a different database engine independently.\",\"Operational complexity increases, since there are more tables, more indexes, and potentially more services and databases to monitor and back up.\"],[\"Write contention drops when frequently updated columns are separated from rarely updated columns, since updates no longer invalidate unrelated cached data.\",\"Over splitting a table that did not need it adds this complexity for no measurable benefit.\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Transactional Consistency Across Partitions",
+          "text": "6.1 Transactional Consistency Across Partitions"
+        },
+        {
+          "type": "paragraph",
+          "content": "If core_users and user_profiles live in the same database, updating both inside one transaction is straightforward. If they live in different databases or services, you lose that guarantee. A common pattern is to accept eventual consistency for the secondary partition, using an outbox pattern or a message queue to propagate a change from the core table to the dependent tables, and to design the application to tolerate a brief window where they are out of sync."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Schema Evolution Overhead",
+          "text": "6.2 Schema Evolution Overhead"
+        },
+        {
+          "type": "paragraph",
+          "content": "Adding a new column used to mean one migration on one table. After a vertical split, the team first has to decide which partition the new column belongs in, based on its expected access pattern, before writing the migration. This is a small amount of extra thought per change, but it accumulates, and teams that skip this step tend to slowly recreate the original wide table problem inside one of the new partitions."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Common Pitfalls",
+          "text": "7. Common Pitfalls"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Pitfall 1: Splitting Too Early",
+          "text": "7.1 Pitfall 1: Splitting Too Early"
+        },
+        {
+          "type": "paragraph",
+          "content": "Introducing four tables for a users entity that only has 10 columns and no measured performance problem adds real complexity for a benefit that does not yet exist. Vertical partitioning should be a response to an observed access pattern or a measured row size problem, not a defensive habit applied to every table by default."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Pitfall 2: Splitting Along the Wrong Boundary",
+          "text": "7.2 Pitfall 2: Splitting Along the Wrong Boundary"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the column groups are chosen arbitrarily, for instance alphabetically or just to make each table roughly the same number of columns, the split does not track real access patterns and most queries end up needing several partitions anyway. The boundary should be drawn based on actual read and write frequency, not table size aesthetics."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.3 Pitfall 3: Ignoring the Join Cost in Capacity Planning",
+          "text": "7.3 Pitfall 3: Ignoring the Join Cost in Capacity Planning"
+        },
+        {
+          "type": "paragraph",
+          "content": "Teams sometimes measure the improvement to the hot path in isolation and forget to measure the new cost on the less common but still important wide queries, such as an admin dashboard that needs data from every partition. If that dashboard is also latency sensitive, the join or multi call cost has to be budgeted for explicitly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.4 Pitfall 4: Letting the Split Rot Back Into a Wide Table",
+          "text": "7.4 Pitfall 4: Letting the Split Rot Back Into a Wide Table"
+        },
+        {
+          "type": "paragraph",
+          "content": "Without a clear rule for where new columns go, a team under deadline pressure will often add a new column to whichever table is easiest to reach in the code they are already editing, rather than the table that matches its access pattern. Over a year or two, one of the narrow tables quietly grows back into a wide table, and the original problem returns in a new location."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.5 Pitfall 5: Forgetting Referential Integrity",
+          "text": "7.5 Pitfall 5: Forgetting Referential Integrity"
+        },
+        {
+          "type": "paragraph",
+          "content": "When partitions live in the same database, foreign keys can still enforce that a profile row cannot exist without a matching core row. When partitions live in separate services or databases, that guarantee disappears, and the application has to handle orphaned or missing secondary records defensively, for example by treating a missing preferences row as equivalent to default preferences rather than an error."
+        },
+        {
+          "type": "example-box",
+          "title": "A Pitfall in Practice",
+          "text": "A team split a users table into core_users and user_metrics, moving login_count and last_active_at into the metrics table to isolate the high write frequency of those two columns. Six months later, a new engineer needed a quick flag called is_premium and added it to user_metrics because that was the file they happened to be editing. Now every premium check, which happens on nearly every page load, forces a join that the original split was specifically designed to avoid. The fix was a documented rule: any column read on the authenticated request hot path belongs in core_users, full stop, regardless of which file is open when someone adds it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. The Interview Angle",
+          "text": "8. The Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a system design interview, vertical partitioning usually comes up in one of two ways. Either the candidate proposes it as part of scaling a data heavy service, or the interviewer probes for it after the candidate has designed a single wide table for an entity like a user profile."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 What Interviewers Are Listening For",
+          "text": "8.1 What Interviewers Are Listening For"
+        },
+        {
+          "type": "list",
+          "content": "[\"Can you distinguish vertical partitioning from horizontal partitioning or sharding, and explain when each one actually applies.\",\"Do you justify the split with a concrete access pattern, rather than proposing it just because it sounds sophisticated.\",\"Do you acknowledge the join cost, and describe a plan for handling it, rather than presenting the split as free.\",\"Do you mention security or compliance isolation when the entity involves sensitive fields such as payment details or health data.\",\"Can you describe how you would migrate an existing wide table into the split design without downtime.\"]",
+          "items": [
+            "Can you distinguish vertical partitioning from horizontal partitioning or sharding, and explain when each one actually applies.",
+            "Do you justify the split with a concrete access pattern, rather than proposing it just because it sounds sophisticated.",
+            "Do you acknowledge the join cost, and describe a plan for handling it, rather than presenting the split as free.",
+            "Do you mention security or compliance isolation when the entity involves sensitive fields such as payment details or health data.",
+            "Can you describe how you would migrate an existing wide table into the split design without downtime."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 A Strong Interview Answer Structure",
+          "text": "8.2 A Strong Interview Answer Structure"
+        },
+        {
+          "type": "paragraph",
+          "content": "State the problem in numbers. For example, a users table has grown to 50 columns and the login path is slow because of full row scans on a mostly cold table. Then propose the split, name the specific column groups and why they belong together, and immediately follow with the cost, meaning the join or extra service call needed for the profile page. Close with how you would monitor whether the split actually helped, such as tracking buffer cache hit rate on the core table before and after."
+        },
+        {
+          "type": "note",
+          "title": "Common trap to avoid",
+          "content": "Do not describe vertical partitioning as a way to handle more total data volume or more write throughput in general. That is the job of horizontal partitioning and sharding. Vertical partitioning helps with row width, access pattern separation, and isolation, not raw scale of row count."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.3 Combining Both Strategies",
+          "text": "8.3 Combining Both Strategies"
+        },
+        {
+          "type": "paragraph",
+          "content": "Large systems frequently use both at once. A users table might first be vertically partitioned into core_users, user_profiles, and user_audit_trail, and then core_users itself might be horizontally sharded across multiple database nodes by user id, once the row count alone becomes too large for a single node. The two techniques solve different problems and are not mutually exclusive."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Question the interviewer might ask\",\"What a strong answer covers\"],\"rows\":[[\"Why not just add an index instead of splitting the table\",\"Explain that an index helps find rows faster but does not shrink row width, so cache pressure from a wide row remains even with a perfect index\"],[\"What happens to a transaction that used to update two now separated columns\",\"Discuss keeping the split within one database when transactional consistency matters, or accepting eventual consistency with a clear reconciliation plan when it does not\"],[\"How would you migrate a live table without downtime\",\"Describe adding new tables, dual writing during a transition period, backfilling historical data, then cutting reads over table by table\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Migrating an Existing Wide Table Safely",
+          "text": "9. Migrating an Existing Wide Table Safely"
+        },
+        {
+          "type": "paragraph",
+          "content": "Splitting a table that is already in production, serving live traffic, requires a careful sequence rather than a single cutover. The goal is to avoid downtime and avoid a window where reads see inconsistent or missing data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 Step 1: Create the New Tables",
+          "text": "9.1 Step 1: Create the New Tables"
+        },
+        {
+          "type": "paragraph",
+          "content": "Add the new narrower tables alongside the existing wide table. At this point nothing reads from them yet."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 Step 2: Backfill Historical Data",
+          "text": "9.2 Step 2: Backfill Historical Data"
+        },
+        {
+          "type": "paragraph",
+          "content": "Run a batch job that copies existing rows from the wide table into the appropriate new tables, in small chunks, to avoid locking the production table for an extended period."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.3 Step 3: Dual Write",
+          "text": "9.3 Step 3: Dual Write"
+        },
+        {
+          "type": "paragraph",
+          "content": "Change the application so every write updates both the old wide table and the new narrow tables. This period can last days or weeks while confidence is built that the new tables are correct and complete."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.4 Step 4: Shift Reads",
+          "text": "9.4 Step 4: Shift Reads"
+        },
+        {
+          "type": "paragraph",
+          "content": "Move read traffic over to the new tables one query path at a time, starting with the highest value path, typically login or authentication, and validate correctness and latency at each step."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.5 Step 5: Stop Writing to the Old Table and Drop It",
+          "text": "9.5 Step 5: Stop Writing to the Old Table and Drop It"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once all reads and writes go through the new tables and the system has run stable for a reasonable period, usually a few weeks, remove the dual write and drop the old wide table."
+        },
+        {
+          "type": "list",
+          "content": "[\"Always backfill in small batches with rate limiting to avoid overwhelming the production database.\",\"Keep the dual write period long enough to catch rare code paths that touch the table infrequently, such as monthly batch jobs.\",\"Add monitoring that compares row counts and checksums between old and new tables during the transition.\",\"Roll back by simply continuing to read from the old table if the new tables show any discrepancy, since dual writes keep both in sync during the transition.\"]",
+          "items": [
+            "Always backfill in small batches with rate limiting to avoid overwhelming the production database.",
+            "Keep the dual write period long enough to catch rare code paths that touch the table infrequently, such as monthly batch jobs.",
+            "Add monitoring that compares row counts and checksums between old and new tables during the transition.",
+            "Roll back by simply continuing to read from the old table if the new tables show any discrepancy, since dual writes keep both in sync during the transition."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Do not skip the dual write period",
+          "content": "Cutting over reads before writes have been dual written for a meaningful amount of time is the single most common cause of data loss during this kind of migration, because some write path is always missed on the first attempt."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Summary",
+          "text": "10. Summary"
+        },
+        {
+          "type": "paragraph",
+          "content": "Vertical partitioning splits a table by columns rather than by rows, grouping columns by how often they are read or written, how sensitive they are, or which part of the system owns them. It is the natural response to a table that has grown wide over time, mixing hot identity fields with cold preference fields and sensitive audit fields in a single row."
+        },
+        {
+          "type": "paragraph",
+          "content": "The benefit is a narrower, more cache friendly hot table, isolation of sensitive columns behind stricter access control, and the ability to scale or store different column groups independently. The cost is that queries needing data from more than one partition now require a join or an extra service call, schema changes must be coordinated across more tables, and transactional guarantees can weaken once partitions cross a database boundary."
+        },
+        {
+          "type": "list",
+          "content": "[\"Use it when a table is wide, access patterns diverge sharply between column groups, or specific columns need isolated security controls.\",\"Do not use it on small, uniformly accessed tables where it only adds complexity.\",\"Always name the concrete access pattern driving the split, backed by real numbers such as row size and read frequency.\",\"Plan explicitly for the cost of cross partition queries rather than treating the split as a free win.\",\"Remember it solves row width and access isolation, while horizontal partitioning and sharding solve row count and write throughput at scale.\"]",
+          "items": [
+            "Use it when a table is wide, access patterns diverge sharply between column groups, or specific columns need isolated security controls.",
+            "Do not use it on small, uniformly accessed tables where it only adds complexity.",
+            "Always name the concrete access pattern driving the split, backed by real numbers such as row size and read frequency.",
+            "Plan explicitly for the cost of cross partition queries rather than treating the split as a free win.",
+            "Remember it solves row width and access isolation, while horizontal partitioning and sharding solve row count and write throughput at scale."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "A good vertical partitioning decision can be summarized in one sentence: these columns are read together and those columns are read together, so they now live apart."
+        }
+      ]
+    }
+  ]
+}

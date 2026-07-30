@@ -1,0 +1,535 @@
+{
+  "slug": "dockerizing-mcp-servers",
+  "title": "Dockerizing MCP Servers",
+  "content": [
+    {
+      "id": "dockerizing-mcp-servers",
+      "title": "Dockerizing MCP Servers",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "The previous lesson laid out containerized deployment as one of three broad shapes an MCP server can take."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson gets concrete about what that actually means in practice, taking a working MCP server and turning it into a Docker image that runs identically on your laptop, in a teammate's environment, and on whatever production host eventually runs it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why Containerize an MCP Server",
+          "id": "docker-why-containerize"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579743620-868736404.png",
+          "alt": "Source code passes through a Dockerfile into a Docker image then a running container",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A container packages your server together with its exact runtime, its exact dependency versions, and enough of an operating system to run both, into one artifact that behaves the same wherever it is run. For an MCP server this solves a specific, recurring headache, the server that works fine in development but breaks in production because of a subtly different Python version, a missing system library, or a dependency that resolved to a different version."
+        },
+        {
+          "type": "paragraph",
+          "text": "Containerizing also gives you a natural unit for everything the rest of this module builds on, a container is what gets scheduled by Kubernetes, scaled to multiple replicas behind a load balancer, and rolled back to a previous version when a release goes wrong. None of those later lessons make sense without this one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Anatomy of a Dockerfile",
+          "id": "docker-dockerfile-anatomy"
+        },
+        {
+          "type": "paragraph",
+          "text": "A Dockerfile is a short, ordered script describing how to build an image, each instruction adds one layer on top of the previous one. Docker caches these layers, so instructions that rarely change belong near the top, and instructions that change on every commit, copying your actual source code, belong near the bottom, so a rebuild after a small code change does not have to redo the expensive parts."
+        },
+        {
+          "type": "list",
+          "items": [
+            "FROM picks the base image, usually a minimal operating system with a language runtime preinstalled.",
+            "WORKDIR sets the directory inside the image where later instructions operate.",
+            "COPY brings files from your project into the image.",
+            "RUN executes a command at build time, most commonly installing dependencies.",
+            "CMD or ENTRYPOINT defines what runs when a container is started from the image."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Reading a Dockerfile top to bottom should feel like reading a short recipe, each instruction depends only on what came before it, and Docker builds an image by executing them strictly in order, one layer at a time, reusing any layer it has already built and cached whenever the instruction and its inputs have not changed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. A Concrete Dockerfile for an MCP Server",
+          "id": "docker-concrete-dockerfile"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579745438-799105995.png",
+          "alt": "A Dockerfile chains a base image, dependencies, and a start command",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is a complete, realistic Dockerfile for a Python based MCP server that talks HTTP, structured so dependency installation is cached separately from the application code that changes far more often."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "dockerfile",
+            "content": "FROM python:3.12-slim\n\nWORKDIR /app\n\n# copy only the dependency manifest first, so this layer is cached\n# and skipped on rebuilds that only touch application code\nCOPY requirements.txt .\nRUN pip install --no-cache-dir -r requirements.txt\n\n# now copy the actual application code\nCOPY . .\n\n# run as a non-root user rather than the image default of root\nRUN useradd --create-home mcp\nUSER mcp\n\nEXPOSE 8080\nCMD [\"python\", \"server.py\"]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Two details are easy to miss and worth calling out directly, the two step copy, requirements first and code second, is what makes rebuilds fast, and running as a dedicated non-root user rather than the image's default root account meaningfully shrinks the blast radius if the server is ever compromised."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Building and Running the Image",
+          "id": "docker-build-and-run"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once a Dockerfile exists, building an image and running a container from it is a two command loop you will repeat constantly during development."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "docker build -t weather-mcp-server:1.0.0 .\ndocker run --rm -p 8080:8080 \\\n  -e WEATHER_API_KEY=\"$WEATHER_API_KEY\" \\\n  weather-mcp-server:1.0.0"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The --rm flag cleans up the container automatically once it stops, handy during iterative local testing, while -p maps a port on your host machine to the port the server listens on inside the container, and -e passes environment variables in without baking secrets into the image itself."
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to think of docker build and docker run as two genuinely separate steps with two separate purposes, build turns a Dockerfile and its context into a static image, an artifact you could push to a registry and never touch again, while run takes that already built image and starts an actual live process from it, with its own separate set of runtime flags."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. stdio Servers Inside Containers",
+          "id": "docker-stdio-in-containers"
+        },
+        {
+          "type": "paragraph",
+          "text": "Containerizing a stdio based server is a genuinely different exercise from containerizing an HTTP one, because there is no network port to expose, the whole point of stdio is that the client itself spawns the process and talks to it over standard input and output. A containerized stdio server is invoked with docker run in interactive mode, standing in for a direct process spawn."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "docker run -i --rm weather-mcp-stdio:1.0.0"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The -i flag keeps stdin open so the client's writes actually reach the process inside the container, and just as with a non-containerized stdio server, absolutely nothing except JSON-RPC messages can be written to stdout, any stray log line or print statement lands on the same stream the client is parsing and corrupts it."
+        },
+        {
+          "type": "note",
+          "title": "stdio inside a container doubles down on the stdout rule",
+          "content": "A container adds an extra layer between your code and the client, which makes it even easier to forget the stdout rule, a base image's entrypoint script, a library's import time print statement, anything writing to stdout inside that container will break the protocol stream just as badly as it would outside one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. HTTP Servers Inside Containers",
+          "id": "docker-http-in-containers"
+        },
+        {
+          "type": "paragraph",
+          "text": "An HTTP based server maps far more naturally onto how containers are normally used, it binds a port, the container exposes that port, and anything outside the container, a load balancer, another service, a developer's curl command, reaches it over ordinary network calls. This is the shape assumed by essentially every orchestration and scaling tool covered later in this module."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# inside server.py, bind to 0.0.0.0 rather than 127.0.0.1\n# so the port is reachable from outside the container\nuvicorn.run(app, host=\"0.0.0.0\", port=8080)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "That host binding detail trips up a lot of people the first time, binding to 127.0.0.1 inside a container makes the server reachable only from within that same container's network namespace, so requests coming from outside, even through a correctly mapped port, will simply never arrive."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Choosing a Base Image",
+          "id": "docker-base-image-choice"
+        },
+        {
+          "type": "paragraph",
+          "text": "The base image you start FROM has an outsized effect on image size, build time, and attack surface. A full python:3.12 image includes a complete Debian userland with compilers and build tools, useful during development but mostly unnecessary weight in production. A slim variant strips most of that away, and an alpine variant goes further still, trading a smaller footprint for a different, musl based C library that occasionally trips up native dependencies."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Base image\",\"Approx size\",\"Tradeoff\"],\"rows\":[[\"python:3.12\",\"~1 GB\",\"Largest, but fewest surprises with native dependencies\"],[\"python:3.12-slim\",\"~150 MB\",\"Good default, occasionally missing a system library\"],[\"python:3.12-alpine\",\"~50 MB\",\"Smallest, but musl libc can break some compiled packages\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth actually measuring image size for your own server rather than assuming, since the difference between slim and alpine sometimes disappears entirely once your specific dependencies are installed on top, particularly if any of them need to compile native extensions that alpine's musl libc handles poorly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Multi-Stage Builds",
+          "id": "docker-multi-stage-builds"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579747011-323437482.png",
+          "alt": "A build stage produces artifacts that a smaller final stage then copies in",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a server needs compiled dependencies, a multi-stage build lets you use a heavier image with build tools to compile them, then copy only the finished artifacts into a slim final image, keeping the shipped image small without giving up the ability to build native extensions."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "dockerfile",
+            "content": "FROM python:3.12 AS builder\nWORKDIR /app\nCOPY requirements.txt .\nRUN pip install --no-cache-dir --target=/deps -r requirements.txt\n\nFROM python:3.12-slim\nWORKDIR /app\nCOPY --from=builder /deps /usr/local/lib/python3.12/site-packages\nCOPY . .\nCMD [\"python\", \"server.py\"]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The builder stage never ships, only the final stage becomes the actual image, which means all the compilers and intermediate build artifacts add zero bytes to what eventually runs in production."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Managing Secrets and Configuration",
+          "id": "docker-secrets-and-config"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579748543-247869924.png",
+          "alt": "Secrets are injected at runtime rather than baked into the image",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "An API key or database password should never be baked into an image with COPY or hardcoded in a Dockerfile, since anyone who can pull that image can extract it, even from an old, unused layer. Configuration and secrets belong outside the image entirely, injected at container start time as environment variables or mounted files."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Pass secrets with -e or --env-file at container start, never bake them into the image.",
+            "Use a .dockerignore file to keep .env files and credentials out of the build context entirely.",
+            "Prefer a secrets manager over plain environment variables once you move beyond local development."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "# .dockerignore\n.env\n.env.*\n__pycache__/\n*.pyc\n.git/"
+          }
+        },
+        {
+          "type": "note",
+          "title": "An old layer can still leak a secret",
+          "content": "Docker image layers are immutable and cached, so even if a later instruction removes a secret file, the layer that added it is still sitting inside the image history and can be extracted with docker history or by inspecting the image's layers directly. The only real fix is never adding the secret to a layer in the first place."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Health Checks Inside the Container",
+          "id": "docker-health-checks"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579750112-98239357.png",
+          "alt": "A container health check reports whether the server inside is actually healthy",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Docker can be told how to check whether a container is actually healthy, not merely running, which matters a great deal once an orchestrator is deciding whether to route traffic to a given replica or restart it. A HEALTHCHECK instruction runs a small command on an interval and marks the container unhealthy if it fails enough times in a row."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "dockerfile",
+            "content": "HEALTHCHECK --interval=30s --timeout=3s --retries=3 \\\n  CMD curl -f http://localhost:8080/health || exit 1"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This one instruction is what later lets Kubernetes and load balancers, covered in upcoming lessons, tell the difference between a container that is merely alive and one that is actually ready to serve requests correctly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Logging From Inside a Container",
+          "id": "docker-logging-from-container"
+        },
+        {
+          "type": "paragraph",
+          "text": "Containers are meant to be ephemeral, which means logs written to a file inside the container disappear the moment that container is removed. The standard practice is writing logs to stdout and stderr instead, letting the container runtime capture them, from there they can be collected by whatever log aggregation system sits outside the container, a topic the Logging lesson later in this module covers in depth."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "docker logs -f weather-mcp    # tail a running container's captured output"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Image Versioning and Tags",
+          "id": "docker-versioning-and-tags"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every image you build should carry a specific, immutable tag, not just latest, so you always know exactly which code is running where and can roll back to a precise previous version if a release goes wrong. Tagging with a semantic version or a git commit hash makes rollbacks, covered in the previous lesson, a matter of running one known good tag again rather than guessing."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Tag\",\"Meaning\",\"Safe to redeploy from\"],\"rows\":[[\"latest\",\"Whatever was last pushed\",\"No, ambiguous over time\"],[\"1.4.0\",\"A specific semantic version\",\"Yes\"],[\"git-a1b2c3d\",\"A specific commit\",\"Yes\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12.5 Scanning Images for Vulnerabilities",
+          "id": "docker-vuln-scanning"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579751688-982915862.png",
+          "alt": "A built image is scanned for known vulnerabilities before it ships",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A base image and its installed dependencies can carry known vulnerabilities that have nothing to do with your own application code, and it is worth scanning every image you build before it reaches production. Most container registries and CI platforms offer this as a built in step that runs automatically on push."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "docker scout cves weather-mcp-server:1.4.0"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Treat a scan finding a high severity vulnerability in a base image the same way you would treat a failing test, worth blocking a deploy over, since an outdated base image is one of the more common, and more preventable, ways a container ends up compromised."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Resource Limits",
+          "id": "docker-resource-limits"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579753298-541987348.png",
+          "alt": "A container is bounded by a CPU limit and a memory limit",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Left unconstrained, a container can consume as much CPU and memory as the host machine has available, which is exactly the scenario where one misbehaving server can starve everything else running alongside it. Setting explicit limits at container start turns a runaway memory leak into a contained, restartable failure instead of a host wide outage."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "docker run -d --memory=512m --cpus=1.0 \\\n  -p 8080:8080 weather-mcp-server:1.4.0"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Local Development With Docker Compose",
+          "id": "docker-compose-local-dev"
+        },
+        {
+          "type": "paragraph",
+          "text": "A real MCP server often needs a companion service during development, a database, a cache, a mock API. Docker Compose describes all of them in one file and starts them together with a single command, which is far more reproducible than a page of manual setup instructions in a README."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "yaml",
+            "content": "# docker-compose.yml\nservices:\n  mcp-server:\n    build: .\n    ports:\n      - \"8080:8080\"\n    environment:\n      - REDIS_URL=redis://cache:6379\n    depends_on:\n      - cache\n  cache:\n    image: redis:7-alpine"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Running docker compose up brings the whole local stack online in dependency order, and tearing it back down with docker compose down leaves nothing behind, which is a meaningfully better developer experience than juggling several manually started processes."
+        },
+        {
+          "type": "paragraph",
+          "text": "Compose is also a convenient place to mount your source code as a volume during development, so code changes are picked up without rebuilding the image on every edit, a workflow you would not want in production but that saves a lot of time locally."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "yaml",
+            "content": "services:\n  mcp-server:\n    build: .\n    volumes:\n      - ./:/app          # live-mount source for local development only\n    ports:\n      - \"8080:8080\""
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Common Dockerfile Pitfalls",
+          "id": "docker-common-pitfalls-technical"
+        },
+        {
+          "type": "paragraph",
+          "text": "A handful of Dockerfile mistakes show up repeatedly across real MCP server projects, usually harmless in isolation but compounding into slow builds or bloated images over time."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Copying the entire project before installing dependencies, which busts the dependency cache on every code change.",
+            "Running as root instead of a dedicated user with no real reason to.",
+            "Leaving build tools and compilers in the final image instead of using a multi-stage build.",
+            "Forgetting a .dockerignore, which can balloon build context size and accidentally include secrets."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "list",
+          "items": [
+            "Rebuilding the entire image from scratch on every code change because the dependency layer was never cached correctly.",
+            "Assuming a smaller base image is always better without checking whether it actually builds your specific dependencies."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: From Script to Running Container",
+          "id": "docker-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Start with a plain, working MCP server script and a requirements.txt file sitting next to it. The full path from there to a running, network reachable container is short."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "# 1. write the Dockerfile shown earlier in this lesson, saved as Dockerfile\n# 2. build the image\ndocker build -t knowledge-base-mcp:1.0.0 .\n\n# 3. run it, mapping the container's port 8080 to the host\ndocker run -d --name kb-mcp -p 8080:8080 \\\n  --env-file .env \\\n  --memory=512m --cpus=1.0 \\\n  knowledge-base-mcp:1.0.0\n\n# 4. confirm it responds\ncurl http://localhost:8080/health"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "If the health check in step four returns cleanly, the same image can be pushed to a registry and pulled onto any host, a teammate's machine, a staging server, a Kubernetes cluster, with the confidence that it will behave identically everywhere, which is the entire point of containerizing in the first place."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "docker-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Baking secrets directly into an image with COPY or ENV, where anyone who pulls the image can extract them.",
+            "Binding an HTTP server to 127.0.0.1 inside a container instead of 0.0.0.0, making it unreachable from outside.",
+            "Writing debug output to stdout inside a containerized stdio server, corrupting the JSON-RPC message stream.",
+            "Skipping a HEALTHCHECK, leaving orchestrators with no reliable way to tell a broken container from a healthy one.",
+            "Tagging every build as latest, making rollbacks a guessing game about which code was actually running.",
+            "Running the container with no memory or CPU limits, letting one bad deploy starve the whole host."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "docker-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take an HTTP based MCP server you have working locally and write a Dockerfile for it following the two step copy pattern shown earlier, dependencies first, code second. Build the image, run it with an explicit memory and CPU limit, and add a HEALTHCHECK instruction pointing at whatever health endpoint your server exposes."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "docker build -t my-mcp-server:0.1.0 .\ndocker run -d --name my-mcp --memory=256m --cpus=0.5 -p 8080:8080 my-mcp-server:0.1.0\ndocker inspect --format='{{json .State.Health}}' my-mcp"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "As a stretch goal, convert the Dockerfile into a multi-stage build even if your server has no compiled dependencies today, and compare the final image size before and after with docker images, to build intuition for how much of a typical image is build time weight that never needed to ship."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "docker-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Containerizing an MCP server is mostly a matter of discipline rather than difficulty, caching dependency installation separately from code, running as a non-root user, keeping secrets out of the image, and picking the right base image for the job. Whether your server speaks stdio or HTTP changes some of the specifics, but the underlying goal stays the same, a single reproducible artifact that runs the same way everywhere it is deployed."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson, Kubernetes Deployment, takes this same container image and shows how to run it under an orchestrator that can schedule it across many machines, restart it automatically, and scale it to multiple replicas on demand."
+        }
+      ]
+    }
+  ]
+}

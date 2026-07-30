@@ -1,0 +1,535 @@
+{
+  "slug": "mcp-host-architecture",
+  "title": "MCP Host Architecture",
+  "content": [
+    {
+      "id": "mcp-host-architecture",
+      "title": "MCP Host Architecture",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Earlier lessons introduced the host as one of the three MCP roles, the application a person actually opens. That is true, but it undersells how much is going on inside a host once it is connected to more than one server."
+        },
+        {
+          "type": "paragraph",
+          "text": "A real host is a small piece of software engineering in its own right, with its own internal components that keep dozens of simultaneous conversations straight, route a model's intentions to the correct destination, and stitch scattered results back into one coherent reply."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson opens up the host and looks at what is actually happening under the hood."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. The Host as the Application in Charge",
+          "id": "hostarch-app-in-charge"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146627938-757339539.png",
+          "alt": "A host manages a client registry and a session manager",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146627938-757339539.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The host is whatever application a person or another system directly interacts with, a chat window, a code editor, an autonomous backend agent with no visible window at all. Everything else in an MCP deployment exists to serve this one application, the servers do the real work, the clients speak the protocol, but the host is the thing accountable for the overall experience the user actually has."
+        },
+        {
+          "type": "paragraph",
+          "text": "Because the host owns that experience, it is also the natural place to put every piece of coordination logic that spans more than one server connection. If a user asks a question that needs both a file lookup and a calendar check, nothing about the file server or the calendar server needs to know the other exists, that coordination lives entirely inside the host."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth noting the host does not have to be human-facing at all, a fully autonomous backend agent that connects to several MCP servers to complete a scheduled job is still a host in exactly this architectural sense, it just has no window for a person to look at, the UI layer described later in this lesson simply does not exist for that kind of host."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Why a Host Needs Its Own Internal Architecture",
+          "id": "hostarch-why-internal-architecture"
+        },
+        {
+          "type": "paragraph",
+          "text": "A host that talks to exactly one server could get away with almost no internal structure, one connection, one set of tools, one place to send a call. Real hosts rarely stay that simple for long, a coding assistant might connect to a file-system server, a terminal server, and a version-control server all at once, and a general-purpose assistant might connect to a dozen or more."
+        },
+        {
+          "type": "paragraph",
+          "text": "Once there is more than one connection to manage, a host needs components dedicated to tracking which servers are connected, which client instance talks to which server, which conversation a given tool call belongs to, and how to merge results that come back from different places at different times. Skipping this structure and wiring everything ad hoc is exactly how hosts end up with tool calls delivered to the wrong server or results attributed to the wrong conversation."
+        },
+        {
+          "type": "note",
+          "title": "A useful mental model",
+          "content": "Think of the host as a small operating system for MCP connections, it schedules, tracks, and routes, while the actual capability work happens entirely outside it, inside the servers."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Without structure: routing logic scattered and duplicated per call site\nif tool_name == \"read_file\":\n    call_file_server(tool_name, args)\nelif tool_name == \"check_availability\":\n    call_calendar_server(tool_name, args)\n# ...repeated and re-checked everywhere a tool might be called\n\n# With structure: one router, one registry, one place to change\nroute_tool_call(tool_name, args)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. The Client Registry: One Entry Per Connected Server",
+          "id": "hostarch-client-registry"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146629913-304698691.png",
+          "alt": "Server 1 and server 2 each get their own client entry",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146629913-304698691.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The client registry is the host's address book. Every time the host connects to a new server, it creates a client instance for that connection and adds an entry to the registry recording which server it is, what capabilities that server declared during initialization, and a handle to the live client object itself."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"clientRegistry\": {\n    \"file-system-server\": {\n      \"clientId\": \"client-01\",\n      \"capabilities\": { \"tools\": true, \"resources\": true },\n      \"status\": \"connected\"\n    },\n    \"calendar-server\": {\n      \"clientId\": \"client-02\",\n      \"capabilities\": { \"tools\": true, \"resources\": false },\n      \"status\": \"connected\"\n    }\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Nothing about tool routing works without this registry existing somewhere. When the model decides it needs to check a calendar, the host has to know which of its several client instances actually owns a tool called check_availability, and the registry is exactly where that lookup happens."
+        },
+        {
+          "type": "paragraph",
+          "text": "The registry is also where a host checks before ever creating a duplicate connection, if a server with a given name is already present and marked connected, the host reuses the existing client instance rather than opening a second, redundant connection to the same server."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. The Session Manager: Keeping Every Conversation Straight",
+          "id": "hostarch-session-manager"
+        },
+        {
+          "type": "paragraph",
+          "text": "A session manager tracks the state of every active session the host is part of, separate from the client registry, which tracks server connections. A single user conversation might span several client sessions at once, one per connected server, and the session manager is what keeps those grouped together as belonging to the same overall interaction."
+        },
+        {
+          "type": "paragraph",
+          "text": "This distinction matters because a client-server session and a user conversation are not the same lifetime. A user might keep chatting for an hour while a slow tool call's session with one particular server opens and closes several times in the background, the session manager is what reconciles those two different clocks so the host, and the person using it, never lose track of what belongs to what."
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice, a session manager often exposes a simple lookup, given a user-facing conversation id, return every underlying client session currently associated with it, which is exactly what lets a host present \"one conversation\" to a user while quietly juggling several independent protocol sessions underneath."
+        },
+        {
+          "type": "paragraph",
+          "text": "Session managers also typically track timestamps, when a given client session last saw activity, which is what allows a host to safely close idle connections to free up resources without disrupting a user who is still actively mid-conversation with a different, still-active server."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Spinning Up a New Client Instance",
+          "id": "hostarch-spinning-up-client"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146631693-132432303.png",
+          "alt": "A host spins up a new client instance connecting to a server",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146631693-132432303.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a host decides it needs a new server, it does not talk to that server directly, it creates a dedicated client instance whose entire job is speaking MCP to exactly that one server. Creating this instance means picking a transport, launching or connecting to the server process, and running the initialize handshake described in the MCP Workflow lesson, all before the instance is registered as usable."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def create_client(server_config):\n    transport = open_transport(server_config)\n    client = MCPClient(transport)\n    client.initialize()\n    registry.add(server_config.name, client)\n    return client"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Every client instance is independent of every other, it has its own transport, its own outstanding request ids, its own view of that one server's capabilities. A crash or a slow response in one client instance has no direct effect on any other, a property that turns out to matter a great deal once a host is juggling many servers, covered further in Multi-Server Architecture."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.1 Tearing a Client Instance Back Down",
+          "id": "hostarch-client-teardown"
+        },
+        {
+          "type": "paragraph",
+          "text": "Just as creating a client instance is a defined sequence, so is retiring one, the host closes the underlying transport, removes the entry from the client registry, and cancels any request handlers still waiting on that connection, so nothing is left holding a reference to a connection that no longer exists."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Routing a Model Intention to the Right Client",
+          "id": "hostarch-routing-intention"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146634859-795481997.png",
+          "alt": "A model intention goes through a router to the right client",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146634859-795481997.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "When the underlying AI model decides to call a tool, it does not know or care which client instance owns that tool, it only knows a tool name. The host's router is the component responsible for taking that tool name, looking it up against the client registry, and forwarding the actual call to whichever client instance advertised it during discovery."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def route_tool_call(tool_name, arguments):\n    owner = tool_owner_index.get(tool_name)\n    if owner is None:\n        raise ToolNotFoundError(tool_name)\n    client = registry.get(owner)\n    return client.call_tool(tool_name, arguments)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Building this router well means maintaining a reverse index from tool name to owning client ahead of time, rather than scanning every connected server on every single call, which would make a host with many servers noticeably slower as connections grow. This index is rebuilt whenever a server's tool list changes, which the server can announce with a listChanged notification."
+        },
+        {
+          "type": "note",
+          "title": "A subtle edge case",
+          "content": "Two different connected servers occasionally expose a tool with the identical name. A router needs a tie-breaking rule for this, disambiguating by server, before it can safely resolve the call, a problem covered in full in Multi-Server Architecture."
+        },
+        {
+          "type": "paragraph",
+          "text": "Building this index incrementally, rather than rebuilding it entirely on every change, also matters once a host is connected to servers whose tool lists change frequently, an index rebuilt from scratch on every listChanged notification would waste work re-adding hundreds of unaffected entries."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Aggregating Results Back Into One Coherent Answer",
+          "id": "hostarch-aggregating-results"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146636922-876430874.png",
+          "alt": "Client A result and client B result combine into a coherent answer",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146636922-876430874.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single user request can trigger several tool calls across several different servers, and those calls do not always finish in the order they were sent. The host is responsible for collecting every result, matching each one back to the request that produced it, and assembling the full set into a form the model can read as one coherent block of context."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Tool call\",\"Server\",\"Finished\",\"Result folded into context at\"],\"rows\":[[\"check_availability\",\"calendar-server\",\"2nd\",\"position 2\"],[\"read_file\",\"file-system-server\",\"1st\",\"position 1\"],[\"search_contacts\",\"crm-server\",\"3rd\",\"position 3\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the finishing order does not need to match the order the calls were originally issued in, the host reorders or waits as necessary so the model sees a stable, complete picture rather than a partial one, which is exactly what makes it safe for the model to reason about several tool results together in a single turn."
+        },
+        {
+          "type": "paragraph",
+          "text": "Aggregation also has to account for partial failure, if one of three concurrent tool calls times out while the other two succeed, the host still needs to decide whether to hand the model two good results and one clearly marked failure, or wait longer, rather than silently dropping the failed call from the model's view."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. The UI Layer: Surfacing Tools, Prompts, and Approvals",
+          "id": "hostarch-ui-layer"
+        },
+        {
+          "type": "paragraph",
+          "text": "Everything described so far is invisible plumbing, the UI layer is where a host actually becomes an application a person can use. It renders available tools in a way a user can browse, shows prompt templates a user might pick from, and displays streaming results as they arrive rather than only once a full answer is ready."
+        },
+        {
+          "type": "paragraph",
+          "text": "The UI layer also owns anything involving human judgment, showing a confirmation dialog before a potentially destructive tool call runs, for example, or surfacing an error message in plain language instead of a raw JSON-RPC error object. None of the routing or aggregation logic in earlier sections needs to know the UI layer exists, the two are cleanly separated so either one can change independently."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A list of currently connected servers and their status.",
+            "A picker for available tools and prompt templates.",
+            "Streaming output as a tool call's result arrives.",
+            "Confirmation dialogs gated by the permission layer.",
+            "Readable error messages instead of raw protocol errors."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. The Permission and Consent Gate",
+          "id": "hostarch-permission-gate"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146638543-641777463.png",
+          "alt": "A tool call passes through a consent gate to check if approved",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146638543-641777463.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because a host may be connected to servers capable of real-world side effects, deleting files, sending messages, spending money, most host architectures include a gate that sits between the router and the client instance, checking whether a given tool call is allowed to proceed before it ever reaches the server."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Auto-approve: low-risk, read-only tools are allowed to run without interrupting the user.",
+            "Ask-once: a tool is approved the first time and remembered for the rest of the session.",
+            "Ask-every-time: sensitive tools, like ones that delete or send something, always pause for explicit confirmation."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "This gate is a host-level architectural decision, not something MCP mandates in the protocol itself, which is exactly why different host applications can and do implement noticeably different consent policies while still speaking the identical underlying protocol to the same servers."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Tool example\",\"Typical policy\"],\"rows\":[[\"read_file\",\"auto-approve, read-only\"],[\"send_email\",\"ask every time\"],[\"delete_record\",\"ask every time\"],[\"search_contacts\",\"ask once per session\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Policy lives in the host, not the protocol",
+          "content": "MCP defines no notion of consent tiers at all, every policy described in this section is a design decision individual host applications make on top of the protocol, which is why two different hosts connected to the identical server can prompt users very differently."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Isolating Clients From Each Other",
+          "id": "hostarch-isolating-clients"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146640033-767222107.png",
+          "alt": "Client A is isolated from client B",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146640033-767222107.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A well-built host treats every client instance as its own isolated unit, with its own transport, its own request ids, and its own error handling. If one server hangs or crashes, the host should be able to detect that, surface a clear error for that one connection, and continue serving every other connected server without interruption."
+        },
+        {
+          "type": "note",
+          "title": "Why this matters in practice",
+          "content": "A host without isolation between clients risks one misbehaving server taking down an entire session, forcing a user to restart the whole application just because a single, possibly unimportant, integration failed."
+        },
+        {
+          "type": "paragraph",
+          "text": "Isolation is usually implemented with per-client timeouts, per-client error boundaries, and independent retry logic, so a slow calendar server, for instance, never blocks a fast file-system server's results from reaching the user."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some hosts go further and add a circuit breaker per client instance, tracking recent failure rates so a consistently failing server gets temporarily skipped rather than retried on every single request, sparing the user from repeatedly waiting on a connection that is very unlikely to succeed."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "class ClientCircuitBreaker:\n    def __init__(self, failure_threshold=3):\n        self.recent_failures = 0\n        self.failure_threshold = failure_threshold\n        self.open = False\n\n    def record_failure(self):\n        self.recent_failures += 1\n        if self.recent_failures >= self.failure_threshold:\n            self.open = True\n\n    def record_success(self):\n        self.recent_failures = 0\n        self.open = False"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Handling a Client or Server Disappearing Mid-Session",
+          "id": "hostarch-handling-disappearance"
+        },
+        {
+          "type": "paragraph",
+          "text": "Transports fail, subprocesses crash, network connections drop. A host architecture needs a defined answer for what happens when a client's underlying connection disappears while a request is still outstanding, rather than leaving the caller waiting forever."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def call_with_timeout(client, tool_name, arguments, timeout_seconds=30):\n    try:\n        return client.call_tool(tool_name, arguments, timeout=timeout_seconds)\n    except TransportClosedError:\n        registry.mark_disconnected(client.server_name)\n        return error_result(f\"{client.server_name} is unavailable\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The registry entry for that server is marked disconnected, any in-flight requests to it are failed cleanly rather than left hanging, and depending on the host's policy, a reconnect attempt may be scheduled automatically. The user-facing effect should be a clear, readable error, never a silently frozen interface."
+        },
+        {
+          "type": "note",
+          "title": "Reconnection is a policy choice",
+          "content": "MCP itself has nothing to say about whether a host should try to reconnect automatically, that decision, how many attempts, how much delay between them, belongs entirely to the host, and different hosts reasonably make different choices here."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Where the Model Actually Sits Relative to the Host",
+          "id": "hostarch-model-relative-position"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is easy to assume the AI model is somehow part of the host's internal architecture, but it is more accurate to picture the model as a client of the host itself. The host feeds the model a view of available tools and resources, the model responds with intentions, tool calls to make, in plain text or a structured function-calling format, and the host is what translates those intentions into actual MCP traffic."
+        },
+        {
+          "type": "paragraph",
+          "text": "This separation is exactly why the same model can be dropped into completely different hosts, a chat app, a code editor, a voice assistant, and immediately gain access to whatever servers that particular host happens to be connected to, without the model itself changing at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "This also explains why a model can be swapped out for a different one entirely, a newer version, or even a model from a different provider, without the host's client registry, router, or aggregator needing any changes at all, since none of those components depend on which model is generating the intentions they route."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# The host feeds tool descriptions to the model, and reads intentions back\ntools_context = describe_tools(registry.available_tools())\nmodel_output = model.generate(user_message, tools=tools_context)\nfor intention in model_output.tool_calls:\n    route_tool_call(intention.name, intention.arguments)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "It also means a single host can, in principle, route the same discovered tool set to more than one model at once, useful in setups that compare or blend outputs from several models, since the tool descriptions and routing logic never had any model-specific assumptions baked into them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Worked Example: One Host, Three Servers, One User Request",
+          "id": "hostarch-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a host connected to a file-system server, a calendar server, and a CRM server. A user asks, \"check if I am free tomorrow afternoon and pull up the contact details for anyone on that call.\" Here is what happens inside the host, step by step."
+        },
+        {
+          "type": "list",
+          "items": [
+            "1. The model reads the request and decides it needs two tools, check_availability and search_contacts.",
+            "2. The router looks both tool names up in the client registry and finds they belong to the calendar server and the CRM server respectively.",
+            "3. Two calls go out concurrently, one per client instance, each with its own request id.",
+            "4. The calendar server responds first, the CRM server responds a moment later.",
+            "5. The aggregator holds both results until both have arrived, then folds them into the model's context together.",
+            "6. The model reads both results and produces one combined answer for the user."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "note",
+          "title": "The key detail",
+          "content": "The file-system server was never touched at all in this example, it stayed registered and idle, exactly because the router only calls the client instances actually needed for a given request."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Time\",\"Event\"],\"rows\":[[\"t0\",\"Model emits two intentions: check_availability, search_contacts\"],[\"t0 + 1ms\",\"Router resolves both tool names to their owning clients\"],[\"t0 + 40ms\",\"Calendar server responds\"],[\"t0 + 65ms\",\"CRM server responds\"],[\"t0 + 66ms\",\"Aggregator folds both results into the model context together\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Common Mistakes in Host Architecture",
+          "id": "hostarch-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Routing tool calls by scanning every connected server on every call instead of maintaining a reverse tool-to-client index, which gets slower as more servers are added.",
+            "Sharing one client instance across multiple servers instead of giving each server its own, which mixes up request ids and capabilities that should stay separate.",
+            "Letting one server's failure or slowness block results from every other connected server, instead of isolating client instances from each other.",
+            "Putting permission and consent logic inside individual client instances instead of a single, consistent gate all tool calls pass through.",
+            "Forgetting to clean up the client registry entry when a server disconnects, leaving stale entries that the router might still try to use.",
+            "Assuming the model is part of the host's internal plumbing rather than treating it as an external caller the host serves, which blurs a boundary that should stay clean."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "A quick diagnostic",
+          "content": "If adding a fourth connected server to a host noticeably slows down every tool call, not just calls to that new server, that is usually a sign the router is scanning every client instead of using a reverse tool-to-client index."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Building the UI layer with direct knowledge of individual servers instead of going through the router, which breaks the moment a new server is added.",
+            "Treating a session manager and a client registry as the same thing, when they track different lifetimes and should stay conceptually separate."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Practice: Design a Host for Three Servers",
+          "id": "hostarch-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sketch, on paper or in a text file, the internal components a host would need to connect to a file-system server, a web-search server, and a messaging server at the same time. For each component, the client registry, the session manager, the router, and the aggregator, write one or two sentences describing exactly what it would need to track for this specific setup."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Fill in each component for your three-server host\nclient_registry = {\n    \"file-system-server\": {\"clientId\": \"?\", \"capabilities\": \"?\"},\n    \"web-search-server\": {\"clientId\": \"?\", \"capabilities\": \"?\"},\n    \"messaging-server\": {\"clientId\": \"?\", \"capabilities\": \"?\"}\n}\n# What does the router need to know to send a \"send_message\" call\n# to the correct client instance without checking every server first"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Then walk through what should happen if the messaging server disconnects mid-conversation while the other two are still healthy, write out exactly which components would need to react, and how the user should experience that failure."
+        },
+        {
+          "type": "paragraph",
+          "text": "If you have access to a real MCP-enabled host, such as an editor or desktop assistant that supports multiple server connections, open its settings and see if it actually exposes a client registry or connected-server list to the user, this is a good way to check how much of this internal architecture that particular host chooses to make visible versus hide."
+        },
+        {
+          "type": "paragraph",
+          "text": "Finally, list which of the four components, registry, session manager, router, aggregator, you personally think would be hardest to get right in a production host, and write one sentence explaining why."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "hostarch-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A host is not just a window a person types into, it is a small coordination layer built from a client registry, a session manager, a router, an aggregator, a UI layer, and a permission gate, all working together to keep many simultaneous server connections straight and turn them into one coherent experience."
+        },
+        {
+          "type": "paragraph",
+          "text": "With the host's internal structure now mapped out, the next lesson turns to the other side of every connection, MCP Server Architecture, which opens up what happens inside a server once a request from a client actually arrives."
+        }
+      ]
+    }
+  ]
+}

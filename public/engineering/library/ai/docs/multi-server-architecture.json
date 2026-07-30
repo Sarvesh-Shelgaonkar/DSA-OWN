@@ -1,0 +1,506 @@
+{
+  "slug": "multi-server-architecture",
+  "title": "Multi-Server Architecture",
+  "content": [
+    {
+      "id": "multi-server-architecture",
+      "title": "Multi-Server Architecture",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "A single server rarely covers everything a host needs, one server might handle file access, another a database, another a search engine over the web. Real MCP deployments are almost always many servers at once, and that immediately raises questions none of the earlier lessons had to deal with, how does a host keep three or thirty independent connections straight, and what happens when two servers happen to offer a tool with the exact same name."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why Hosts Connect to Multiple Servers",
+          "id": "msa-why-multiple-servers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172976932-805095861.png",
+          "alt": "A host connects to server A and server B",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172976932-805095861.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Splitting functionality across several focused servers rather than one monolithic one mirrors ordinary software design, each server can be built, deployed, and maintained by a different team, focused on one domain, a file system server, a ticketing system server, a search server, without any of them needing to know the others exist."
+        },
+        {
+          "type": "note",
+          "title": "A familiar analogy",
+          "content": "This mirrors microservice architecture more broadly, small, focused services composed together rather than one large service trying to do everything, MCP simply applies the same idea to the tools and data sources an AI application can reach."
+        },
+        {
+          "type": "paragraph",
+          "text": "It also means a user or an organization can mix servers built by entirely different authors, an official filesystem server alongside a third-party search server and an internal, company-built tickets server, without any of them needing to be aware of each other's existence or implementation details."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. One Client Instance Per Server, No Exceptions",
+          "id": "msa-one-client-per-server"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172979082-294928474.png",
+          "alt": "Server 1 gets client 1 while server 2 gets client 2",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172979082-294928474.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The architecture covered in MCP Host Architecture and Session Management holds firmly here, every server gets exactly one dedicated client instance, its own session, its own capabilities, its own pending-requests bookkeeping. There is no shared or pooled client instance that talks to more than one server at once."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "clients = {\n    \"filesystem\": Client(transport=subprocess_transport(\"fs-server\")),\n    \"search\": Client(transport=http_transport(\"https://search.example.com\")),\n    \"tickets\": Client(transport=http_transport(\"https://tickets.example.com\"))\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This is not an arbitrary rule, it directly follows from the one session per client-server pair principle covered in Session Management, a client instance is defined as the thing that owns exactly one session, so connecting to a second server necessarily means creating a second client instance."
+        },
+        {
+          "type": "paragraph",
+          "text": "Trying to share a single client instance across two servers to save on bookkeeping tends to backfire quickly, capabilities negotiated with one server would incorrectly seem to apply to the other, and a single pending-requests map would risk matching a response from the wrong server entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Independent Lifecycles",
+          "id": "msa-independent-lifecycles"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because each client instance owns its own session, one server's connection can be established, fail, or be torn down completely independently of the others. A host restarting its connection to a crashed search server has no effect whatsoever on its healthy, ongoing session with the filesystem server."
+        },
+        {
+          "type": "paragraph",
+          "text": "This independence extends to capability negotiation too, one server supporting an older protocol version and another supporting the newest one is perfectly fine, each session negotiates its own capabilities entirely separately, covered in more depth in Capability Negotiation."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is also why a host can safely reconnect just one server after a crash while every other server's session stays alive throughout, none of the recovery logic for one connection ever needs to touch the state belonging to another."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Aggregating Tool Listings Into One View",
+          "id": "msa-aggregating-tools"
+        },
+        {
+          "type": "paragraph",
+          "text": "While each server is reached independently, the host typically presents a single combined list of everything available, tools from all connected servers merged together, so that whatever is deciding which tool to call, often a language model, sees one unified menu rather than needing to separately query three different servers."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Server\",\"Tools exposed\"],\"rows\":[[\"filesystem\",\"read_file, list_directory\"],[\"search\",\"web_search\"],[\"tickets\",\"create_ticket, close_ticket\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This aggregated view typically lives in the host, not in any individual client instance, since no single client instance has visibility into what the other client instances are connected to, only the host sits above all of them at once."
+        },
+        {
+          "type": "paragraph",
+          "text": "This aggregated list is typically refreshed whenever a server's own tool list changes, a server adding a new tool at runtime and notifying its client, or a new server connecting for the first time, both trigger the host to rebuild its combined view rather than serving a stale snapshot indefinitely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. The Namespace Problem",
+          "id": "msa-namespace-problem"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172980956-712013269.png",
+          "alt": "Server A and server B both expose a tool named search, causing a collision",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172980956-712013269.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Aggregation creates a real problem the moment two servers happen to expose a tool with the same name, a filesystem server and a cloud storage server might both define a tool called search, and a flat merged list would have no way to tell them apart, or worse, would silently let one shadow the other."
+        },
+        {
+          "type": "paragraph",
+          "text": "Collisions are more likely than they might first appear, common, generically named tools like search, get, or list are exactly the names most independent server authors would naturally reach for, without ever coordinating with each other."
+        },
+        {
+          "type": "paragraph",
+          "text": "The problem is not unique to MCP either, any system that composes independently authored plugins or extensions runs into the same naming conflict eventually, MCP's answer, keep the servers themselves ignorant of each other and let the host resolve ambiguity in its aggregated view, is a fairly standard one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Namespacing as the Standard Solution",
+          "id": "msa-namespacing-solution"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172982737-679428376.png",
+          "alt": "A tool name becomes namespaced with its server prefix",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172982737-679428376.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The common fix is for the host to prefix each tool name with an identifier for the server it came from before presenting the aggregated list, turning two colliding search tools into filesystem.search and storage.search, unambiguous and still traceable back to their origin."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{ \"name\": \"filesystem.search\", \"server\": \"filesystem\" }\n{ \"name\": \"storage.search\", \"server\": \"storage\" }"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Namespacing is a host convention, not a protocol rule",
+          "content": "MCP itself does not mandate any particular naming scheme, a prefixed name like this is purely something the host constructs for its own aggregated view, the server itself still only ever hears the plain tool name it originally registered."
+        },
+        {
+          "type": "paragraph",
+          "text": "This same technique generalizes cleanly to any number of servers, whether a host is connected to two servers or two hundred, the same prefixing rule keeps every tool name unique across the entire aggregated list without any special-casing as the count grows."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Resources Face the Same Problem, With a Built-In Fix",
+          "id": "msa-resources-uris"
+        },
+        {
+          "type": "paragraph",
+          "text": "Resources are somewhat less prone to this collision because a resource is identified by a URI, which typically already encodes a scheme and often a server-specific path, file:///a.txt and https://api.example.com/b are naturally distinct even without the host doing any extra work."
+        },
+        {
+          "type": "paragraph",
+          "text": "That said, two different servers could still technically expose the same URI scheme with overlapping paths, so a host aggregating resources across servers still generally tracks which client instance a given resource came from internally, even if the URI itself rarely needs an additional prefix."
+        },
+        {
+          "type": "paragraph",
+          "text": "URIs solving most of the ambiguity here is a convenient side effect of how resources are already identified, not a special mechanism MCP added specifically to prevent collisions, tools simply lack an equivalent built-in identifier and need the host's own namespacing to fill that gap."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Prompts Can Collide Too",
+          "id": "msa-prompts-collide"
+        },
+        {
+          "type": "paragraph",
+          "text": "Named prompts are just as susceptible to collision as tools, and are usually namespaced the same way, a host presenting prompts from several servers prefixes each one so a user or model choosing between them can tell which server a given prompt actually belongs to."
+        },
+        {
+          "type": "paragraph",
+          "text": "Because prompts are usually surfaced directly to a human user, picking one from a menu, a clear namespaced label matters even more here than it does for tools, a user choosing between two prompts both simply called summarize needs the prefix to know which server's summarize they are actually invoking."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Routing a Call Back to the Correct Server",
+          "id": "msa-routing-back"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172984619-46647795.png",
+          "alt": "A tool call uses its namespace to reach the correct server",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172984619-46647795.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Namespacing has to work in both directions, the host needs to strip its own prefix back off before sending the actual tools/call request, since the server itself never registered a prefixed name and would reject a call for filesystem.search as an unknown tool."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def route_call(namespaced_name, arguments):\n    server_id, tool_name = namespaced_name.split(\".\", 1)\n    client = clients[server_id]\n    return client.call_tool(tool_name, arguments)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Getting this reverse mapping wrong is one of the more common integration bugs in a multi-server host, a call that silently goes to the wrong server, or fails outright because the server received a name it never registered, both point back to a missing or incorrect prefix-stripping step."
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful safeguard here is validating that the server identifier parsed out of a namespaced name actually corresponds to a currently connected client instance before attempting to route anything, silently failing on a disconnected or unrecognized server identifier is far easier to debug than a call that vanishes with no error at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Partial Failure Across Multiple Servers",
+          "id": "msa-partial-failure"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172986338-841931038.png",
+          "alt": "Server A is okay while server B has failed",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172986338-841931038.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "With independent client instances, one server going down should degrade the system gracefully rather than catastrophically, the host simply removes that server's tools from the aggregated list and continues operating normally with whichever servers are still healthy."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Event\",\"Effect on other servers\"],\"rows\":[[\"Search server crashes\",\"Filesystem and tickets servers unaffected\"],[\"Filesystem server times out\",\"Search and tickets servers unaffected\"],[\"Network blip affecting one remote server\",\"Local subprocess servers unaffected\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This graceful degradation is only possible because nothing about a session, or the aggregated tool list, was ever shared across servers to begin with, the isolation designed into the architecture from the start is exactly what pays off here."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Remove the failed server's entries from the aggregated tool, resource, and prompt lists immediately.",
+            "Reject in-flight calls to that server with a clear error rather than leaving them hanging.",
+            "Leave every other server's session, subscriptions, and pending requests completely untouched.",
+            "Optionally attempt a reconnect on a backoff schedule, treating a successful reconnect as an entirely new session."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Adding and Removing Servers at Runtime",
+          "id": "msa-adding-removing-runtime"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172988361-469421821.png",
+          "alt": "A running host adds or removes a server, updating the registry",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172988361-469421821.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A host is generally free to connect to a new server, or disconnect from an existing one, while already running, creating a new client instance and folding its tools into the aggregated view, or tearing one down and removing its entries, without disturbing any of the other active sessions."
+        },
+        {
+          "type": "paragraph",
+          "text": "This flexibility is what allows a host to offer a settings screen where a user connects a new server mid-session, a calendar integration added on demand, without requiring the whole application to restart or any existing connections to be disrupted."
+        },
+        {
+          "type": "note",
+          "title": "Removing a server should feel like a session ending",
+          "content": "Disconnecting a server at runtime should trigger exactly the same cleanup described in Session Management, ending that one session, clearing its subscriptions, and rejecting its pending requests, then simply removing its entries from the aggregated view on top of that."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Servers Do Not All Support the Same Capabilities",
+          "id": "msa-differing-capabilities"
+        },
+        {
+          "type": "paragraph",
+          "text": "Different servers commonly support different subsets of MCP's capabilities, one might expose only tools, another only resources, another all three plus sampling. A host managing many servers has to track each one's negotiated capabilities individually, rather than assuming uniform support across the board."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Server\",\"Tools\",\"Resources\",\"Prompts\",\"Sampling\"],\"rows\":[[\"filesystem\",\"Yes\",\"Yes\",\"No\",\"No\"],[\"search\",\"Yes\",\"No\",\"No\",\"No\"],[\"tickets\",\"Yes\",\"Yes\",\"Yes\",\"No\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "A host that assumes uniform capability support tends to fail in confusing ways, calling a subscribe operation on a server that never declared support for resource subscriptions, for instance, rather than checking that server's own negotiated capabilities first and simply not offering that option for it."
+        },
+        {
+          "type": "paragraph",
+          "text": "Tracking this per server also keeps the aggregated view honest, only offering a subscribe option next to resources from servers that actually declared support for it, rather than presenting a uniform interface that quietly fails for some servers and not others."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Connecting to Many Servers in Parallel",
+          "id": "msa-connecting-in-parallel"
+        },
+        {
+          "type": "paragraph",
+          "text": "Establishing sessions with several servers at startup is typically done concurrently rather than one at a time, since each session's initialize handshake is entirely independent of the others, there is no reason to wait for the filesystem server to finish initializing before starting the search server's handshake."
+        },
+        {
+          "type": "paragraph",
+          "text": "This parallelism matters a great deal for perceived startup time, a host waiting on ten servers sequentially could take ten times as long to become ready as one initializing all ten concurrently, especially when several of those servers are remote and each handshake involves real network latency."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\n\nasync def connect_all(configs):\n    return await asyncio.gather(*(connect_one(cfg) for cfg in configs))"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Choosing a Namespacing Separator",
+          "id": "msa-choosing-separator"
+        },
+        {
+          "type": "paragraph",
+          "text": "The exact character used to join a server identifier and a tool name, a period, a colon, a double underscore, is not dictated by MCP itself, it is a convention a host picks and applies consistently. What matters is that the chosen separator cannot itself appear inside a legitimate server identifier or tool name, otherwise splitting a namespaced name back apart becomes ambiguous."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Separator\",\"Example\",\"Risk to watch for\"],\"rows\":[[\"Period\",\"docs.search\",\"Fails if a tool name itself legitimately contains a period\"],[\"Double colon\",\"docs::search\",\"Rare collision risk, slightly more verbose\"],[\"Double underscore\",\"docs__search\",\"Fails if identifiers already use double underscores\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Whichever separator is chosen, it should be applied consistently across tools, resources needing extra disambiguation, and prompts alike, a host that namespaces tools one way and prompts another way makes its own aggregated view harder to reason about for no real benefit."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Server Identifiers Need Their Own Uniqueness Guarantee",
+          "id": "msa-server-id-uniqueness"
+        },
+        {
+          "type": "paragraph",
+          "text": "Namespacing solves tool name collisions only if the server identifiers themselves are guaranteed unique within one host, two servers both configured with the identifier docs would still collide, just one level up. Hosts typically derive this identifier from something already unique in configuration, a connection URL or a user-assigned label, checked for duplicates at the moment a new server is added."
+        },
+        {
+          "type": "note",
+          "title": "Duplicate identifiers fail loudly, not silently",
+          "content": "A well-behaved host should refuse to add a second server under an identifier already in use, rather than silently letting the newer connection overwrite the aggregated entries of the older one."
+        },
+        {
+          "type": "paragraph",
+          "text": "This check is cheap to run and worth doing early, at the moment a server is added rather than later when a collision quietly produces confusing, hard-to-trace routing errors during actual use."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Worked Example: A Host With Three Servers",
+          "id": "msa-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Trace what happens when a host starts up connected to a filesystem server, a search server, and a tickets server, and the search server then crashes mid-session."
+        },
+        {
+          "type": "list",
+          "items": [
+            "1. Host creates three client instances and initializes all three sessions concurrently.",
+            "2. Each client instance fetches its server's tool list independently.",
+            "3. Host merges all three lists, namespacing filesystem.read_file, search.web_search, tickets.create_ticket.",
+            "4. A user request triggers tickets.create_ticket, host strips the prefix and routes the call to the tickets client.",
+            "5. The search server crashes minutes later.",
+            "6. The search client instance detects the closed transport and ends its session.",
+            "7. Host removes every search.* entry from its aggregated list.",
+            "8. Filesystem and tickets sessions continue completely unaffected."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice that steps six through eight in this trace involve only the search client instance and the host's aggregation logic, the filesystem and tickets client instances are never even invoked, they simply continue operating exactly as before, entirely unaware anything went wrong elsewhere."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Common Mistakes in Multi-Server Architecture",
+          "id": "msa-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Sharing one client instance or session across multiple servers instead of giving each its own.",
+            "Merging tool lists without namespacing, letting one server's tool silently shadow another's.",
+            "Forgetting to strip the host's namespace prefix before sending the actual request to a server.",
+            "Letting one server's failure take down or block requests to unrelated healthy servers.",
+            "Assuming every connected server supports the same capabilities without checking each one individually."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Many of these mistakes only show up once a deployment scales past a single test server, which is exactly why it is worth designing for multiple servers, and the collisions and partial failures they bring, from the very first implementation rather than retrofitting it later."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "18. Practice: Design a Namespacing Scheme",
+          "id": "msa-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Given three servers, docs, calendar, and mail, each exposing a tool called search, design a namespacing scheme for the aggregated tool list, then write the routing function that takes a namespaced name from a model's tool call and dispatches it to the correct underlying client."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Aggregated list your host would present\n[\"docs.search\", \"calendar.search\", \"mail.search\", \"docs.read_file\", ...]\n\n# Your routing function\ndef route(namespaced_name, arguments):\n    server_id, tool_name = namespaced_name.split(\".\", 1)\n    return clients[server_id].call_tool(tool_name, arguments)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "As a follow-up, consider what your scheme should do if a fourth server is added later with the identifier docs2, and whether your separator choice and uniqueness check from earlier in this lesson would catch a conflicting or ambiguous identifier before it caused any real routing errors."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "msa-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A host talking to many servers keeps them strictly independent, one client instance and one session per server, and solves the resulting name collisions by namespacing its aggregated view rather than by changing anything about how individual servers register their tools, resources, or prompts."
+        },
+        {
+          "type": "paragraph",
+          "text": "This closes out the MCP Architecture module. The final lesson, Capability Negotiation, looks closely at the negotiation process itself introduced briefly back in earlier lessons, how declared capabilities are actually compared and matched, and what happens when a client and server disagree."
+        }
+      ]
+    }
+  ]
+}

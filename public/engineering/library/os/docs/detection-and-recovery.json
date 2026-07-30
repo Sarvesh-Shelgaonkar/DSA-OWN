@@ -1,0 +1,384 @@
+{
+  "title": "Detection & Recovery",
+  "slug": "detection-and-recovery",
+  "content": [
+    {
+      "id": "detection-and-recovery",
+      "title": "Detection & Recovery",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "Detection and recovery is the fourth major strategy for dealing with deadlock, and it takes a completely different attitude from prevention and avoidance. Instead of paying an ongoing cost to stop deadlock from ever happening, the system simply lets processes run freely, checks from time to time whether a deadlock has actually occurred, and only takes action when one is found."
+        },
+        {
+          "type": "paragraph",
+          "content": "This chapter covers the philosophy behind that tradeoff, the Wait For Graph used to detect a deadlock, when detection runs in practice, the two families of recovery action, how a victim process is chosen, the starvation risk that comes with picking victims carelessly, and how this strategy compares to prevention and avoidance overall."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408658949-518884100.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408658949-518884100.png",
+          "alt": "detection-and-recovery",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408658949-518884100.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Philosophy: Let It Run, Check, Recover",
+          "text": "1. The Philosophy: Let It Run, Check, Recover"
+        },
+        {
+          "type": "paragraph",
+          "content": "Prevention and avoidance both pay a price on every single resource request. Prevention restricts how programs are allowed to request resources in the first place, and avoidance runs a safety check before every grant. Detection and recovery refuses to pay that price up front. It grants requests immediately, with no restriction and no safety check, and accepts that a deadlock might occasionally form as a result."
+        },
+        {
+          "type": "paragraph",
+          "content": "What it adds instead is a periodic or reactive check for deadlock, plus a plan for what to do if one is ever found. The bet is straightforward: the everyday cost of checking now and then, plus the occasional cost of recovering when a deadlock is actually caught, is lower than the constant overhead prevention or avoidance would impose on every request, all the time."
+        },
+        {
+          "type": "note",
+          "title": "In one sentence",
+          "content": "Detection and recovery trades a small, occasional risk of needing to recover from a real deadlock for much lower everyday overhead compared to constantly preventing or avoiding one."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Do not pay for safety you rarely need. Let the system run, watch for trouble, and clean up on the rare occasion trouble actually shows up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. When This Strategy Makes Practical Sense",
+          "text": "2. When This Strategy Makes Practical Sense"
+        },
+        {
+          "type": "paragraph",
+          "content": "Detection and recovery is not the right choice everywhere. It fits systems where deadlocks are genuinely believed to be rare, so the everyday cost of checking plus the occasional cost of recovering stays lower than what prevention or avoidance would demand on every request. If deadlocks were frequent, the recovery cost would pile up and this strategy would stop paying off."
+        },
+        {
+          "type": "paragraph",
+          "content": "It also fits systems where resource requests are unpredictable or come from many independent programs, which makes prevention rules and avoidance style advance claims awkward to enforce in the first place. Database systems are the classic example: transactions are written by many different application teams, request patterns are not known ahead of time, and deadlocks, while real, are uncommon enough that periodic detection is cheaper than restricting every transaction upfront."
+        },
+        {
+          "type": "list",
+          "content": "[\"Deadlocks are expected to be rare, not a routine occurrence.\",\"Resource requests are hard to predict in advance, so avoidance style claims are impractical.\",\"Occasionally losing or rolling back a small amount of work is an acceptable cost.\",\"The system already has some way to identify and safely terminate or roll back a process.\"]",
+          "items": [
+            "Deadlocks are expected to be rare, not a routine occurrence.",
+            "Resource requests are hard to predict in advance, so avoidance style claims are impractical.",
+            "Occasionally losing or rolling back a small amount of work is an acceptable cost.",
+            "The system already has some way to identify and safely terminate or roll back a process."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Database management systems are the most common real world users of this strategy in practice, since transactions come from many independent clients and applications, request patterns are effectively impossible to predict in advance, and deadlocks, though real, stay infrequent enough that periodic detection ends up cheaper than restricting every transaction upfront."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Detecting a Deadlock: The Wait For Graph",
+          "text": "3. Detecting a Deadlock: The Wait For Graph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Detection needs a way to look at the current state of the system and decide, definitively, whether a deadlock exists right now. The tool for that is the Wait For Graph, a simplified version of the full Resource Allocation Graph covered in its own sibling topic. The Wait For Graph keeps only process to process edges and drops the resource nodes entirely."
+        },
+        {
+          "type": "paragraph",
+          "content": "An edge drawn from process A to process B means A is currently waiting for a resource that process B currently holds. This single fact, who is waiting on whom, is all the graph needs to capture, because it is exactly the information a cycle check needs."
+        },
+        {
+          "type": "heading3",
+          "content": "Cycle equals deadlock",
+          "text": "Cycle equals deadlock"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once the Wait For Graph is built, detecting deadlock becomes a pure graph problem: deadlock exists in the system if and only if the graph contains a cycle. A path that starts at some process and, by following wait for edges, eventually returns to that same process means every process on that path is stuck waiting on the next one forever, with no way out."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Resource Allocation Graph\",\"Wait For Graph\"],\"rows\":[[\"Node types\",\"Both process nodes and resource nodes\",\"Process nodes only\"],[\"Edge meaning\",\"Requests a resource, or a resource is assigned to a process\",\"One process is waiting on a resource another process holds\"],[\"Deadlock test\",\"More involved, depends on how many instances each resource has\",\"Simple: deadlock exists exactly when a cycle exists\"],[\"Best used for\",\"Modeling the full resource state, used heavily in avoidance\",\"A fast, focused check dedicated purely to detection\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "In one sentence",
+          "content": "Draw an edge from A to B whenever A waits for a resource B holds. If following those edges ever leads back to where you started, the processes on that path are deadlocked."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659196-816765630.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659196-816765630.png",
+          "alt": "Cycle equals deadlock",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659196-816765630.png"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659197-4812995.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659197-4812995.png",
+          "alt": "Cycle equals deadlock",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659197-4812995.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Building the graph and checking it for a cycle can both be done with a simple depth first search. Each process is visited once, its outgoing wait for edges are followed, and if the search ever reaches a node that is still on the current path, a cycle, and therefore a deadlock, has been found."
+        },
+        {
+          "type": "code",
+          "content": "// Detect a cycle in the Wait For Graph using depth first search.\n// visiting holds nodes on the current path being explored right now.\n// visited holds nodes that are fully explored and already cleared.\nfunction hasCycle(graph) {\n  const visiting = new Set();\n  const visited = new Set();\n\n  function dfs(node) {\n    if (visiting.has(node)) return true;   // back edge found, a cycle exists\n    if (visited.has(node)) return false;   // already cleared, nothing here\n    visiting.add(node);\n    for (const neighbor of graph[node]) {\n      if (dfs(neighbor)) return true;\n    }\n    visiting.delete(node);\n    visited.add(node);\n    return false;\n  }\n\n  for (const node of Object.keys(graph)) {\n    if (dfs(node)) return true;   // deadlock: some cycle exists in the graph\n  }\n  return false;   // no cycle anywhere, the system is not deadlocked\n}",
+          "code": "// Detect a cycle in the Wait For Graph using depth first search.\n// visiting holds nodes on the current path being explored right now.\n// visited holds nodes that are fully explored and already cleared.\nfunction hasCycle(graph) {\n  const visiting = new Set();\n  const visited = new Set();\n\n  function dfs(node) {\n    if (visiting.has(node)) return true;   // back edge found, a cycle exists\n    if (visited.has(node)) return false;   // already cleared, nothing here\n    visiting.add(node);\n    for (const neighbor of graph[node]) {\n      if (dfs(neighbor)) return true;\n    }\n    visiting.delete(node);\n    visited.add(node);\n    return false;\n  }\n\n  for (const node of Object.keys(graph)) {\n    if (dfs(node)) return true;   // deadlock: some cycle exists in the graph\n  }\n  return false;   // no cycle anywhere, the system is not deadlocked\n}",
+          "codes": {
+            "javascript": "// Detect a cycle in the Wait For Graph using depth first search.\n// visiting holds nodes on the current path being explored right now.\n// visited holds nodes that are fully explored and already cleared.\nfunction hasCycle(graph) {\n  const visiting = new Set();\n  const visited = new Set();\n\n  function dfs(node) {\n    if (visiting.has(node)) return true;   // back edge found, a cycle exists\n    if (visited.has(node)) return false;   // already cleared, nothing here\n    visiting.add(node);\n    for (const neighbor of graph[node]) {\n      if (dfs(neighbor)) return true;\n    }\n    visiting.delete(node);\n    visited.add(node);\n    return false;\n  }\n\n  for (const node of Object.keys(graph)) {\n    if (dfs(node)) return true;   // deadlock: some cycle exists in the graph\n  }\n  return false;   // no cycle anywhere, the system is not deadlocked\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. A Worked Example: Building a Wait For Graph",
+          "text": "4. A Worked Example: Building a Wait For Graph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consider four processes, P1 through P4, and three resources, R1 through R3, each with a single instance. P1 currently holds R1, P2 currently holds R2, and P3 currently holds R3. Now suppose every process asks for one more resource that it does not yet have."
+        },
+        {
+          "type": "list",
+          "content": "[\"P1 holds R1 and requests R2, which P2 currently holds, so an edge is drawn from P1 to P2.\",\"P2 holds R2 and requests R3, which P3 currently holds, so an edge is drawn from P2 to P3.\",\"P3 holds R3 and requests R1, which P1 currently holds, so an edge is drawn from P3 to P1.\",\"P4 holds nothing yet and requests R2, which P2 currently holds, so an edge is drawn from P4 to P2.\",\"Follow the arrows starting at P1: P1 to P2, P2 to P3, P3 back to P1. That path returns to its own starting point, which means P1, P2 and P3 form a cycle and are deadlocked.\",\"P4 points into that cycle but is not part of it. P4 will also stay stuck forever, since P2 will never free R2, but by the strict definition only P1, P2 and P3 are deadlocked with each other.\"]",
+          "items": [
+            "P1 holds R1 and requests R2, which P2 currently holds, so an edge is drawn from P1 to P2.",
+            "P2 holds R2 and requests R3, which P3 currently holds, so an edge is drawn from P2 to P3.",
+            "P3 holds R3 and requests R1, which P1 currently holds, so an edge is drawn from P3 to P1.",
+            "P4 holds nothing yet and requests R2, which P2 currently holds, so an edge is drawn from P4 to P2.",
+            "Follow the arrows starting at P1: P1 to P2, P2 to P3, P3 back to P1. That path returns to its own starting point, which means P1, P2 and P3 form a cycle and are deadlocked.",
+            "P4 points into that cycle but is not part of it. P4 will also stay stuck forever, since P2 will never free R2, but by the strict definition only P1, P2 and P3 are deadlocked with each other."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659197-77235671.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659197-77235671.png",
+          "alt": "A Worked Example: Building a Wait For Graph",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659197-77235671.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This distinction matters for recovery too. A process that is not on the cycle itself can still be permanently stuck if it depends on a process that is inside the cycle, so recovery usually has to consider these dependent processes as well, not only the ones sitting directly on the cycle."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. How Detection Actually Runs in Practice",
+          "text": "5. How Detection Actually Runs in Practice"
+        },
+        {
+          "type": "paragraph",
+          "content": "Knowing how to detect a cycle is only half the picture. A real system also has to decide when to actually run that check, since running it constantly would erase the whole point of avoiding constant overhead. Two broad triggers are used in practice, and many systems combine both."
+        },
+        {
+          "type": "heading3",
+          "content": "Periodic detection",
+          "text": "Periodic detection"
+        },
+        {
+          "type": "paragraph",
+          "content": "The simplest approach runs the detection algorithm on a fixed schedule, for example once every few seconds or once every few minutes, regardless of what else is happening. This is predictable and easy to reason about, though the schedule itself is a tradeoff: too frequent and the overhead starts to matter again, too infrequent and a deadlock can sit undetected for a long time."
+        },
+        {
+          "type": "heading3",
+          "content": "Reactive detection",
+          "text": "Reactive detection"
+        },
+        {
+          "type": "paragraph",
+          "content": "A more targeted approach waits for a symptom before bothering to check at all. The classic symptom is CPU utilization dropping unexpectedly while many processes remain not runnable, since a healthy system with idle processes should either be lightly loaded or have those processes making progress, not stuck. That combination, an idle processor plus a pile of blocked processes, is a strong hint that something has stopped moving."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Trigger\",\"How it works\",\"Best fit\"],\"rows\":[[\"Periodic\",\"Detection algorithm runs on a fixed schedule, timer driven\",\"Predictable systems where a bounded detection delay is acceptable\"],[\"Reactive\",\"Detection runs when a symptom, such as falling CPU utilization with many blocked processes, is noticed\",\"Systems that want to avoid detection overhead when nothing looks wrong\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659197-105385903.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659197-105385903.png",
+          "alt": "Reactive detection",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659197-105385903.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Recovery Option One: Process Termination",
+          "text": "6. Recovery Option One: Process Termination"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once a cycle is confirmed, the system has to actually break it, and process termination is the blunt, direct way to do that. Killing a deadlocked process forces it to release every resource it was holding, which frees those resources for the other processes that were waiting on them."
+        },
+        {
+          "type": "heading3",
+          "content": "Kill all deadlocked processes at once",
+          "text": "Kill all deadlocked processes at once"
+        },
+        {
+          "type": "paragraph",
+          "content": "The simplest option kills every process on the cycle in one shot. This is fast and guarantees the deadlock is gone immediately, since none of the processes that were part of the cycle exist anymore to hold anything or wait on anything. The cost is that all the work those processes had done is thrown away at once, even processes that were close to finishing."
+        },
+        {
+          "type": "heading3",
+          "content": "Kill one process at a time",
+          "text": "Kill one process at a time"
+        },
+        {
+          "type": "paragraph",
+          "content": "A gentler option kills just one process from the cycle, then reruns the detection algorithm to check whether that was enough to break the deadlock. If the remaining processes are no longer stuck in a cycle, recovery stops there and the rest of their work survives. If they are still deadlocked, another process is killed and the check runs again."
+        },
+        {
+          "type": "paragraph",
+          "content": "This preserves more completed work overall, since it only sacrifices as many processes as strictly necessary. The cost is that it is slower and more expensive to run, since detection has to be repeated after every single kill until the cycle is actually gone."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-487042363.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-487042363.png",
+          "alt": "Kill one process at a time",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-487042363.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Recovery Option Two: Resource Preemption",
+          "text": "7. Recovery Option Two: Resource Preemption"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of killing a process outright, resource preemption forcibly takes a resource away from one of the deadlocked processes and hands it to another process in the cycle. If the resource being taken is exactly the one the receiving process was waiting for, that process can now proceed, and the cycle breaks without destroying an entire process."
+        },
+        {
+          "type": "paragraph",
+          "content": "This sounds cleaner than termination, but it comes with real complications that termination does not have. The system still has to choose which process loses its resource, which is the same victim selection problem covered in the next section. It also has to decide what happens to the process that lost the resource partway through its work."
+        },
+        {
+          "type": "paragraph",
+          "content": "The usual answer is to roll that process back to some earlier safe point, often a checkpoint taken before it acquired the resource, so it can retry cleanly later rather than continuing in a corrupted state. Rolling back safely requires the system to have been keeping checkpoints in the first place, which is not free, and is one more reason preemption is more complex to implement correctly than plain termination."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-473375931.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-473375931.png",
+          "alt": "Recovery Option Two: Resource Preemption",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-473375931.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Choosing a Victim and the Risk of Starvation",
+          "text": "8. Choosing a Victim and the Risk of Starvation"
+        },
+        {
+          "type": "paragraph",
+          "content": "Both termination and preemption need the same underlying decision: out of all the deadlocked processes, which one gets picked as the victim. This choice matters because a bad rule can waste far more work than necessary, or worse, keep punishing the same process forever."
+        },
+        {
+          "type": "heading3",
+          "content": "Common selection factors",
+          "text": "Common selection factors"
+        },
+        {
+          "type": "paragraph",
+          "content": "Real systems weigh several factors together rather than picking arbitrarily. How long the process has already run matters, since killing a process that just started wastes far less completed work than killing one that has been running for hours. How many resources it holds and how many more it still needs both matter too, since a process holding many resources frees more of them if chosen, while a process needing many more resources is less likely to finish soon anyway."
+        },
+        {
+          "type": "paragraph",
+          "content": "Whether the process is interactive or batch matters as well. Killing an interactive process is immediately visible and disruptive to whoever is sitting in front of it, while a batch job running quietly in the background can often be restarted with far less disruption to a real user."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Factor\",\"Why it matters\"],\"rows\":[[\"Time already spent running\",\"Killing a newer process wastes less completed work than killing a long running one\"],[\"Number of resources currently held\",\"Preempting a process holding many resources frees more of the deadlock at once\"],[\"Number of resources still needed\",\"A process that still needs a lot more is less likely to finish soon regardless\"],[\"Interactive versus batch\",\"Killing an interactive process is far more visible and disruptive to a real user\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-769049377.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-769049377.png",
+          "alt": "Common selection factors",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-769049377.png"
+        },
+        {
+          "type": "heading3",
+          "content": "The starvation risk",
+          "text": "The starvation risk"
+        },
+        {
+          "type": "paragraph",
+          "content": "Resource preemption has a specific danger that plain termination usually does not: if the same criteria keep pointing at the same unlucky process every single time a deadlock is detected, that process can keep losing its resources over and over and may never actually complete. This is starvation, and it is just as real a failure as the original deadlock, only slower and easier to miss."
+        },
+        {
+          "type": "paragraph",
+          "content": "The standard fix is to factor how many times a process has already been preempted into its victim score, so a process that keeps getting picked becomes steadily less attractive to pick again. That way no single process is chosen as the victim forever, and every process eventually gets a clear run at finishing."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-860630081.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-860630081.png",
+          "alt": "The starvation risk",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408659198-860630081.png"
+        },
+        {
+          "type": "note",
+          "title": "The fix in one line",
+          "content": "Track how many times each process has already been preempted, and weigh that count into future victim selection so no single process is picked forever."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Comparing the Three Strategies and Common Mistakes",
+          "text": "9. Comparing the Three Strategies and Common Mistakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Prevention, avoidance, and detection and recovery are the three main strategies for dealing with deadlock covered across this module, and each sits at a different point on the tradeoff between everyday overhead and how strongly it guarantees a deadlock free system."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Strategy\",\"Everyday overhead\",\"Guarantee strength\",\"Typical real world usage\"],\"rows\":[[\"Prevention\",\"Constant, built into how resource requests are structured\",\"Strong: deadlock structurally cannot form\",\"Systems where correctness must be airtight and request patterns are simple enough to restrict\"],[\"Avoidance\",\"Constant, a safety check runs before every resource grant\",\"Strong: every reachable state is a safe state\",\"Systems that know resource needs in advance, such as the Bankers Algorithm setting\"],[\"Detection and recovery\",\"Low day to day, cost is concentrated in occasional recovery\",\"Weaker: deadlock is allowed to happen, then cleaned up\",\"Database systems and other environments where deadlocks are rare and recovery is affordable\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "No single strategy is universally correct. The right choice depends on how often deadlocks are actually expected, how expensive recovery is when one does happen, and how predictable resource requests are in the first place."
+        },
+        {
+          "type": "list",
+          "content": "[\"Running detection too infrequently, which lets a real deadlock sit undetected for a long time, quietly wasting resources and hurting throughput before anyone notices.\",\"Always choosing a victim with the same fixed rule, such as always killing the newest process, without factoring in prior preemptions, which opens the door to starvation.\",\"Treating detection and recovery as free just because it has low everyday overhead, when the occasional recovery cost can be significant if deadlocks turn out to be more common than expected.\"]",
+          "items": [
+            "Running detection too infrequently, which lets a real deadlock sit undetected for a long time, quietly wasting resources and hurting throughput before anyone notices.",
+            "Always choosing a victim with the same fixed rule, such as always killing the newest process, without factoring in prior preemptions, which opens the door to starvation.",
+            "Treating detection and recovery as free just because it has low everyday overhead, when the occasional recovery cost can be significant if deadlocks turn out to be more common than expected."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Interview angle",
+          "content": "Be ready to explain the Wait For Graph cycle detection mechanism precisely, an edge from A to B means A waits on a resource B holds, and a cycle means deadlock, and to discuss at least one concrete recovery tradeoff, such as killing all processes at once versus killing one at a time, or the starvation risk in resource preemption."
+        }
+      ]
+    }
+  ]
+}

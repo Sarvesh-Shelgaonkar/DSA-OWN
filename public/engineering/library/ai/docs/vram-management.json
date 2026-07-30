@@ -1,0 +1,251 @@
+{
+  "slug": "vram-management",
+  "title": "VRAM Management",
+  "content": [
+    {
+      "id": "vram-management",
+      "title": "VRAM Management",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "VRAM management is the practice of understanding and deliberately controlling exactly what consumes GPU memory during a fine-tuning run, model weights, optimizer state, activations, and gradients, so a training configuration actually fits within available hardware."
+        },
+        {
+          "type": "paragraph",
+          "text": "This topic pulls together memory related concepts scattered across earlier modules, quantization, PEFT, gradient accumulation, and gradient checkpointing, into one unified picture of where GPU memory actually goes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What VRAM Actually Holds During Training",
+          "id": "vm-what-it-holds"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784625399386-520778474.png",
+          "alt": "Model weights, optimizer state, activations, and gradients all draw from the VRAM budget",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "At any point during training, GPU memory is shared across four main consumers, the model weights themselves, the optimizer state covered in the Optimizers module, the activations produced during the forward pass, and the gradients computed during the backward pass, all competing for the same limited VRAM budget."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The Four Main VRAM Consumers",
+          "id": "vm-four-main-consumers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784625413628-50513711.png",
+          "alt": "Weights, gradients, optimizer state, and activations each take their own share",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Understanding these four consumers individually, rather than treating VRAM usage as one opaque number, is what makes it possible to diagnose exactly which part of a training configuration is causing an out of memory error and target the right fix."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Model Weights, The Baseline Cost",
+          "id": "vm-model-weights-baseline"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784625416534-22421713.png",
+          "alt": "Frozen base weights represent a fixed baseline memory cost",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Model weights represent the most predictable VRAM cost, directly determined by parameter count and precision, covered in the earlier Quantization Basics topic, a 7 billion parameter model at full precision needs roughly 28 gigabytes just for weights, a figure that shrinks dramatically once quantized."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Optimizer State, Often the Largest Consumer",
+          "id": "vm-optimizer-state-largest"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784625419847-689478909.png",
+          "alt": "Adam state at twice the trainable parameters is compared against minimal SGD state",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "As covered in the Optimizer States topic, Adam and AdamW can require roughly twice as much memory as the trainable parameters themselves, making optimizer choice, and whether PEFT is used to reduce the trainable parameter count in the first place, a major lever for controlling this specific consumer."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# A rough VRAM budget estimate, conceptually\ndef estimated_vram_gb(weight_gb, optimizer_multiplier, activation_gb):\n    optimizer_gb = weight_gb * optimizer_multiplier\n    return weight_gb + optimizer_gb + activation_gb"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Activations, Growing With Batch Size and Sequence Length",
+          "id": "vm-activations-growing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784625423748-709419251.png",
+          "alt": "A larger batch and a longer sequence both mean more activation memory",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Unlike weights and optimizer state, which stay roughly fixed once a model and method are chosen, activation memory grows directly with batch size and sequence length, covered in the Mini-Batches topic, making it the consumer most directly under a practitioner control through configuration choices alone."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"VRAM Consumer\",\"Primarily Determined By\"],\"rows\":[[\"Model weights\",\"Parameter count and precision\"],[\"Optimizer state\",\"Trainable parameter count and optimizer choice\"],[\"Activations\",\"Batch size and sequence length\"],[\"Gradients\",\"Trainable parameter count\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Gradients, One More Copy to Account For",
+          "id": "vm-gradients-one-more-copy"
+        },
+        {
+          "type": "paragraph",
+          "text": "Gradients require one value per trainable parameter, similar in scale to the parameters themselves, which is another reason PEFT methods like LoRA, training far fewer parameters, reduce not just optimizer state but this gradient memory as well, compounding the savings across multiple VRAM consumers at once."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Techniques That Reduce Each Consumer",
+          "id": "vm-techniques-reduce-consumers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784625425755-274803193.png",
+          "alt": "Quantization reduces weight memory, PEFT reduces optimizer state, gradient checkpointing reduces activation memory",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Each VRAM consumer has its own dedicated reduction technique covered elsewhere in this course, quantization for weights, PEFT for optimizer state and gradients, and gradient checkpointing for activations, and combining all of them together is exactly what makes fine-tuning large models on limited GPUs, covered in the earlier module, practically possible."
+        },
+        {
+          "type": "note",
+          "title": "This topic is the unifying summary of memory techniques scattered across the course",
+          "content": "Nearly every memory saving technique covered in this course, quantization, LoRA, gradient checkpointing, gradient accumulation, Adafactor, targets one of these four specific VRAM consumers, and recognizing which one clarifies exactly why each technique helps."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Monitoring VRAM Usage in Practice",
+          "id": "vm-monitoring-in-practice"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784625428037-388742514.png",
+          "alt": "Monitoring during training catches problems early",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Actively watching GPU memory usage throughout a training run, rather than only discovering a problem when it crashes, lets a practitioner catch a creeping memory issue before it derails hours of training progress, the same proactive monitoring discipline covered in the earlier Training Large Models on Limited GPUs topic."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Planning a VRAM Budget Before Training",
+          "id": "vm-planning-budget-before-training"
+        },
+        {
+          "type": "paragraph",
+          "text": "Before launching a full training run, roughly estimating memory needs across all four consumers, weights, optimizer state, activations, and gradients, against available hardware helps catch a configuration that will not fit before wasting time on a run that fails partway through."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "vm-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "A team planning a fine-tuning run estimates their weights at 4 gigabytes after 4-bit quantization, their optimizer state at under 1 gigabyte since they are using LoRA with only a small number of trainable parameters, and their activation memory scaling with a chosen batch size and sequence length, confirming the whole configuration fits comfortably within their available 16 gigabyte GPU."
+        },
+        {
+          "type": "paragraph",
+          "text": "When they later try increasing sequence length substantially for a different task, their activation memory grows enough to exceed their budget, and understanding VRAM management lets them immediately identify activation memory, not weights or optimizer state, as the specific consumer that needs addressing, reaching for gradient checkpointing rather than guessing at an unrelated fix."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "vm-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Treating VRAM usage as one opaque number instead of breaking it down into its four main consumers",
+            "Applying a memory reduction technique that targets the wrong consumer for the actual bottleneck",
+            "Not accounting for activation memory growth when increasing batch size or sequence length",
+            "Skipping a rough VRAM budget estimate before launching a training run, discovering a mismatch only after it fails"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "vm-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "For a fine-tuning configuration you have in mind, model size, quantization level, PEFT method, batch size, and sequence length, sketch a rough estimate of how much VRAM each of the four consumers would need, and total them against a GPU memory size you are considering."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "vm-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "VRAM management means understanding exactly what consumes GPU memory during training, model weights, optimizer state, activations, and gradients, and recognizing which specific technique from earlier in this course, quantization, PEFT, or gradient checkpointing, targets which specific consumer, turning memory troubleshooting from guesswork into a targeted, understood process."
+        }
+      ]
+    }
+  ]
+}

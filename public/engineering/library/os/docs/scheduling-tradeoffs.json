@@ -1,0 +1,215 @@
+{
+  "title": "Scheduling Tradeoffs",
+  "slug": "scheduling-tradeoffs",
+  "content": [
+    {
+      "id": "scheduling-tradeoffs",
+      "title": "Scheduling Tradeoffs",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "There is no single best CPU scheduling algorithm. FCFS, SJF and SRTF, Priority Scheduling, and Round Robin, every algorithm covered in this module optimizes for something at the expense of something else. Choosing the right one for a given system means understanding these tradeoffs explicitly, not memorizing which algorithm sounds best on paper."
+        },
+        {
+          "type": "paragraph",
+          "content": "This chapter does not introduce a new scheduling algorithm. Instead it steps back and looks at the four algorithms already covered, FCFS, SJF and SRTF, Priority Scheduling, and Round Robin, side by side. It builds a full comparison table, reconnects each algorithm to the scheduling goals introduced at the very start of this module, works through the same set of processes under two different algorithms to make the tradeoff concrete, explains why real operating systems blend several algorithms together instead of picking just one, and closes with a practical framework for choosing an algorithm given a described scenario."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Comprehensive Comparison",
+          "text": "1. The Comprehensive Comparison"
+        },
+        {
+          "type": "paragraph",
+          "content": "The table below places FCFS, SJF and SRTF, Priority Scheduling, and Round Robin next to each other across the metrics that matter most: how long processes wait on average, how quickly they get their first response from the CPU, how fairly the CPU is shared, how exposed the algorithm is to starvation, how hard it is to implement, and the kind of environment each one fits best."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Algorithm\",\"Average Waiting Time\",\"Response Time\",\"Fairness\",\"Starvation Risk\",\"Complexity to Implement\",\"Best Suited Environment\"],\"rows\":[[\"FCFS\",\"Highest on average, badly hurt by the convoy effect whenever burst times vary\",\"Poor, a process can sit behind an arbitrarily long process ahead of it\",\"Fair only in the narrow sense of arrival order, not in outcome\",\"None, every process eventually runs since the queue only moves forward\",\"Very low, essentially a plain queue\",\"Batch systems where jobs run in bulk and arrival order fairness matters more than speed\"],[\"SJF / SRTF\",\"Lowest possible on average, provably optimal among non-preemptive and preemptive algorithms respectively\",\"Poor for long processes, which can be repeatedly pushed back or preempted by shorter arrivals\",\"Low, systematically favors short processes over long ones\",\"High for long processes without aging\",\"Moderate to high, needs burst times known or estimated in advance, SRTF also needs preemption checks on every arrival\",\"Batch and offline processing where burst times are predictable and overall throughput matters more than individual fairness\"],[\"Priority Scheduling\",\"Depends entirely on the priority assignment, can be excellent for high priority work and poor overall\",\"Excellent for high priority processes, poor for low priority ones\",\"Low by design, importance decides order, not arrival time or duration\",\"High for low priority processes unless aging is used\",\"Moderate, needs a priority assignment scheme plus optional aging logic\",\"Systems with genuinely unequal process importance, such as real time systems or mixed workloads with critical background tasks\"],[\"Round Robin\",\"Higher than SJF on average, since every process is interrupted repeatedly rather than running straight through\",\"Bounded and predictable, no process waits longer than one time quantum multiplied by the number of processes ahead of it\",\"High, every process gets an equal, regularly recurring share of the CPU\",\"None, the circular queue guarantees every process eventually gets a turn\",\"Low to moderate, needs a circular queue and a timer for quantum expiry\",\"Interactive and time sharing systems, such as a desktop operating system, where responsiveness matters more than raw average waiting time\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Reading this table correctly",
+          "content": "No single row wins on every column, and that is the entire point of this chapter. SJF wins on average waiting time. Round Robin wins on response time and fairness. Priority Scheduling wins when some work is genuinely more important than other work. FCFS wins only on simplicity."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Reconnecting to the Five Scheduling Goals",
+          "text": "2. Reconnecting to the Five Scheduling Goals"
+        },
+        {
+          "type": "paragraph",
+          "content": "The opening topic of this module, Why Scheduling is Needed, introduced five goals every scheduler is judged against: maximizing CPU utilization, maximizing throughput, minimizing turnaround time, minimizing waiting time, and minimizing response time. Every algorithm in this module leans toward some of these goals and away from others, and it is worth walking through each goal explicitly rather than leaving the connection implicit."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Goal\",\"Which algorithm tends to optimize it, and why\"],\"rows\":[[\"CPU utilization\",\"All four algorithms can drive utilization high as long as there is enough ready work available. FCFS and non-preemptive SJF waste the least time on context switches, which helps utilization on CPU bound batch workloads. Round Robin gives some utilization back to context switch overhead if the time quantum is set too small relative to switch cost.\"],[\"Throughput\",\"SJF, and especially SRTF, tend to maximize throughput. Clearing short jobs out of the ready queue quickly means more processes finish per unit of time, since a long process is not sitting in front blocking everything behind it.\"],[\"Turnaround time\",\"SJF is optimal among non-preemptive algorithms and SRTF is optimal among preemptive algorithms for minimizing average turnaround time. Turnaround time equals waiting time plus burst time, so whatever minimizes waiting time also minimizes turnaround time for the same set of processes.\"],[\"Waiting time\",\"SJF and SRTF lead here, provably so. Round Robin and FCFS both tend to produce higher average waiting time than SJF on the same workload, since neither one lets short jobs cut ahead of longer ones already running or already queued.\"],[\"Response time\",\"Round Robin optimizes this goal directly and deliberately. No process waits longer than roughly one time quantum multiplied by the number of processes ahead of it before getting some CPU time, which is exactly why Round Robin is the standard choice for interactive systems.\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice the pattern. SJF and SRTF cluster around throughput, turnaround time, and waiting time, the goals that describe overall system efficiency. Round Robin clusters around response time, the goal that describes what an individual interactive process experiences moment to moment. Priority Scheduling optimizes turnaround and response time for whichever processes the system decides matter most, at the direct expense of whichever processes it decides matter least. No algorithm optimizes all five goals at once, because several of the goals pull in opposite directions."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Fundamental Tension: Throughput Against Fairness",
+          "text": "3. The Fundamental Tension: Throughput Against Fairness"
+        },
+        {
+          "type": "paragraph",
+          "content": "Underneath the comparison table sits one recurring tension that explains almost every design decision in this module. On one side are throughput oriented algorithms, most clearly SJF and SRTF, which minimize average waiting time by always favoring whichever process finishes fastest. On the other side are fairness and responsiveness oriented algorithms, most clearly Round Robin, which guarantee every process a bounded, predictable share of the CPU regardless of how long it needs in total."
+        },
+        {
+          "type": "blockQuote",
+          "content": "SJF minimizes average waiting time but risks starvation and requires knowing burst times in advance. Round Robin guarantees bounded response time and treats every process fairly, at the cost of a higher average waiting time than SJF would produce on the same workload."
+        },
+        {
+          "type": "note",
+          "title": "Why you cannot have both at once",
+          "content": "SJF achieves its low average waiting time precisely by letting some processes, the long ones, wait more so that many other processes, the short ones, wait less. Round Robin refuses to let any single process wait an unbounded amount of time, and pays for that guarantee with a higher average across the board. Optimizing the average and guaranteeing a bound on the worst case are, in a real sense, opposing goals."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. A Worked Example: The Same Processes, Two Algorithms",
+          "text": "4. A Worked Example: The Same Processes, Two Algorithms"
+        },
+        {
+          "type": "paragraph",
+          "content": "Numbers make this concrete faster than any amount of prose. The SJF and SRTF chapter worked through four processes, P1, P2, P3, and P4, all arriving at time zero with burst times of 6, 8, 7, and 3 respectively. Under non-preemptive SJF, the scheduler simply sorts them by burst time and runs P4, then P1, then P3, then P2."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Process\",\"Burst Time\",\"Completion Time\",\"Turnaround Time\",\"Waiting Time\"],\"rows\":[[\"P4\",\"3\",\"3\",\"3\",\"0\"],[\"P1\",\"6\",\"9\",\"9\",\"3\"],[\"P3\",\"7\",\"16\",\"16\",\"9\"],[\"P2\",\"8\",\"24\",\"24\",\"16\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Average waiting time under SJF works out to zero plus three plus nine plus sixteen, divided by four, which is seven time units. Now run the exact same four processes, same arrival times, same burst times, through Round Robin instead, using a time quantum of four."
+        },
+        {
+          "type": "code",
+          "content": "Round Robin Gantt chart, quantum = 4\n\n0    4    8    12   15   17   21   24\n|-P1-|-P2-|-P3-|-P4-|P1|-P2-|-P3-|\n\nP1 runs 0 to 4   (uses 4 of 6,  2 remaining, requeued)\nP2 runs 4 to 8   (uses 4 of 8,  4 remaining, requeued)\nP3 runs 8 to 12  (uses 4 of 7,  3 remaining, requeued)\nP4 runs 12 to 15 (uses remaining 3, finishes)\nP1 resumes 15 to 17 (uses remaining 2, finishes)\nP2 resumes 17 to 21 (uses remaining 4, finishes)\nP3 resumes 21 to 24 (uses remaining 3, finishes)",
+          "code": "Round Robin Gantt chart, quantum = 4\n\n0    4    8    12   15   17   21   24\n|-P1-|-P2-|-P3-|-P4-|P1|-P2-|-P3-|\n\nP1 runs 0 to 4   (uses 4 of 6,  2 remaining, requeued)\nP2 runs 4 to 8   (uses 4 of 8,  4 remaining, requeued)\nP3 runs 8 to 12  (uses 4 of 7,  3 remaining, requeued)\nP4 runs 12 to 15 (uses remaining 3, finishes)\nP1 resumes 15 to 17 (uses remaining 2, finishes)\nP2 resumes 17 to 21 (uses remaining 4, finishes)\nP3 resumes 21 to 24 (uses remaining 3, finishes)",
+          "codes": {
+            "text": "Round Robin Gantt chart, quantum = 4\n\n0    4    8    12   15   17   21   24\n|-P1-|-P2-|-P3-|-P4-|P1|-P2-|-P3-|\n\nP1 runs 0 to 4   (uses 4 of 6,  2 remaining, requeued)\nP2 runs 4 to 8   (uses 4 of 8,  4 remaining, requeued)\nP3 runs 8 to 12  (uses 4 of 7,  3 remaining, requeued)\nP4 runs 12 to 15 (uses remaining 3, finishes)\nP1 resumes 15 to 17 (uses remaining 2, finishes)\nP2 resumes 17 to 21 (uses remaining 4, finishes)\nP3 resumes 21 to 24 (uses remaining 3, finishes)"
+          }
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Process\",\"Burst Time\",\"Completion Time\",\"Turnaround Time\",\"Waiting Time\"],\"rows\":[[\"P1\",\"6\",\"17\",\"17\",\"11\"],[\"P2\",\"8\",\"21\",\"21\",\"13\"],[\"P3\",\"7\",\"24\",\"24\",\"17\"],[\"P4\",\"3\",\"15\",\"15\",\"12\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Average waiting time under Round Robin works out to eleven plus thirteen plus seventeen plus twelve, divided by four, which is thirteen point two five time units. That is almost double the average waiting time SJF produced on the identical set of processes."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Metric\",\"SJF (non-preemptive)\",\"Round Robin (quantum of 4)\"],\"rows\":[[\"Average waiting time\",\"7 time units\",\"13.25 time units\"],[\"Average turnaround time\",\"13 time units\",\"19.25 time units\"],[\"Time before the last served process gets any CPU at all\",\"16 time units, for P2\",\"12 time units, for P4\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "The efficiency gain SJF shows here comes from a specific choice: P2, the longest process, is made to wait a full sixteen time units before it ever touches the CPU, so that the three shorter processes ahead of it can finish quickly. Round Robin refuses to make that choice. Every process gets a slice of the CPU within the first twelve time units in this example, and none of them, however long its total burst, is ever completely shut out while shorter processes cut in front of it repeatedly. The cost of that guarantee is a higher average wait across the board."
+        },
+        {
+          "type": "note",
+          "title": "The concrete takeaway",
+          "content": "On this exact set of four processes, SJF averages 7 time units of waiting, Round Robin averages 13.25. SJF is more efficient on average. Round Robin is fairer and more predictable. Neither number is wrong. They are simply optimizing for different things, exactly as the comparison table in the first section of this chapter shows."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Why Real Systems Use Hybrid, Multilevel Approaches",
+          "text": "5. Why Real Systems Use Hybrid, Multilevel Approaches"
+        },
+        {
+          "type": "paragraph",
+          "content": "No production operating system actually runs one pure algorithm across every process on the machine. Real schedulers combine ideas from several of the algorithms in this module because real workloads are not uniform: a system runs interactive processes, batch processes, and system processes all at once, and each kind benefits from a different scheduling philosophy. The practical answer real systems reach for is called multilevel queue scheduling."
+        },
+        {
+          "type": "paragraph",
+          "content": "Multilevel queue scheduling splits the ready queue into several separate queues, typically grouped by process type, such as an interactive queue and a batch queue, and assigns each queue its own scheduling algorithm suited to that kind of work. An interactive queue might use Round Robin with a short quantum for fast response, while a batch queue behind it uses FCFS or a priority based scheme, since batch jobs do not need snappy responses. A fixed priority usually decides which queue gets attention first. Multilevel feedback queue scheduling goes a step further and lets processes move between queues based on their observed behavior: a process that keeps using its full time quantum without blocking looks CPU bound and gets demoted toward a lower priority, longer quantum queue meant for batch style work, while a process that blocks quickly for input or output looks interactive and gets promoted toward a high priority, short quantum queue that responds fast."
+        },
+        {
+          "type": "note",
+          "title": "Forward pointer",
+          "content": "The mechanics of multilevel feedback queues, how many levels real schedulers use, how demotion and promotion thresholds are tuned, and how specific production schedulers implement these ideas, are covered in the Real World Scheduler Overview topic later in this module. For now, the key idea is simply that combining algorithms across separate queues sidesteps the single algorithm tradeoff this chapter has been describing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. A Decision Framework for Choosing an Algorithm",
+          "text": "6. A Decision Framework for Choosing an Algorithm"
+        },
+        {
+          "type": "paragraph",
+          "content": "Given a description of a system rather than a bare list of algorithm names, the tradeoffs discussed so far turn into a practical decision. The table below is a starting framework, not a rigid rule."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"If the scenario is...\",\"Lean toward...\",\"Because...\"],\"rows\":[[\"Response time matters most, such as an interactive desktop system, a phone UI, or anything a human sits in front of and expects to feel instant\",\"Round Robin, or a multilevel feedback queue tuned like it\",\"It bounds how long any single process waits before getting some CPU time, which is what keeps a system feeling responsive\"],[\"Average throughput matters most and burst times are roughly predictable, such as an offline batch pipeline or a job queue processed overnight\",\"SJF or SRTF style approaches\",\"They provably minimize average waiting and turnaround time when burst times are known or reliably estimable in advance\"],[\"Some processes are genuinely more important than others, such as a real time control loop next to routine housekeeping work\",\"Priority Scheduling, with aging enabled\",\"It lets critical work precede or preempt routine work, while aging keeps low priority work from being starved forever\"],[\"The workload is a mix of interactive, batch, and system processes all running at once, which describes most general purpose operating systems\",\"A multilevel queue or multilevel feedback queue design\",\"It applies the right algorithm to each kind of work instead of forcing one algorithm to serve every kind of process equally badly\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "The common thread across every row of this framework is the same: pick the algorithm whose strengths line up with the metric that actually matters for that system, and be explicit about which metric that is."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Common Mistakes",
+          "text": "7. Common Mistakes"
+        },
+        {
+          "type": "heading3",
+          "content": "Claiming one algorithm is unconditionally better",
+          "text": "Claiming one algorithm is unconditionally better"
+        },
+        {
+          "type": "paragraph",
+          "content": "The single most common mistake, in coursework and in interviews alike, is saying that one algorithm is simply better than another without specifying what it is being measured against or what environment it is meant to run in. SJF is better than Round Robin at average waiting time. Round Robin is better than SJF at response time and starvation avoidance. Both statements are true at the same time. An answer that picks one algorithm as universally best has not actually understood the tradeoff, it has just memorized a name."
+        },
+        {
+          "type": "heading3",
+          "content": "Treating starvation risk as a free efficiency gain",
+          "text": "Treating starvation risk as a free efficiency gain"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is easy to look at SJF's optimal average waiting time and treat it as a pure win, forgetting that the efficiency comes at a real cost: a long process can be pushed back indefinitely by a steady stream of shorter arrivals. Starvation is not a theoretical footnote, it is the actual price paid for the average case improvement, and any honest comparison between algorithms has to weigh that cost against the gain rather than looking at average case numbers alone."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Where This Leaves Us",
+          "text": "8. Where This Leaves Us"
+        },
+        {
+          "type": "paragraph",
+          "content": "FCFS, SJF and SRTF, Priority Scheduling, and Round Robin are not four competing answers to the same question, they are four different answers to four different questions about what a scheduler should optimize. FCFS asks only about arrival order. SJF and SRTF ask what minimizes average waiting time. Priority Scheduling asks what matters most right now. Round Robin asks what keeps every process moving forward at a predictable pace. Understanding scheduling well means being able to name which question a given system actually needs answered, not memorizing a single favorite algorithm."
+        },
+        {
+          "type": "note",
+          "title": "Forward pointer",
+          "content": "The next step is seeing how these ideas play out in production. The Real World Scheduler Overview topic picks up exactly where this chapter leaves off and walks through how actual operating systems, including the Linux Completely Fair Scheduler and others, combine multilevel queues, dynamic priorities, and feedback between queues into scheduling systems that outperform any single pure algorithm covered in this module."
+        }
+      ]
+    }
+  ]
+}

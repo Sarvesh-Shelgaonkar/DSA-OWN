@@ -1,0 +1,483 @@
+{
+  "slug": "streaming",
+  "title": "Streaming",
+  "content": [
+    {
+      "id": "streaming",
+      "title": "Streaming",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Some operations take real time, generating a long report, processing a large file."
+        },
+        {
+          "type": "paragraph",
+          "text": "Waiting silently for one final response can feel broken, even when everything is working correctly."
+        },
+        {
+          "type": "paragraph",
+          "text": "Streaming solves this by letting a server send partial progress while the real work is still happening."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Streaming Is Not a Separate Message Type",
+          "id": "streaming-not-separate-message-type"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784556190568-801695779.png",
+          "alt": "A progress notification precedes a final response",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP has no special streaming message."
+        },
+        {
+          "type": "paragraph",
+          "text": "Streaming is built entirely from notifications, sent while a request is still in flight, followed eventually by the normal, final response to that request."
+        },
+        {
+          "type": "note",
+          "title": "Worth remembering",
+          "content": "This reuse keeps the protocol small, one message type, notifications, does double duty for both progress reporting and ordinary one way announcements."
+        },
+        {
+          "type": "paragraph",
+          "text": "Nothing new had to be added to the wire format for this to work."
+        },
+        {
+          "type": "paragraph",
+          "text": "That is the underlying reason this pattern feels so natural once you already understand notifications."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The Basic Pattern",
+          "id": "streaming-basic-pattern"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784556192374-467380449.png",
+          "alt": "A tool call request produces progress updates before a final result",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A client sends a request as usual."
+        },
+        {
+          "type": "paragraph",
+          "text": "Before the final response arrives, the server can send one or more progress notifications describing how far along the work has gotten."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\"jsonrpc\": \"2.0\", \"id\": 8, \"method\": \"tools/call\", \"params\": {\"name\": \"generate_report\"}}\n\n// while the report is being built\n{\"jsonrpc\": \"2.0\", \"method\": \"notifications/progress\", \"params\": {\"requestId\": 8, \"percent\": 40}}\n{\"jsonrpc\": \"2.0\", \"method\": \"notifications/progress\", \"params\": {\"requestId\": 8, \"percent\": 80}}\n\n// finally, the real result\n{\"jsonrpc\": \"2.0\", \"id\": 8, \"result\": {\"report_url\": \"https://...\"}}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the request keeps its own id throughout, the notifications reference that same id, and the final response echoes it one last time."
+        },
+        {
+          "type": "paragraph",
+          "text": "This same sequence works identically whether the underlying transport is stdio or an HTTP based connection."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Why This Piggybacks on Notifications",
+          "id": "streaming-piggybacks-on-notifications"
+        },
+        {
+          "type": "paragraph",
+          "text": "Notifications already have no id and expect no reply."
+        },
+        {
+          "type": "paragraph",
+          "text": "That is exactly the shape a progress update needs, informational, one way, and safe to send any number of times without confusing the request-response bookkeeping already in place."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a notification has no id, exactly what an update needs\n{\"jsonrpc\": \"2.0\", \"method\": \"notifications/progress\", \"params\": {\"requestId\": 8, \"percent\": 60}}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Inventing a fourth message type just for this would have added complexity without adding real capability."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Linking a Progress Update Back to Its Request",
+          "id": "streaming-linking-back-to-request"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784556194014-205310768.png",
+          "alt": "A progress update links back to a request id",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A progress notification includes a requestId field pointing back at the original request it describes."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lets a client correctly route an incoming update to the right progress bar, even if several long-running calls are happening at once."
+        },
+        {
+          "type": "paragraph",
+          "text": "Without this field, a client watching two slow calls at once would have no way to tell which update belongs to which."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# routing an incoming update to the right progress bar\nprogress_bars[msg[\"params\"][\"requestId\"]].update(msg[\"params\"][\"percent\"])"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The same field name and matching logic apply no matter how many long running calls are active at once."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. The Final Response Still Behaves Normally",
+          "id": "streaming-final-response-normal"
+        },
+        {
+          "type": "paragraph",
+          "text": "No matter how many progress notifications arrived along the way, the request still ends with exactly one ordinary response, matched by id, containing a result or an error."
+        },
+        {
+          "type": "paragraph",
+          "text": "Streaming only adds visibility into the wait, it does not change how the request itself concludes."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Property\",\"Streaming call\",\"Ordinary call\"],\"rows\":[[\"Has an id\",\"Yes\",\"Yes\"],[\"Gets exactly one final response\",\"Yes\",\"Yes\"],[\"May emit notifications first\",\"Yes\",\"No\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "A client that only ever listens for the final response, ignoring every progress update, still works correctly, it simply loses the visibility streaming provides."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Streaming Is Optional",
+          "id": "streaming-is-optional"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784556195637-985462397.png",
+          "alt": "A server supporting streaming is compared against no streaming at all",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Not every tool needs it, and not every server implements it."
+        },
+        {
+          "type": "paragraph",
+          "text": "A quick lookup has nothing meaningful to report partway through, streaming is worth building specifically for operations that genuinely take noticeable time."
+        },
+        {
+          "type": "paragraph",
+          "text": "Checking for this capability before relying on it, the same way any other optional feature is checked, avoids assuming updates that will never actually arrive."
+        },
+        {
+          "type": "paragraph",
+          "text": "A tool description can simply note whether it supports progress updates, so a client knows what to expect."
+        },
+        {
+          "type": "paragraph",
+          "text": "Building it into every tool by default, even ones that finish instantly, adds needless complexity for no real benefit."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. What a Client Does With Progress Updates",
+          "id": "streaming-what-client-does"
+        },
+        {
+          "type": "paragraph",
+          "text": "A host application typically uses these updates to show a progress bar or a status message to the user."
+        },
+        {
+          "type": "paragraph",
+          "text": "A model itself does not usually need to see every incremental update, only the host layer does, until the final result is ready."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def on_notification(msg):\n    if msg[\"method\"] == \"notifications/progress\":\n        update_progress_bar(msg[\"params\"][\"requestId\"], msg[\"params\"][\"percent\"])"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A well designed host debounces frequent updates before repainting the screen, avoiding a progress bar that flickers unpleasantly."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Consumer\",\"Typical use of updates\"],\"rows\":[[\"Host UI\",\"Progress bar or status text\"],[\"Model\",\"Usually ignored until the final result\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Streaming Content vs Streaming Progress",
+          "id": "streaming-content-vs-progress"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784556197199-647822312.png",
+          "alt": "Streaming content is compared against streaming progress",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Progress notifications report how far along something is."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some tools instead stream the actual content itself, partial text as it is generated, sent as a series of notifications before one final, complete result, the same underlying mechanism, used for a slightly different purpose."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# streaming partial text content instead of a percentage\n{\"jsonrpc\": \"2.0\", \"method\": \"notifications/progress\", \"params\": {\"requestId\": 8, \"partial_text\": \"The quarterly revenue grew...\"}}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Both variants reuse the exact same notification mechanism, only the shape of the params differs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Handling a Server That Stops Sending Updates",
+          "id": "streaming-server-stops-updates"
+        },
+        {
+          "type": "paragraph",
+          "text": "A gap in progress notifications does not necessarily mean something broke."
+        },
+        {
+          "type": "paragraph",
+          "text": "A client should rely on the request timeout, covered in the Timeouts lesson, rather than treating a quiet stretch between updates as a failure on its own."
+        },
+        {
+          "type": "paragraph",
+          "text": "A long silent gap followed by the correct final result is still a success, the timeout exists specifically to catch the case where nothing ever arrives at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "Treating silence as failure too eagerly risks cancelling work that was actually about to finish successfully."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is one more reason a sensible timeout, not the absence of updates, should always be the real signal something has gone wrong."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Cancelling a Streamed Operation Midway",
+          "id": "streaming-cancelling-midway"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784556198804-266314520.png",
+          "alt": "A streamed operation gets cancelled midway and stops",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The same cancellation notification covered in the Requests lesson works here too."
+        },
+        {
+          "type": "paragraph",
+          "text": "A client watching progress updates can decide, based on what it sees, to cancel a call that is taking longer than the user is willing to wait for."
+        },
+        {
+          "type": "paragraph",
+          "text": "Watching a report reach only ten percent after the expected total time has already passed is exactly the kind of signal that might prompt a cancellation."
+        },
+        {
+          "type": "paragraph",
+          "text": "The server should stop its work promptly once a cancellation arrives, rather than continuing to send updates for a call the client no longer cares about."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Designing Good Progress Updates",
+          "id": "streaming-designing-good-updates"
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful progress update carries enough detail to be meaningful, a percentage, a stage name, without being so frequent that it floods the connection with noise."
+        },
+        {
+          "type": "paragraph",
+          "text": "A handful of well-timed updates communicate progress far better than a hundred nearly identical ones."
+        },
+        {
+          "type": "note",
+          "title": "A practical guideline",
+          "content": "A handful of updates spaced across the operation, not a constant stream every few milliseconds, is usually the right balance."
+        },
+        {
+          "type": "paragraph",
+          "text": "Naming a stage, like uploading or transcoding, alongside a percentage often communicates more than a bare number alone."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. A Worked Example",
+          "id": "streaming-worked-example"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784556202492-552285007.png",
+          "alt": "A client sends a tool call, receives progress, then a result",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Trace a report generation call from start to finish, including two progress updates along the way."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "client.call_tool_async(\"generate_report\", {}, on_progress=lambda p: print(f\"{p}% done\"))\n# 40% done\n# 80% done\n# final result returned"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The same pattern extends naturally to any operation with distinct, nameable phases a user would find genuinely reassuring to see."
+        },
+        {
+          "type": "note",
+          "title": "Worth trying",
+          "content": "Add a third progress update partway between the two shown here and confirm the client still routes it correctly by requestId."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Common Mistakes When Using Streaming",
+          "id": "streaming-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Sending so many progress notifications that they overwhelm the connection instead of helping.",
+            "Forgetting to include the requestId, leaving a client unable to match an update to the right call.",
+            "Treating a gap in updates as an automatic failure instead of relying on a proper timeout.",
+            "Building streaming for a fast operation that never actually needed it in the first place."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "A fifth common mistake is streaming a percentage that never actually reflects real progress, which erodes trust faster than no progress indicator at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "A sixth common mistake is sending a progress value that jumps backward, which reads as a bug even when the underlying work is fine."
+        },
+        {
+          "type": "paragraph",
+          "text": "Testing the update sequence deliberately, not just the final result, catches these issues before real users see them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Practice: Add Progress to a Slow Tool",
+          "id": "streaming-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sketch what progress notifications a video transcoding tool might send, covering roughly three or four meaningful stages from start to finish."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "stages = [\"uploading\", \"transcoding\", \"finalizing\"]\nfor i, stage in enumerate(stages):\n    send_progress(percent=(i+1) * 33, stage=stage)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider what would happen if the transcoding step failed partway through, and how the final error response should relate to the progress already shown."
+        },
+        {
+          "type": "paragraph",
+          "text": "Try also sketching the final error response your tool would send if transcoding failed at the second stage."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "streaming-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Streaming in MCP is built entirely from ordinary notifications sent while a request is still open, each linked back to that request by id, followed eventually by one normal final response."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson builds on Notifications and Requests from earlier in this module, and connects forward to Event Handling next, which covers how a client actually listens for and reacts to these incoming updates in practice."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keep this notification based design in mind, it is the same lightweight mechanism used for resource change alerts elsewhere in this curriculum, just applied here to reporting progress on a single request."
+        }
+      ]
+    }
+  ]
+}

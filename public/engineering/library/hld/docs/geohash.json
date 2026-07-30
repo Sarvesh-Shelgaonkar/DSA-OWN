@@ -1,0 +1,575 @@
+{
+  "slug": "geohash",
+  "title": "Geohash",
+  "content": [
+    {
+      "id": "geohash",
+      "title": "Geohash",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Say you're building the map screen for a ride sharing app. A rider taps find my ride and you need to answer one question fast, which drivers are within a couple kilometers of this exact spot."
+        },
+        {
+          "type": "paragraph",
+          "content": "The obvious move is a query like WHERE lat BETWEEN x AND y AND lng BETWEEN a AND b. That sounds fine until you remember that a normal database index only really knows how to sort one column at a time. An index on latitude tells you nothing useful about longitude, and the other way around, so this query ends up scanning far more rows than it should."
+        },
+        {
+          "type": "paragraph",
+          "content": "Geohash fixes this by squashing a two dimensional point, latitude and longitude, into a single string. Get the string right and something useful falls out of it. Locations that are physically close to each other end up with strings that share a long common prefix. Proximity search turns into a prefix match, and prefix matches are something every ordinary database index already knows how to do."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Location features are everywhere now. Ride sharing, food delivery, dating apps that show you people nearby, real estate search, all of them need to answer some version of what is near this point."
+        },
+        {
+          "type": "paragraph",
+          "content": "The naive fix, comparing every stored point's distance to the query point one by one, works fine for a thousand rows. It falls apart once you're storing millions of driver locations and running this check every few seconds for every active rider in the city."
+        },
+        {
+          "type": "paragraph",
+          "content": "Geohash is one of the oldest and simplest answers to this problem. It doesn't need a specialized spatial database, and it doesn't need anything exotic like R-trees or quad trees under the hood. It just needs a clever encoding scheme and a text column your existing database already knows how to index."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030682-843462462.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030682-843462462.png",
+          "alt": "A latitude and longitude pair turning into interleaved bits, then a base32 string, then a final geohash code",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030682-843462462.png"
+        },
+        {
+          "type": "note",
+          "title": "Not the only tool for the job",
+          "content": "Geohash is simple and plays nicely with plain indexes, but it isn't the only way to do proximity search. Quad trees and Uber's H3 grid solve overlapping problems with different trade-offs, covered later in this lesson."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Problem: Why Latitude and Longitude Do Not Sort Nicely",
+          "text": "2. The Problem: Why Latitude and Longitude Do Not Sort Nicely"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Two independent numbers, no shared order",
+          "text": "2.1 Two independent numbers, no shared order"
+        },
+        {
+          "type": "paragraph",
+          "content": "Picture indexing your driver locations table on latitude alone. Ask for everything within a kilometer of you, and the index narrows the search down along the north south direction just fine. But that thin latitude band wraps all the way around the planet. Every point sitting at that same latitude on a completely different continent matches the band too, and you're stuck filtering the rest out by hand."
+        },
+        {
+          "type": "paragraph",
+          "content": "Flip it around and index on longitude instead, and you hit the identical problem, just rotated ninety degrees. A thin longitude band runs from pole to pole, and again you end up checking latitude yourself, row by row, for every candidate the index handed you."
+        },
+        {
+          "type": "paragraph",
+          "content": "A compound index on both columns barely helps either. A B-tree sorts by the first column first, and only narrows things down cleanly within ties on the second. Real proximity search on two genuinely independent numbers, with a plain B-tree, always ends up scanning more than it should."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 What we actually want: a single sortable key",
+          "text": "2.2 What we actually want: a single sortable key"
+        },
+        {
+          "type": "paragraph",
+          "content": "What would actually solve this is one single value, computed from both coordinates together, where sorting that one value automatically groups nearby locations right next to each other. Then an ordinary index on that one column does all the work, no specialized spatial index required."
+        },
+        {
+          "type": "blockQuote",
+          "content": "That single value is the geohash, a string built from both coordinates at once, designed so physically close points end up with strings that look almost identical."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. How Geohash Encoding Works",
+          "text": "3. How Geohash Encoding Works"
+        },
+        {
+          "type": "paragraph",
+          "content": "The encoding itself is a repeated halving trick applied to both latitude and longitude at the same time, then woven together into one string. Walk through it slowly and it stops feeling like magic."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Recursively bisecting the ranges",
+          "text": "3.1 Recursively bisecting the ranges"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030680-107122023.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030680-107122023.png",
+          "alt": "The whole world map splitting in half, then in half again, narrowing toward one specific point",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030680-107122023.png"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305793809-153354902.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305793809-153354902.png",
+          "alt": "One region splitting into two halves, then splitting again into four smaller boxes, showing the recursive bisection step by step",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305793809-153354902.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Latitude always lives between negative 90 and 90. Longitude always lives between negative 180 and 180. Geohash starts with those two full ranges and asks one question over and over, is the point in the top half of the current range, or the bottom half."
+        },
+        {
+          "type": "paragraph",
+          "content": "Say your point's longitude is 77.6. The full range is negative 180 to 180, so the midpoint is 0. Since 77.6 sits above 0, you record a 1 and narrow the range to 0 through 180. Ask again, the new midpoint is 90, and 77.6 is below that, so you record a 0 and narrow to 0 through 90. Keep going, and each answer squeezes the range tighter around your point."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305795317-989536373.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305795317-989536373.png",
+          "alt": "A latitude range splitting in half, with the point falling into the upper half and a bit of 1 recorded",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305795317-989536373.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Latitude goes through the exact same halving process, completely independently, using its own negative 90 to 90 range. Every bit produced this way is either a 1, meaning the point was in the upper half of whatever range you were looking at, or a 0, meaning the lower half."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Interleaving the bits",
+          "text": "3.2 Interleaving the bits"
+        },
+        {
+          "type": "paragraph",
+          "content": "Now comes the part that makes the whole scheme work. Instead of keeping the longitude bits and the latitude bits as two separate strings, geohash weaves them together into one, alternating longitude, latitude, longitude, latitude, one bit at a time, starting with longitude."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305796915-559132854.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305796915-559132854.png",
+          "alt": "Separate longitude bits and latitude bits merging into a single interleaved binary string",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305796915-559132854.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This interleaving is the whole trick. Because both coordinates get chopped into the same combined string, a change in either latitude or longitude shows up early in the string if it's a big change, and only late in the string if it's a tiny one. Two points that are close in both directions end up agreeing on almost every early bit."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.3 Base32 encoding",
+          "text": "3.3 Base32 encoding"
+        },
+        {
+          "type": "paragraph",
+          "content": "A long string of ones and zeros isn't friendly to type, read, or store compactly. So geohash groups the interleaved bits into chunks of five, and maps each five bit chunk onto one character from a 32 character alphabet, the digits 0 through 9 plus a specific set of lowercase letters."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305798465-231010829.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305798465-231010829.png",
+          "alt": "A binary string split into five bit chunks, each chunk mapped to one base32 character",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305798465-231010829.png"
+        },
+        {
+          "type": "note",
+          "title": "Why not the usual alphabet",
+          "content": "Geohash's base32 alphabet skips the letters a, i, l, and o, since they look too much like the digits 1 and 0 when read quickly. It's a readability choice, not a math requirement."
+        },
+        {
+          "type": "paragraph",
+          "content": "Five bits, thirty two possible characters, one clean symbol per chunk. String enough of those characters together and you get the geohash you're used to seeing, something like tdr1w or tdr1w4v."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Why Shared Prefixes Mean Nearby Locations",
+          "text": "4. Why Shared Prefixes Mean Nearby Locations"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Longer prefix, closer points",
+          "text": "4.1 Longer prefix, closer points"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here's the payoff of all that bisecting. The first character of a geohash tells you which giant chunk of the world your point sits in, one of a small number of huge cells covering thousands of kilometers each. The second character narrows that giant cell down into a smaller one nested inside it. Every extra character narrows things down further, the same way each extra digit after a decimal point gives you more precision."
+        },
+        {
+          "type": "paragraph",
+          "content": "So two geohash strings that share their first five characters are guaranteed to be near each other, because they went through the exact same sequence of halving decisions for five whole rounds before their paths diverged at all. The more characters two geohashes share from the start, the smaller the shared cell they both live in, and the closer they must be."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 The boundary edge case",
+          "text": "4.2 The boundary edge case"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is where you need to be careful, and it trips people up constantly. Two points can be standing a few meters apart in the real world and still end up on opposite sides of one of these cell boundaries. One point rounds into the upper half of some range, its neighbor a hair away rounds into the lower half, and from that bit onward their geohashes can diverge."
+        },
+        {
+          "type": "paragraph",
+          "content": "Here's a real pair of coordinates showing exactly this. A rider standing at 12.9352 latitude, 77.6146 longitude encodes to tdr1w4v at seven characters. A point just twenty meters north, at 12.93502, 77.6146, encodes to tdr1w4t. They share the first six characters, tdr1w4, but the seventh character is completely different, because that last halving step landed them on opposite sides of a tiny cell boundary."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305800083-472479081.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305800083-472479081.png",
+          "alt": "Two points only twenty meters apart landing in neighboring cells with different final geohash characters",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305800083-472479081.png"
+        },
+        {
+          "type": "note",
+          "title": "Nearby is not the same as same prefix",
+          "content": "Do not assume two points are far apart just because their full geohash strings don't match. A driver one step away might sit just across a cell boundary and share almost none of your longest prefix, even though they are the closest match available."
+        },
+        {
+          "type": "paragraph",
+          "content": "This single edge case is exactly why a real geohash based proximity search can never just check one prefix and call it done. You always need to also check the handful of neighboring cells, covered next."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Precision: Geohash Length vs Cell Size",
+          "text": "5. Precision: Geohash Length vs Cell Size"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every extra character you add to a geohash roughly halves the cell size in one of the two dimensions, alternating between longitude and latitude the way you saw earlier. Fewer characters means a huge, coarse cell. More characters means a tiny, precise one."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Geohash length\",\"Approximate cell size\"],\"rows\":[[\"1 character\",\"about 5000 km across\"],[\"3 characters\",\"about 156 km across\"],[\"5 characters\",\"about 4.9 km across\"],[\"6 characters\",\"roughly 1.2 km by 0.6 km\"],[\"7 characters\",\"roughly 153 m by 152 m\"],[\"9 characters\",\"roughly 5 m by 5 m\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305801727-176616124.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305801727-176616124.png",
+          "alt": "A short three character geohash covering a huge cell next to a long seven character geohash covering a tiny street sized cell",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305801727-176616124.png"
+        },
+        {
+          "type": "note",
+          "title": "Pick precision to match your query radius",
+          "content": "A ride sharing app looking for drivers within a couple kilometers wants somewhere around six characters of precision, not nine. Too many characters and you split nearby drivers across too many distinct cells, forcing you to check more neighbors than necessary."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Querying: Prefix Search Plus Neighbor Cells",
+          "text": "6. Querying: Prefix Search Plus Neighbor Cells"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 The naive prefix range query",
+          "text": "6.1 The naive prefix range query"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once every driver's location is stored as a geohash string, a normal indexed range query on that string finds everything sharing a given prefix. Ask for everything starting with tdr1w and your database index jumps straight to that range, no full table scan needed."
+        },
+        {
+          "type": "code",
+          "content": "SELECT driver_id, geohash\nFROM driver_locations\nWHERE geohash >= 'tdr1w' AND geohash < 'tdr1x'\nORDER BY geohash;",
+          "code": {
+            "language": "sql",
+            "content": "SELECT driver_id, geohash\nFROM driver_locations\nWHERE geohash >= 'tdr1w' AND geohash < 'tdr1x'\nORDER BY geohash;"
+          },
+          "codes": {
+            "sql": "SELECT driver_id, geohash\nFROM driver_locations\nWHERE geohash >= 'tdr1w' AND geohash < 'tdr1x'\nORDER BY geohash;"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "That range comparison is the standard trick for prefix search on an indexed string column. Anything starting with tdr1w sorts between tdr1w itself and tdr1x, so a single indexed range scan finds every match."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Checking neighbor cells",
+          "text": "6.2 Checking neighbor cells"
+        },
+        {
+          "type": "paragraph",
+          "content": "Because of the boundary edge case from before, a real implementation always computes the query cell's geohash, then also computes the geohash of each of its eight surrounding neighbor cells, north, south, east, west, and the four diagonals. You run the same prefix search against all nine cells and merge the results."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305803305-915052145.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305803305-915052145.png",
+          "alt": "A center cell plus its surrounding north, south, east, and west neighbor cells all being checked in one proximity query",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305803305-915052145.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"The center cell, matching the rider's own geohash prefix.\",\"The four edge neighbors, north, south, east, and west.\",\"The four corner neighbors, northeast, northwest, southeast, and southwest.\"]",
+          "items": [
+            "The center cell, matching the rider's own geohash prefix.",
+            "The four edge neighbors, north, south, east, and west.",
+            "The four corner neighbors, northeast, northwest, southeast, and southwest."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "After collecting candidates from all nine cells, you still run one final precise distance check on each candidate, since the cells themselves are rectangular. A candidate near a far corner of a neighbor cell can actually be further away than something sitting in the center cell."
+        },
+        {
+          "type": "note",
+          "title": "Geohash narrows the field, it doesn't finish the job",
+          "content": "Treat the prefix and neighbor lookup as a fast way to shrink millions of candidates down to a few dozen. The final sort by exact distance still needs a real distance calculation on that small shortlist."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Worked Example: Finding Nearby Drivers for a Ride",
+          "text": "7. Worked Example: Finding Nearby Drivers for a Ride"
+        },
+        {
+          "type": "paragraph",
+          "content": "A rider opens the app standing at 12.9352 latitude, 77.6146 longitude, somewhere in Koramangala, Bangalore. Encoded at six characters, that point becomes tdr1w4. At five characters it's just tdr1w."
+        },
+        {
+          "type": "example-box",
+          "title": "Driver A, three hundred meters away",
+          "text": "Driver A is parked a few streets over, at 12.9368, 77.6169. That encodes to tdr1w5 at six characters, but tdr1w at five characters, the exact same five character prefix as the rider. A prefix query at five characters catches this driver immediately, even though the sixth character already differs."
+        },
+        {
+          "type": "example-box",
+          "title": "Driver B, almost six kilometers away",
+          "text": "Driver B is over in Indiranagar, at 12.9716, 77.6412. That encodes to tdr1yc at six characters, and tdr1y at five. The rider's prefix is tdr1w, so even at just five characters this driver's cell has already diverged. A five character prefix query correctly leaves this driver out."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305804942-446194376.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305804942-446194376.png",
+          "alt": "A rider's geohash prefix matching a nearby driver's geohash while a far away driver has a completely different prefix",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305804942-446194376.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice what happened here without ever computing a single distance formula. Comparing short text prefixes alone was enough to separate a genuinely nearby driver from one clearly too far to bother with. The database only had to do a cheap indexed range scan, not compare the rider against every driver in the city."
+        },
+        {
+          "type": "paragraph",
+          "content": "In production you'd still run the neighbor cell check from the previous section, since Driver A's sixth character already differed from the rider's. If you queried at six characters instead of five, Driver A could land in a neighboring cell and get missed unless you also checked that neighbor."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Implementation: Encoding a Point in Code",
+          "text": "8. Implementation: Encoding a Point in Code"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here's a working geohash encoder. It's the same bisect, interleave, and base32 process from section 3, just written out as actual code instead of prose."
+        },
+        {
+          "type": "code",
+          "content": "const BASE32 = '0123456789bcdefghjkmnpqrstuvwxyz';\n\nfunction encodeGeohash(lat, lng, precision = 9) {\n  let latRange = [-90, 90];\n  let lngRange = [-180, 180];\n  let isEven = true; // start by bisecting longitude\n  let bit = 0;\n  let ch = 0;\n  let geohash = '';\n\n  while (geohash.length < precision) {\n    if (isEven) {\n      const mid = (lngRange[0] + lngRange[1]) / 2;\n      if (lng > mid) {\n        ch = (ch << 1) + 1;\n        lngRange[0] = mid;\n      } else {\n        ch = (ch << 1) + 0;\n        lngRange[1] = mid;\n      }\n    } else {\n      const mid = (latRange[0] + latRange[1]) / 2;\n      if (lat > mid) {\n        ch = (ch << 1) + 1;\n        latRange[0] = mid;\n      } else {\n        ch = (ch << 1) + 0;\n        latRange[1] = mid;\n      }\n    }\n\n    isEven = !isEven;\n\n    if (bit < 4) {\n      bit++;\n    } else {\n      geohash += BASE32[ch];\n      bit = 0;\n      ch = 0;\n    }\n  }\n\n  return geohash;\n}\n\nencodeGeohash(12.9352, 77.6146, 7); // \"tdr1w4v\"",
+          "code": {
+            "language": "javascript",
+            "content": "const BASE32 = '0123456789bcdefghjkmnpqrstuvwxyz';\n\nfunction encodeGeohash(lat, lng, precision = 9) {\n  let latRange = [-90, 90];\n  let lngRange = [-180, 180];\n  let isEven = true; // start by bisecting longitude\n  let bit = 0;\n  let ch = 0;\n  let geohash = '';\n\n  while (geohash.length < precision) {\n    if (isEven) {\n      const mid = (lngRange[0] + lngRange[1]) / 2;\n      if (lng > mid) {\n        ch = (ch << 1) + 1;\n        lngRange[0] = mid;\n      } else {\n        ch = (ch << 1) + 0;\n        lngRange[1] = mid;\n      }\n    } else {\n      const mid = (latRange[0] + latRange[1]) / 2;\n      if (lat > mid) {\n        ch = (ch << 1) + 1;\n        latRange[0] = mid;\n      } else {\n        ch = (ch << 1) + 0;\n        latRange[1] = mid;\n      }\n    }\n\n    isEven = !isEven;\n\n    if (bit < 4) {\n      bit++;\n    } else {\n      geohash += BASE32[ch];\n      bit = 0;\n      ch = 0;\n    }\n  }\n\n  return geohash;\n}\n\nencodeGeohash(12.9352, 77.6146, 7); // \"tdr1w4v\""
+          },
+          "codes": {
+            "javascript": "const BASE32 = '0123456789bcdefghjkmnpqrstuvwxyz';\n\nfunction encodeGeohash(lat, lng, precision = 9) {\n  let latRange = [-90, 90];\n  let lngRange = [-180, 180];\n  let isEven = true; // start by bisecting longitude\n  let bit = 0;\n  let ch = 0;\n  let geohash = '';\n\n  while (geohash.length < precision) {\n    if (isEven) {\n      const mid = (lngRange[0] + lngRange[1]) / 2;\n      if (lng > mid) {\n        ch = (ch << 1) + 1;\n        lngRange[0] = mid;\n      } else {\n        ch = (ch << 1) + 0;\n        lngRange[1] = mid;\n      }\n    } else {\n      const mid = (latRange[0] + latRange[1]) / 2;\n      if (lat > mid) {\n        ch = (ch << 1) + 1;\n        latRange[0] = mid;\n      } else {\n        ch = (ch << 1) + 0;\n        latRange[1] = mid;\n      }\n    }\n\n    isEven = !isEven;\n\n    if (bit < 4) {\n      bit++;\n    } else {\n      geohash += BASE32[ch];\n      bit = 0;\n      ch = 0;\n    }\n  }\n\n  return geohash;\n}\n\nencodeGeohash(12.9352, 77.6146, 7); // \"tdr1w4v\""
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Walk through what's happening on each loop. isEven tracks whether the current bit belongs to longitude or latitude, so it flips after every single bit, exactly the alternating pattern from section 3.2. Each pass either narrows lngRange or latRange in half, and shifts that decision bit into ch. Once five bits have piled up in ch, that five bit chunk gets mapped to a base32 character and appended to the result."
+        },
+        {
+          "type": "note",
+          "title": "Decoding runs the same idea backward",
+          "content": "To decode a geohash back into an approximate latitude and longitude, you reverse this exact process, expanding each character back into five bits, then narrowing the same lat and lng ranges bit by bit, and returning the midpoint of whatever range you end up with."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Geohash in Real Systems",
+          "text": "9. Geohash in Real Systems"
+        },
+        {
+          "type": "paragraph",
+          "content": "Geohash isn't just a teaching example, it's baked into several production systems you've probably already used."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 Redis GEO",
+          "text": "9.1 Redis GEO"
+        },
+        {
+          "type": "paragraph",
+          "content": "Redis's GEO commands, GEOADD and GEORADIUS among others, store locations internally using a 52-bit interleaved geohash inside an ordinary sorted set. A radius search under the hood works by figuring out which geohash cells overlap the search radius and scanning those, the same prefix plus neighbor idea from section 6, just implemented natively in C for speed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 Elasticsearch",
+          "text": "9.2 Elasticsearch"
+        },
+        {
+          "type": "paragraph",
+          "content": "Elasticsearch supports a geohash_grid aggregation that buckets documents by geohash cell, handy for building map heatmaps and clustering markers at different zoom levels without shipping every raw point to the client. Its precise geo_distance queries lean on more specialized structures internally, but geohash still shows up directly whenever you want simple, bucketed spatial aggregation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.3 Uber's H3: a different approach",
+          "text": "9.3 Uber's H3: a different approach"
+        },
+        {
+          "type": "paragraph",
+          "content": "Uber built H3, a hexagonal grid system, partly to sidestep a real weakness of geohash. Geohash cells are rectangular, and rectangles don't tile the globe evenly. Cell width in longitude shrinks the closer you get to the poles, and a cell's neighbors aren't all the same distance away, the diagonal neighbor is further off than the edge neighbor."
+        },
+        {
+          "type": "paragraph",
+          "content": "Hexagons fix both problems. Every hexagon has exactly six neighbors, and all six sit at roughly the same distance from the center, which makes distance based logic like surge pricing zones or ETA estimates far more consistent across the map. The tradeoff is that hexagons don't nest as cleanly into a simple string prefix the way geohash does, so H3 needs its own dedicated library rather than plain string comparisons."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305806484-308861356.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305806484-308861356.png",
+          "alt": "Geohash's square grid cells compared with Uber H3's hexagonal grid cells that keep neighbor distances consistent",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305806484-308861356.png"
+        },
+        {
+          "type": "note",
+          "title": "Different tools, overlapping goals",
+          "content": "Reach for geohash when you want proximity search on an ordinary database with minimal setup. Reach for H3 when you need uniform cell shapes for things like zone based pricing or spatial analytics, and you're willing to bring in a dedicated library to get it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Geohash in System Design Interviews",
+          "text": "10. Geohash in System Design Interviews"
+        },
+        {
+          "type": "paragraph",
+          "content": "Geohash comes up constantly in interviews shaped like design Uber, design a food delivery dispatch system, or design a Yelp style nearby search. The moment you hear find things near a location at scale, spatial indexing belongs in your answer."
+        },
+        {
+          "type": "list",
+          "content": "[\"State the problem first: a plain lat and lng comparison against every row doesn't scale past a small dataset.\",\"Introduce geohash as a way to turn two dimensional proximity into a one dimensional string prefix problem, so an ordinary index handles it.\",\"Mention precision as a tuning knob, pick a geohash length whose cell size roughly matches your typical query radius.\",\"Always mention the neighbor cell check. Forgetting it is the single most common gap interviewers notice, since it exposes whether you actually understand the boundary edge case.\",\"Be ready to compare against alternatives, quad trees adapt cell size to data density, and H3 gives uniform hexagon cells, both solve overlapping problems differently.\"]",
+          "items": [
+            "State the problem first: a plain lat and lng comparison against every row doesn't scale past a small dataset.",
+            "Introduce geohash as a way to turn two dimensional proximity into a one dimensional string prefix problem, so an ordinary index handles it.",
+            "Mention precision as a tuning knob, pick a geohash length whose cell size roughly matches your typical query radius.",
+            "Always mention the neighbor cell check. Forgetting it is the single most common gap interviewers notice, since it exposes whether you actually understand the boundary edge case.",
+            "Be ready to compare against alternatives, quad trees adapt cell size to data density, and H3 gives uniform hexagon cells, both solve overlapping problems differently."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "note",
+          "title": "Mention sharding too",
+          "content": "In a distributed system, the geohash prefix itself is a natural shard key, since it already groups nearby data together. Call this out, it shows you're thinking past a single machine."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Trade-offs and Limitations",
+          "text": "11. Trade-offs and Limitations"
+        },
+        {
+          "type": "paragraph",
+          "content": "Geohash buys you simplicity and compatibility with ordinary indexes, but it isn't free."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Works with a plain string index on any regular database\",\"Rectangular cells distort near the poles and along boundaries\"],[\"Turns 2D proximity into a 1D prefix comparison\",\"Boundary points need an extra neighbor cell check to avoid misses\"],[\"Precision is a simple tuning knob, just add or drop characters\",\"Picking the wrong precision means too many or too few candidate cells\"],[\"Easy to shard by prefix in a distributed system\",\"Not ideal when you need perfectly uniform cell shapes, like H3 offers\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "None of these limitations are dealbreakers for most location features. They just mean geohash is a starting point you tune, not a black box you drop in and forget."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305808185-608538467.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305808185-608538467.png",
+          "alt": "A decision diagram showing geohash chosen for proximity search on an existing database, and H3 chosen for uniform hexagon zones",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305808185-608538467.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Key Takeaways",
+          "text": "12. Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"Geohash encodes a latitude and longitude pair into one sortable string, so proximity search becomes a prefix match instead of a full scan.\",\"The encoding recursively bisects the latitude and longitude ranges, interleaves the resulting bits, and groups them into base32 characters.\",\"Longer shared prefixes mean closer points, but nearby points straddling a cell boundary can still end up with very different strings.\",\"A real proximity query always checks the center cell plus its eight neighbor cells, then finishes with an exact distance check on the shortlist.\",\"Redis GEO and Elasticsearch both use geohash style cells internally, while Uber's H3 trades the simple prefix trick for uniform hexagon shapes.\",\"Reach for geohash when you want proximity search on an ordinary database with minimal setup and a shard key that comes for free.\"]",
+          "items": [
+            "Geohash encodes a latitude and longitude pair into one sortable string, so proximity search becomes a prefix match instead of a full scan.",
+            "The encoding recursively bisects the latitude and longitude ranges, interleaves the resulting bits, and groups them into base32 characters.",
+            "Longer shared prefixes mean closer points, but nearby points straddling a cell boundary can still end up with very different strings.",
+            "A real proximity query always checks the center cell plus its eight neighbor cells, then finishes with an exact distance check on the shortlist.",
+            "Redis GEO and Elasticsearch both use geohash style cells internally, while Uber's H3 trades the simple prefix trick for uniform hexagon shapes.",
+            "Reach for geohash when you want proximity search on an ordinary database with minimal setup and a shard key that comes for free."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "blockQuote",
+          "content": "Geohash is just the fold the map, keep folding rule applied to both coordinates at once, woven into one string so a plain index can do the finding for you."
+        }
+      ]
+    }
+  ]
+}

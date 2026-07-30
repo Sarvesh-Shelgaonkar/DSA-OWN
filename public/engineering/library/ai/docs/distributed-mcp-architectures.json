@@ -1,0 +1,521 @@
+{
+  "slug": "distributed-mcp-architectures",
+  "title": "Distributed MCP Architectures",
+  "content": [
+    {
+      "id": "distributed-mcp-architectures",
+      "title": "Distributed MCP Architectures",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "So far every lesson has quietly assumed one thing, that there is a single MCP server process somewhere handling every request. That assumption breaks the moment real traffic shows up, because one process on one machine can only do so much."
+        },
+        {
+          "type": "paragraph",
+          "text": "Distributed MCP architectures are about running many copies of the same server across many machines, and making that fleet behave like one reliable service from the outside."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson connects directly back to the keep-alive and reconnection lessons, because a fleet of servers makes connection handling much trickier than a single box ever did."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. From One Server to a Fleet",
+          "id": "distributed-one-to-fleet"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579035297-107564202.png",
+          "alt": "A single server instance is compared against a fleet of instances",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single MCP server instance has a hard ceiling. It has one CPU allocation, one memory budget, and one network connection queue, and once traffic exceeds what that one process can handle, every client feels it as slowness or dropped connections."
+        },
+        {
+          "type": "paragraph",
+          "text": "The fix sounds simple: run more than one copy. Start three, five, or fifty identical instances of the same server, each capable of answering any request the same way."
+        },
+        {
+          "type": "paragraph",
+          "text": "That single sentence hides most of the complexity this lesson exists to unpack. Making many instances behave like one coherent service is the actual engineering problem."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Why a Single Instance Is Not Enough",
+          "id": "distributed-why-single-fails"
+        },
+        {
+          "type": "paragraph",
+          "text": "A lone MCP server is also a single point of failure. If that one machine crashes, reboots, or loses network connectivity, every client connected to it loses service at the same moment."
+        },
+        {
+          "type": "paragraph",
+          "text": "Traffic growth is the other pressure. An MCP server used by a handful of internal tools might comfortably run on one box for years, but one used by thousands of agents across an organization will not."
+        },
+        {
+          "type": "list",
+          "items": [
+            "No redundancy, one crash takes down the entire service for every connected client.",
+            "No headroom, traffic spikes have nowhere to go once the one process saturates.",
+            "No maintenance window, restarting the only instance to deploy an update drops every active session."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. What a Fleet Actually Looks Like",
+          "id": "distributed-fleet-shape"
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice, a distributed MCP setup is the same container image from the deployment lessons, just running as many replicas instead of one, sitting behind something that routes traffic to whichever replica should handle it."
+        },
+        {
+          "type": "paragraph",
+          "text": "Each instance is, in principle, interchangeable. Instance two should be able to answer a request just as correctly as instance seven, because they are running identical code with identical configuration."
+        },
+        {
+          "type": "note",
+          "title": "Interchangeable is the goal, not the default",
+          "content": "Instances only become truly interchangeable once you remove local, in-memory state from each one. Left unaddressed, two instances of the same server can quietly behave differently depending on what each one happens to remember."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. The Load Balancer's Job",
+          "id": "distributed-load-balancer-job"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579037516-957884563.png",
+          "alt": "A load balancer distributes client requests across three identical server instances",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A load balancer sits in front of the fleet and decides, for each incoming connection, which instance should receive it. Clients never talk to an instance directly, they talk to the load balancer, and it forwards the work."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is what turns many separate processes into what looks, from the outside, like a single reliable address. The client never needs to know or care how many instances exist behind it."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Round robin, cycle through instances in order, simple and even under uniform load.",
+            "Least connections, send new work to whichever instance currently has the fewest open connections.",
+            "Weighted routing, send more traffic to bigger or faster instances than smaller ones."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Session Affinity, the Sticky Problem",
+          "id": "distributed-session-affinity"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579039184-633535898.png",
+          "alt": "A client keeps landing on the same instance through session affinity",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP sessions are not one-shot requests, they are long-lived conversations, and that creates a real tension with load balancing. If a client's first message goes to instance two, and its next message goes to instance five instead, and instance five has never heard of that session, the request fails."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is exactly the problem session affinity, also called sticky sessions, exists to solve. The load balancer remembers which instance owns a given session and keeps routing that session's traffic there consistently."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "nginx",
+            "content": "upstream mcp_fleet {\n  ip_hash;\n  server mcp-instance-1:8080;\n  server mcp-instance-2:8080;\n  server mcp-instance-3:8080;\n}\n\nserver {\n  location /mcp/ {\n    proxy_pass http://mcp_fleet;\n    proxy_set_header X-Session-Id $http_x_session_id;\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "That ip_hash directive is one common way to get affinity, routing based on the client's address rather than a fair rotation. It is a blunt tool though, and it breaks down for clients behind a shared corporate proxy where many users share one address."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Better Affinity, Routing by Session Id",
+          "id": "distributed-affinity-by-session-id"
+        },
+        {
+          "type": "paragraph",
+          "text": "A more reliable approach hashes on the actual session identifier rather than the client's network address, so affinity survives even when many clients share one IP or one client moves networks mid session."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "function pickInstance(sessionId, instances) {\n  let hash = 0;\n  for (let i = 0; i < sessionId.length; i++) {\n    hash = (hash * 31 + sessionId.charCodeAt(i)) >>> 0;\n  }\n  return instances[hash % instances.length];\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a deliberately simple example, real load balancers wrap this idea in a consistent hashing scheme so that adding or removing one instance does not reshuffle every existing session's assignment at once."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Where This Meets Keep-Alive and Reconnection",
+          "id": "distributed-meets-keepalive"
+        },
+        {
+          "type": "paragraph",
+          "text": "The keep-alive lesson covered how a client and server stay aware that a connection is still healthy, and the reconnection lesson covered what happens when that connection drops and a client tries again."
+        },
+        {
+          "type": "paragraph",
+          "text": "In a fleet, reconnection carries an extra risk. A client that reconnects after a drop might land on a completely different instance than the one it started with, unless the load balancer's affinity rules route it back correctly."
+        },
+        {
+          "type": "note",
+          "title": "A dropped connection is now two problems, not one",
+          "content": "Without a fleet, reconnecting just meant reopening a socket to the same server. With a fleet, reconnecting also means landing back on an instance that actually knows about the session, which only works if session state lives somewhere every instance can reach."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. In-Memory State, the Trap",
+          "id": "distributed-in-memory-trap"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579040778-701947199.png",
+          "alt": "In memory state on one instance is invisible to every other instance",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The most natural place to store a session's state is in the memory of the process handling it, a plain object or map living in that one server's RAM. It works perfectly, right up until a second instance exists."
+        },
+        {
+          "type": "paragraph",
+          "text": "The moment a request for that session arrives at a different instance, that instance's memory has never heard of it. From its point of view, the session simply does not exist."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const sessions = new Map();\n\nfunction handleRequest(sessionId, message) {\n  const session = sessions.get(sessionId);\n  if (!session) {\n    return { error: 'unknown session' };\n  }\n  return processMessage(session, message);\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "That code looks completely reasonable on a single box, and quietly breaks the instant traffic splits across two or more of them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Sharing State Across Instances",
+          "id": "distributed-shared-state"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579042469-88647488.png",
+          "alt": "A shared store lets every instance see the same state",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The real fix is not smarter stickiness, it is moving session state out of any one instance's memory entirely, into a shared store every instance can read from and write to."
+        },
+        {
+          "type": "paragraph",
+          "text": "A shared cache such as Redis, or a shared database, becomes the single source of truth for session data. Any instance that receives a request for a given session looks that session up in the shared store, not in its own memory."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const redis = require('redis').createClient();\n\nasync function loadSession(sessionId) {\n  const raw = await redis.get('session:' + sessionId);\n  return raw ? JSON.parse(raw) : null;\n}\n\nasync function saveSession(sessionId, session) {\n  await redis.set('session:' + sessionId, JSON.stringify(session), { EX: 3600 });\n}\n\nasync function handleRequest(sessionId, message) {\n  const session = await loadSession(sessionId);\n  if (!session) return { error: 'unknown session' };\n  const result = processMessage(session, message);\n  await saveSession(sessionId, session);\n  return result;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Now it genuinely does not matter which instance a request lands on. Every instance reads the same source of truth, so the answer is the same everywhere."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Shared State Loosens the Need for Affinity",
+          "id": "distributed-affinity-loosened"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once session state lives in a shared store, session affinity stops being strictly required for correctness. Any instance can now serve any request for any session, because none of them are relying on private memory anymore."
+        },
+        {
+          "type": "paragraph",
+          "text": "Affinity can still be worth keeping around anyway, since routing a session to the same warm instance tends to be a little faster than always paying the cost of a network round trip to the shared store."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Requires affinity\",\"Survives instance restart\"],\"rows\":[[\"In-memory state only\",\"Yes, strictly required\",\"No, state is lost\"],[\"Shared cache or database\",\"No, purely an optimization\",\"Yes, state lives outside the instance\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Choosing Between a Cache and a Database",
+          "id": "distributed-cache-vs-database"
+        },
+        {
+          "type": "paragraph",
+          "text": "A shared cache like Redis is fast and built for exactly this kind of short-lived, frequently read and written session data, and it usually supports automatic expiry so old sessions clean themselves up."
+        },
+        {
+          "type": "paragraph",
+          "text": "A database is the better home for anything that needs to survive long term or be queried in more complex ways, such as usage history or billing records tied to a session, rather than the moment to moment session state itself."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Cache: fast, short-lived session state, connection metadata, in-flight tool call context.",
+            "Database: longer-lived records, audit logs, anything you would be upset to lose on a cache restart."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Consistency Across Instances",
+          "id": "distributed-consistency"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579044175-494933231.png",
+          "alt": "Strong consistency is compared against eventual consistency across instances",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sharing a store introduces a new question that never came up with a single instance, what happens if two instances try to update the same session at nearly the same moment."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a real risk with concurrent tool calls on one session, and it is usually handled with either a simple lock on the session key, or by structuring updates so the last write wins in a way that is safe for your data."
+        },
+        {
+          "type": "note",
+          "title": "Do not over-engineer this on day one",
+          "content": "Most MCP sessions are used by one client at a time, so true concurrent writes to the same session are rare in practice. Build the simple version first, and add locking only once you actually observe conflicts."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Health Checks Across a Fleet",
+          "id": "distributed-health-checks"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579046484-952500058.png",
+          "alt": "A health check runs against every instance in the fleet",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "With many instances running, the load balancer needs a reliable way to know which ones are actually healthy right now, so it can stop sending traffic to a struggling instance before clients notice."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "GET /health HTTP/1.1\nHost: mcp-instance-2\n\nHTTP/1.1 200 OK\nContent-Type: application/json\n\n{\"status\": \"ok\", \"activeSessions\": 128}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "An instance that stops responding to its health check gets pulled out of rotation automatically, and its sessions, since they live in shared state, can be picked up by any other healthy instance."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Deploying Updates Across a Fleet",
+          "id": "distributed-deploying-updates"
+        },
+        {
+          "type": "paragraph",
+          "text": "Updating a fleet means rolling the new version out to instances gradually, one or a few at a time, rather than restarting everything at once and dropping every session simultaneously."
+        },
+        {
+          "type": "paragraph",
+          "text": "This only works cleanly if state truly lives outside each instance. An instance being replaced can simply stop receiving new traffic, finish its in-flight work, and shut down, while its sessions continue on other instances using the shared store."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Take one instance out of the load balancer's rotation.",
+            "Let its in-flight requests finish naturally.",
+            "Replace it with the new version and add it back once healthy.",
+            "Repeat for the next instance until the whole fleet is updated."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. The Mental Shift, One Server to a Fleet",
+          "id": "distributed-mental-shift"
+        },
+        {
+          "type": "paragraph",
+          "text": "Everything in this lesson traces back to a single change in thinking. Instead of asking what should my server do, the question becomes what should any instance of my server do, given the same request."
+        },
+        {
+          "type": "paragraph",
+          "text": "That reframing quietly demands statelessness at the instance level, a shared source of truth for anything that must persist, and a load balancer that treats instances as disposable, replaceable workers rather than unique, irreplaceable machines."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Old mental model\",\"Fleet mental model\"],\"rows\":[[\"One server, one identity\",\"Many identical, interchangeable instances\"],[\"State lives in server memory\",\"State lives in a shared cache or database\"],[\"A crash is an outage\",\"A crash removes one of many, traffic shifts to the rest\"],[\"Restart to deploy\",\"Roll updates across the fleet gradually\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example, Tracing One Session Across a Fleet",
+          "id": "distributed-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a client opening a session against a fleet of three MCP instances behind a load balancer using session id based affinity."
+        },
+        {
+          "type": "paragraph",
+          "text": "The first request creates a new session, gets routed to instance two, and instance two writes the fresh session state to the shared cache immediately."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function createSession(sessionId) {\n  const session = { createdAt: Date.now(), toolCalls: [] };\n  await saveSession(sessionId, session);\n  return session;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Later, a network blip drops the client's connection. It reconnects, and this time the load balancer, following the reconnection lesson's guidance, routes it back to instance two using the same session id hash."
+        },
+        {
+          "type": "paragraph",
+          "text": "Instance two loads the session from the shared cache, sees it already exists, and continues right where the conversation left off, with no visible gap to the client."
+        },
+        {
+          "type": "paragraph",
+          "text": "If instance two had happened to be mid restart during that reconnect, the load balancer would route to instance one or three instead, and either one would load the exact same session data from the shared cache and continue it just as correctly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "distributed-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Scaling to multiple instances while still keeping session state only in local memory.",
+            "Relying on IP based sticky sessions for clients that sit behind a shared corporate proxy.",
+            "Treating session affinity as a substitute for shared state instead of a small performance optimization on top of it.",
+            "Forgetting that a shared cache needs its own redundancy, a single Redis instance is just a new single point of failure.",
+            "Restarting an entire fleet at once during a deploy instead of rolling instances through one at a time.",
+            "Skipping health checks and letting the load balancer keep sending traffic to an instance that is already struggling."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "distributed-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take an MCP server you have already containerized and run three instances of it locally on different ports, with a small load balancer, such as nginx, in front of them."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "docker run -d -p 8081:8080 my-mcp-server\ndocker run -d -p 8082:8080 my-mcp-server\ndocker run -d -p 8083:8080 my-mcp-server"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "First, confirm the failure mode, open a session, kill the instance that owns it, and watch the next request fail because state lived only in that instance's memory."
+        },
+        {
+          "type": "paragraph",
+          "text": "Then move session state into a shared Redis instance using the pattern from this lesson, repeat the same kill test, and confirm the session survives on a different instance."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "distributed-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Running many instances of an MCP server instead of one solves real problems of capacity and reliability, but only once state stops living in any single instance's memory and moves into a shared cache or database instead."
+        },
+        {
+          "type": "paragraph",
+          "text": "Session affinity helps route traffic efficiently, but shared state is what actually makes the fleet correct, letting any instance answer any request the same way, every time."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,412 @@
+{
+  "slug": "saving-loading-arrays",
+  "title": "Saving & Loading Arrays",
+  "content": [
+    {
+      "id": "saving-loading-arrays",
+      "title": "Saving & Loading Arrays",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Picture this. You spend ten minutes building a giant embedding matrix, or running a preprocessing pipeline that cleans, tokenizes, and normalizes a huge dataset. It finally finishes. Then you restart your script, or your notebook kernel crashes, or you close your laptop for the night. NumPy does not remember any of it. Every array you built lives only in memory, and the moment the process ends, it is gone. You are back to square one, waiting through the same ten minutes all over again."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607010599-717537210.png",
+          "alt": "A diagram showing a script restart forcing a slow recompute versus a script restart loading a cached npy file almost instantly",
+          "caption": "Recomputing from scratch every time versus loading a cached array in milliseconds.",
+          "size": "medium"
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson is about closing that gap. NumPy gives you a handful of simple functions for writing an array to disk and reading it back later, exactly as it was, dtype and shape and all. You will reach for this constantly: caching an expensive intermediate result so you never recompute it twice, saving a trained embedding matrix so a separate serving script can load it instantly, or handing a processed dataset to a teammate on a different machine without making them rerun your entire pipeline."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607013268-863665638.png",
+          "alt": "A diagram showing a saved npy file produced by a training script being consumed by a serving script and by a teammate on another laptop",
+          "caption": "One saved file, reused by other scripts and other machines, no recomputation needed.",
+          "size": "medium"
+        },
+        {
+          "type": "paragraph",
+          "text": "By the end of this lesson you will know four different ways to persist a NumPy array, when each one actually makes sense, and how to build a simple caching pattern you can drop into almost any project."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. The Single Array Format: .npy",
+          "id": "npy-single-array-format"
+        },
+        {
+          "type": "paragraph",
+          "text": "When you only need to save one array, NumPy has a dedicated binary format for exactly that job, and the file extension is .npy. Under the hood it stores three things together in one file: the raw bytes of your array, its dtype, and its shape. Nothing is left to guess. When you load the file back, NumPy reconstructs the array with the exact same numbers, the exact same precision, and the exact same shape you started with."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "1.1 np.save Writing a File",
+          "id": "np-save-writing-a-file"
+        },
+        {
+          "type": "paragraph",
+          "text": "Saving an array to a .npy file takes exactly one function call. You pass a filename and the array, and NumPy handles the rest."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\nembeddings = np.random.rand(1000, 768).astype(np.float32)\nnp.save(\"embeddings.npy\", embeddings)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "If the filename you pass does not already end in .npy, NumPy quietly appends it for you. The file that lands on disk is a compact binary blob, not something you would want to open in a text editor, but that compactness is exactly why it is fast to write and fast to read."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607014755-94803148.png",
+          "alt": "A diagram showing a NumPy array in memory being written by np.save into a single npy file on disk",
+          "caption": "np.save takes whatever array is in memory and writes it straight to a single binary file.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "1.2 np.load Reading It Back",
+          "id": "np-load-reading-it-back"
+        },
+        {
+          "type": "paragraph",
+          "text": "Reading the array back is just as short. Point np.load at the file, and you get an array indistinguishable from the one you saved."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\nembeddings = np.load(\"embeddings.npy\")\nprint(embeddings.shape, embeddings.dtype)\n# (1000, 768) float32"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice there is no step where you tell NumPy what shape to expect or what dtype the numbers should be. The .npy file already carries that information inside it, so np.load figures it out automatically every single time."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607016104-226452587.png",
+          "alt": "A diagram showing np.load reading a npy file from disk and reconstructing the exact same array that was saved",
+          "caption": "np.load reconstructs the array with the same shape and dtype it had before saving, no guessing involved.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "1.3 Why .npy Has No Ambiguity",
+          "id": "why-npy-has-no-ambiguity"
+        },
+        {
+          "type": "paragraph",
+          "text": "Compare this to writing numbers into a plain text file. If you save the value 0.1 as text and load it back, was it a float32 or a float64? Was the original array shaped as a flat list of 100 numbers, or as a 10 by 10 grid? Text alone cannot answer those questions unless you write extra bookkeeping code yourself. The .npy format sidesteps the entire problem by storing dtype and shape as part of the file, right next to the data."
+        },
+        {
+          "type": "list",
+          "items": [
+            "The exact dtype is preserved, so an int8 array stays int8 and a float64 array stays float64, never silently upgraded or downgraded.",
+            "The exact shape is preserved, so a 3 by 4 matrix loads back as a 3 by 4 matrix, not as a flat list of 12 numbers.",
+            "Reading is a near direct memory copy, which is why loading a large npy file feels almost instantaneous compared to parsing text."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "A quick word on allow_pickle",
+          "content": "By default, np.load can only read plain numeric arrays safely. If a saved file contains Python objects rather than plain numbers, NumPy falls back to pickle to reconstruct them, and loading a pickled file means running whatever code is embedded in it. Never call np.load with allow_pickle set to True on a file you did not create yourself or do not fully trust. Treat an untrusted npy or npz file the same way you would treat an untrusted executable."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Bundling Multiple Arrays: .npz",
+          "id": "npz-archive-format"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most real pipelines do not produce just one array. You might have a training set, a test set, and a labels array, and saving three separate .npy files means juggling three separate filenames every time you load your data back. The .npz format solves this by packing several named arrays into a single archive file, so one path on disk gives you everything you need."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.1 np.savez for Several Named Arrays",
+          "id": "np-savez-named-arrays"
+        },
+        {
+          "type": "paragraph",
+          "text": "You call np.savez with a filename followed by keyword arguments, and each keyword becomes the name you will use to fetch that array back out later."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\ntrain_array = np.random.rand(8000, 20)\ntest_array = np.random.rand(2000, 20)\nlabel_array = np.random.randint(0, 2, size=8000)\n\nnp.savez(\"dataset.npz\", train=train_array, test=test_array, labels=label_array)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Behind the scenes, np.savez is really just zipping up several .npy files into one container. Each array keeps its own dtype and shape exactly like it would in a standalone .npy file, they are simply bundled together under one name."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607017759-506949261.png",
+          "alt": "A diagram showing three separate named arrays, train, test, and labels, being combined by np.savez into one npz file",
+          "caption": "np.savez packs several named arrays into a single archive file, one path instead of three.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.2 np.savez_compressed for Smaller Files",
+          "id": "np-savez-compressed"
+        },
+        {
+          "type": "paragraph",
+          "text": "If disk space or transfer bandwidth matters to you, swap np.savez for np.savez_compressed. The call looks identical, but NumPy runs each array through gzip compression before writing it, which usually shrinks the file noticeably, especially for arrays with a lot of repeated or sparse values."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\nnp.savez_compressed(\"dataset_compressed.npz\", train=train_array, test=test_array, labels=label_array)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "That smaller file does not come free. Compressing the data takes extra CPU time on the way in, and decompressing it takes extra CPU time on the way out when you load it back. For a small array this cost is negligible. For a huge array you load thousands of times in a training loop, that repeated decompression overhead can genuinely slow you down, so save the compressed variant for cases where the size reduction actually matters more than raw loading speed."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607019224-59857931.png",
+          "alt": "A diagram showing a large npz archive going through np.savez_compressed to become a smaller gzip file at the cost of extra CPU time",
+          "caption": "Compression trims the file size but spends CPU time doing it, a tradeoff worth making only when size actually matters.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.3 Loading an Archive and Accessing Arrays by Name",
+          "id": "loading-npz-by-name"
+        },
+        {
+          "type": "paragraph",
+          "text": "Loading an npz archive works through the same np.load function you already know, but instead of handing you back one array, it hands you back a dict like object. You then reach into it using the same names you saved each array under."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\narchive = np.load(\"dataset.npz\")\nprint(list(archive.keys()))\n# [\"train\", \"test\", \"labels\"]\n\ntrain_array = archive[\"train\"]\ntest_array = archive[\"test\"]\nlabels = archive[\"labels\"]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Each array only gets decompressed and pulled into memory the moment you actually access its key, not the instant you call np.load. That means opening an archive with ten arrays inside it, but only touching two of them, costs you far less time and memory than you might expect."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607020925-975381907.png",
+          "alt": "A diagram showing np.load reading a npz file and returning a dict like object from which the train array and test array are fetched by name",
+          "caption": "np.load returns a dict like object for npz files, and each array is fetched using the name it was saved under.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "Close what you open",
+          "content": "The object returned by np.load for an npz file holds an open file handle behind the scenes. In a long running process it is good practice to either call archive.close() once you are done, or open it inside a with block, so the file handle does not linger longer than it needs to."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Text Based Alternatives",
+          "id": "text-based-alternatives"
+        },
+        {
+          "type": "paragraph",
+          "text": "Binary formats are fast and exact, but they are not always the right tool. Sometimes you need a file a colleague can open and read without any Python installed, or a file that a completely different programming language can parse on its own. For those situations, NumPy offers a plain text option too."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.1 np.savetxt and np.loadtxt",
+          "id": "np-savetxt-and-loadtxt"
+        },
+        {
+          "type": "paragraph",
+          "text": "np.savetxt writes an array out as rows of plain text, with a delimiter of your choice separating the values, similar to a CSV file. np.loadtxt reads that same style of file back into an array."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\nscores = np.array([0.913427, 0.220981, 0.774512])\nnp.savetxt(\"scores.csv\", scores, delimiter=\",\")\n\nloaded_scores = np.loadtxt(\"scores.csv\", delimiter=\",\")\nprint(loaded_scores)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Open scores.csv in any plain text editor and you will actually see the numbers sitting there as readable digits. That is the entire appeal of this format. It is portable across languages, easy to inspect by eye, and easy to hand off to anyone, technical or not."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607022329-439675632.png",
+          "alt": "A diagram showing a NumPy array being written by np.savetxt into a plain text CSV file that is readable in any editor",
+          "caption": "np.savetxt trades binary efficiency for a file format any human or any language can read directly.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.2 The Cost: Precision, Speed, and File Size",
+          "id": "cost-precision-speed-size"
+        },
+        {
+          "type": "paragraph",
+          "text": "That readability comes at a real cost, and it shows up in three places. First, precision. A float64 number can carry around seventeen significant digits, but text formats commonly write out a shorter representation by default, and reading that shortened text back in does not always reproduce the exact original bits. Second, speed. Parsing text is simply slower than copying raw bytes, and the gap widens fast as your array grows. Third, size. Writing \"0.913427\" as readable characters takes more bytes on disk than storing the equivalent float32 number in binary."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607023705-363559702.png",
+          "alt": "A diagram showing a precise float value losing digits after being written by np.savetxt and read back by np.loadtxt, ending as a rounded value",
+          "caption": "Round tripping a float through a text file can quietly change the exact digits you started with.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "Precision is not guaranteed by default",
+          "content": "If you truly need every digit of a float64 preserved through a text round trip, pass an explicit format string like fmt=\"%.18e\" to np.savetxt. Without it, the default formatting can trim precision you did not intend to lose, and for most numeric work involving many decimal places, a binary format avoids this problem entirely."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of this makes text formats bad. It just means they are the right choice for small arrays, quick debugging dumps, or genuine interoperability needs, and the wrong choice for anything large or precision sensitive, like a full embedding matrix or a big batch of training data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Comparing Your Four Options",
+          "id": "comparing-your-options"
+        },
+        {
+          "type": "paragraph",
+          "text": "You now have four tools in front of you: npy, npz, npz compressed, and savetxt. Here is how they stack up against each other on the things that usually matter when you are deciding which one to reach for."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Format\",\"Speed\",\"File Size\",\"Precision\",\"Best For\"],\"rows\":[[\"npy\",\"Fastest to read and write\",\"Baseline, uncompressed\",\"Exact, bit for bit\",\"One array you reload often, like a cached feature matrix\"],[\"npz\",\"Nearly as fast as npy\",\"Similar to several npy files combined\",\"Exact, bit for bit\",\"Several related arrays you want bundled under one path\"],[\"npz compressed\",\"Slower, extra CPU on load and save\",\"Smallest of the binary options\",\"Exact, bit for bit\",\"Large archives where disk space or transfer time is tight\"],[\"savetxt\",\"Slowest by far for large arrays\",\"Largest, plain characters take more bytes\",\"Not guaranteed unless you set an explicit format\",\"Small arrays, quick inspection, or sharing outside Python\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607025707-874217861.png",
+          "alt": "A diagram comparing relative file sizes across npy as the baseline, npz as similar, npz compressed as the smallest, and savetxt as the largest",
+          "caption": "Roughly how the four formats compare on disk, from most compact to least compact.",
+          "size": "medium"
+        },
+        {
+          "type": "paragraph",
+          "text": "If you are ever unsure which one to pick, default to npy for a single array and npz for several related arrays. Reach for the compressed variant only once file size actually becomes a problem, and reach for savetxt only when a human or another language genuinely needs to read the file directly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. A Real Caching Pattern",
+          "id": "caching-pattern-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Let us tie this back to the exact problem this lesson opened with: an expensive computation you do not want to repeat every time your script runs. The pattern is simple once you see it. Before computing anything, check whether a cached file already exists on disk. If it does, load it and skip straight to using it. If it does not, do the expensive work once, then save the result so the next run gets to skip it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.1 Check Before You Compute",
+          "id": "check-before-you-compute"
+        },
+        {
+          "type": "paragraph",
+          "text": "The check itself is a plain file system question, nothing NumPy specific about it. Python's os.path.exists tells you whether a given filename is already sitting on disk."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783607027149-951463633.png",
+          "alt": "A diagram showing a check for whether a cached file exists, branching to loading the cached array if yes or computing and saving a new array if no",
+          "caption": "The whole caching pattern in one picture: check first, load if possible, compute and save only when needed.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.2 Putting It Together",
+          "id": "putting-it-together"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is a small but realistic version of the pattern. Imagine build_expensive_features represents something that genuinely takes a while, a heavy preprocessing step or a large embedding computation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import os\nimport numpy as np\n\nCACHE_PATH = \"processed_features.npy\"\n\ndef build_expensive_features():\n    print(\"Recomputing features from scratch, this takes a while...\")\n    raw = np.random.rand(200000, 128)\n    return np.sqrt(raw) * 2.5\n\nif os.path.exists(CACHE_PATH):\n    features = np.load(CACHE_PATH)\n    print(\"Loaded cached features from disk.\")\nelse:\n    features = build_expensive_features()\n    np.save(CACHE_PATH, features)\n    print(\"Computed features and cached them for next time.\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Run this script once and you will see the slow recompute path print its message while it grinds through the work. Run it again, without deleting processed_features.npy, and it skips straight to the fast load path instead. That is the exact gap from the start of this lesson, closed with about five lines of code."
+        },
+        {
+          "type": "list",
+          "items": [
+            "For several related arrays, swap np.save and np.load for np.savez and the dict style access shown earlier in this lesson.",
+            "For a shared cache across machines or teammates, put the saved file somewhere everyone can reach, like a shared drive or an object storage bucket, rather than a local folder only you can see.",
+            "For anything containing plain Python objects instead of plain numbers, remember the pickle security note from earlier and only load files you trust."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "One caveat on portability",
+          "content": "A npy or npz file holding plain numeric arrays loads back fine across different machines and different NumPy versions in the vast majority of cases. If your array holds Python objects rather than plain numbers, that portability guarantee weakens, since it depends on pickle being able to reconstruct those objects on the machine doing the loading."
+        },
+        {
+          "type": "paragraph",
+          "text": "That is the full toolkit. Reach for npy when you have one array to cache, npz when you have several, the compressed variant when size is tight, and savetxt only when a human or another language truly needs to read the file. Combined with the simple exists then load or compute then save pattern above, you now have everything you need to stop paying for the same computation twice."
+        }
+      ]
+    }
+  ]
+}

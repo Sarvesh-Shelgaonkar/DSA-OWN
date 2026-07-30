@@ -1,0 +1,548 @@
+{
+  "slug": "memory-management",
+  "title": "Memory Management",
+  "content": [
+    {
+      "id": "memory-management",
+      "title": "Memory Management",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Every conversation you have with a model lives inside a context window, and that window empties out the moment the session ends. Anything the model needs to carry forward has to be saved somewhere else, on purpose."
+        },
+        {
+          "type": "paragraph",
+          "text": "Memory management is the discipline of deciding what gets saved, where it gets saved, and how it gets pulled back in later without flooding the context window all over again."
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP servers are a natural place to put this logic, since they can expose a memory store to any client through simple tools or resources."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Short Term Context vs Long Term Memory",
+          "id": "mem-short-vs-long"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574864900-129692801.png",
+          "alt": "Short term context from the current conversation is compared against long term memory",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Short term context is everything currently sitting inside the active conversation, the system prompt, the messages so far, and any tool results from this session."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is fast, complete, and free to read, but it vanishes the instant the session closes or the context window fills up and older turns get pushed out."
+        },
+        {
+          "type": "paragraph",
+          "text": "Long term memory is different. It is information deliberately written to storage that outlives the conversation, so a future session can retrieve it."
+        },
+        {
+          "type": "paragraph",
+          "text": "The two are not competing options, they are complementary layers, short term context handles the moment, long term memory handles continuity across moments."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Why Short Term Context Is Not Enough",
+          "id": "mem-why-short-not-enough"
+        },
+        {
+          "type": "paragraph",
+          "text": "A user might tell an assistant their preferred coding language on Monday and expect it to still be respected on Friday, in a completely new session."
+        },
+        {
+          "type": "paragraph",
+          "text": "Without long term memory, every session starts from zero, and the model has no way to know anything happened before this exact moment."
+        },
+        {
+          "type": "paragraph",
+          "text": "That is fine for a one off question, but it breaks down fast for any assistant meant to feel consistent over days, weeks, or months of use."
+        },
+        {
+          "type": "note",
+          "title": "Amnesia by default",
+          "content": "Unless a system explicitly writes something to persistent storage, a model has no memory of a previous session at all, no matter how important that earlier conversation felt."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. What a Memory Store Actually Is",
+          "id": "mem-what-is-memory-store"
+        },
+        {
+          "type": "paragraph",
+          "text": "A memory store is just a place outside the model where facts get written and later read back, a database, a file, or a key value store."
+        },
+        {
+          "type": "paragraph",
+          "text": "It has nothing magical about it, it is closer to a notebook than to the model brain, the model only knows what is in it because something chose to read it in."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a memory store can be as simple as a table of facts\nmemory_store = {\n    \"user_123\": [\n        {\"fact\": \"Prefers Python over Java\", \"saved_at\": \"2026-06-01\"},\n        {\"fact\": \"Works on a backend team\", \"saved_at\": \"2026-06-03\"},\n    ]\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Exposing Memory Through MCP Resources",
+          "id": "mem-expose-as-resource"
+        },
+        {
+          "type": "paragraph",
+          "text": "One way an MCP server can offer memory is as a resource, a readable item a client can fetch by URI, similar to reading a file."
+        },
+        {
+          "type": "paragraph",
+          "text": "This works well when memory is meant to be loaded automatically at the start of a session, before the user has asked anything."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# server exposes memory as a resource\n@server.resource(\"memory://user/{user_id}/facts\")\nasync def get_user_facts(user_id: str):\n    facts = memory_store.get(user_id, [])\n    return {\n        \"contents\": [\n            {\"uri\": f\"memory://user/{user_id}/facts\",\n             \"text\": \"\\n\".join(f[\"fact\"] for f in facts)}\n        ]\n    }"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Exposing Memory Through MCP Tools",
+          "id": "mem-expose-as-tools"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574866831-207631637.png",
+          "alt": "A memory store is exposed to the model through remember and recall tools",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The other common approach is to expose memory as tools, typically a remember tool for writing and a recall tool for reading."
+        },
+        {
+          "type": "paragraph",
+          "text": "Tools fit better when the model needs to decide, mid conversation, that something is worth saving or worth looking up, rather than loading everything up front."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A resource is pulled in automatically, usually at session start, without the model asking for it",
+            "A tool is called deliberately, whenever the model or the host decides memory needs to be written or read",
+            "Many real systems use both, a resource for a starting snapshot and tools for updates during the session"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Building a Simple remember Tool",
+          "id": "mem-building-remember-tool"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574868351-177442339.png",
+          "alt": "A remember tool takes a fact and saves it into the memory store",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A remember tool takes a piece of information and a user identifier, then writes that fact into the memory store."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keep the tool narrow, it should save one clear fact at a time, not an entire transcript dumped in as a single blob."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "@server.tool(\"remember\")\nasync def remember(user_id: str, fact: str):\n    entry = {\"fact\": fact, \"saved_at\": current_timestamp()}\n    memory_store.setdefault(user_id, []).append(entry)\n    return {\"status\": \"saved\", \"fact\": fact}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Building a Simple recall Tool",
+          "id": "mem-building-recall-tool"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574869875-97427965.png",
+          "alt": "A recall tool queries the memory store and returns matching facts",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A recall tool does the opposite, it takes a user identifier and returns whatever facts have been saved for that person."
+        },
+        {
+          "type": "paragraph",
+          "text": "A basic version just returns everything, but a better version supports a query so only relevant facts come back."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "@server.tool(\"recall\")\nasync def recall(user_id: str, query: str = None):\n    facts = memory_store.get(user_id, [])\n    if query:\n        facts = [f for f in facts if query.lower() in f[\"fact\"].lower()]\n    return {\"facts\": [f[\"fact\"] for f in facts]}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. A Minimal Memory Server End to End",
+          "id": "mem-minimal-server-end-to-end"
+        },
+        {
+          "type": "paragraph",
+          "text": "Put together, a tiny memory server needs only three pieces, storage, a remember tool, and a recall tool."
+        },
+        {
+          "type": "paragraph",
+          "text": "Everything else in a production system, expiry, summarization, search ranking, builds on top of this same small core."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const memoryStore = new Map();\n\nfunction remember(userId, fact) {\n  const entries = memoryStore.get(userId) || [];\n  entries.push({ fact, savedAt: Date.now() });\n  memoryStore.set(userId, entries);\n  return { status: \"saved\" };\n}\n\nfunction recall(userId) {\n  return memoryStore.get(userId) || [];\n}\n\nserver.tool(\"remember\", remember);\nserver.tool(\"recall\", recall);"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Deciding What Is Worth Remembering",
+          "id": "mem-what-is-worth-remembering"
+        },
+        {
+          "type": "paragraph",
+          "text": "Not everything said in a conversation deserves a permanent home, most of it is only relevant to the moment it happened in."
+        },
+        {
+          "type": "paragraph",
+          "text": "A good rule of thumb is to ask whether a fact would still change the right answer weeks from now, in a completely different session."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Worth remembering long term\",\"Fine to discard after the session\"],\"rows\":[[\"A stated preference, like preferred language or tone\",\"The exact wording of a single question\"],[\"A stable fact about the user or their project\",\"Intermediate tool results used to answer one query\"],[\"A recurring goal the user keeps coming back to\",\"Small talk or one off clarifications\"],[\"A correction the user made to a past mistake\",\"Debugging output that already led to a fix\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Signals That Something Should Be Saved",
+          "id": "mem-signals-to-save"
+        },
+        {
+          "type": "paragraph",
+          "text": "A few practical signals help decide, in the moment, whether a piece of information deserves to be written to long term memory."
+        },
+        {
+          "type": "list",
+          "items": [
+            "The user explicitly says to remember something for later",
+            "The same fact or preference comes up again across multiple turns",
+            "The information would be expensive or slow to re derive if lost",
+            "The fact describes the user or their setup, rather than the current task"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Why Unbounded Memory Becomes a Problem",
+          "id": "mem-unbounded-becomes-problem"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574871377-646614261.png",
+          "alt": "Unbounded memory keeps growing until it becomes a problem",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "If a remember tool is called freely and nothing ever gets removed, the memory store grows without limit, turn after turn, session after session."
+        },
+        {
+          "type": "paragraph",
+          "text": "Reading all of it back in eventually costs as many tokens as the conversation history it was meant to replace, defeating the whole point."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Strategy One: Summarize Before Saving",
+          "id": "mem-strategy-summarize"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574873455-268801209.png",
+          "alt": "A raw entry is summarized before being saved into memory",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Instead of saving a full conversation excerpt, condense it into a short factual statement before it ever reaches the memory store."
+        },
+        {
+          "type": "paragraph",
+          "text": "A summarization step turns a paragraph of chat into one clean line, which is both cheaper to store and cheaper to read back later."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def summarize_for_memory(conversation_snippet: str) -> str:\n    # in practice this calls a model with a tight instruction,\n    # here shown as the shape of the result it should produce\n    return \"User prefers concise answers with code examples first.\""
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Strategy Two: Cap and Rotate Old Entries",
+          "id": "mem-strategy-cap-rotate"
+        },
+        {
+          "type": "paragraph",
+          "text": "Set a maximum number of facts per user, and when a new one comes in past that cap, drop the oldest or least used entry."
+        },
+        {
+          "type": "paragraph",
+          "text": "This keeps the memory store bounded no matter how long a user has been active, without needing a human to prune it manually."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "MAX_FACTS_PER_USER = 50\n\ndef add_with_cap(user_id: str, fact: str):\n    entries = memory_store.setdefault(user_id, [])\n    entries.append({\"fact\": fact, \"saved_at\": current_timestamp()})\n    if len(entries) > MAX_FACTS_PER_USER:\n        entries.pop(0)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Strategy Three: Merge Similar Facts",
+          "id": "mem-strategy-merge-similar"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a new fact overlaps heavily with an existing one, replace the old entry instead of stacking a near duplicate on top."
+        },
+        {
+          "type": "paragraph",
+          "text": "A memory store that quietly accumulates ten slightly different phrasings of the same preference is just as bloated as one with no limit at all."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Before saving, check if a very similar fact already exists for that user",
+            "If it does, update or replace it rather than appending a new entry",
+            "Only append a brand new entry when the fact is genuinely new information"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Strategy Four: Periodic Consolidation",
+          "id": "mem-strategy-periodic-consolidation"
+        },
+        {
+          "type": "paragraph",
+          "text": "Even with capping and merging, a memory store can slowly fill with many small, related facts that would read better as one summary."
+        },
+        {
+          "type": "paragraph",
+          "text": "Running an occasional consolidation pass, say once the count crosses a threshold, rewrites many small entries into a few dense ones."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def consolidate_if_needed(user_id: str, threshold: int = 30):\n    entries = memory_store.get(user_id, [])\n    if len(entries) < threshold:\n        return\n    combined_text = \" \".join(e[\"fact\"] for e in entries)\n    summary = summarize_for_memory(combined_text)\n    memory_store[user_id] = [{\"fact\": summary, \"saved_at\": current_timestamp()}]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Retrieving Only What Is Relevant",
+          "id": "mem-retrieving-only-relevant"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784574875130-515357302.png",
+          "alt": "Only relevant memory entries are retrieved rather than the whole store",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Even a well managed memory store should not be dumped in whole on every session, only the facts relevant to the current task belong in context."
+        },
+        {
+          "type": "paragraph",
+          "text": "A recall tool that accepts a query, or that ranks facts by relevance, keeps the context window focused instead of pre loading everything just in case."
+        },
+        {
+          "type": "note",
+          "title": "Recall is a filter, not a dump",
+          "content": "Treat the recall tool the same way you would treat any search, return the few facts that matter for this moment, not the entire stored history."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Putting the Pieces Together in a Real Flow",
+          "id": "mem-putting-pieces-together"
+        },
+        {
+          "type": "paragraph",
+          "text": "A well behaved session opens by recalling a few relevant facts, works through the conversation using short term context, and closes by remembering anything new and durable."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Session starts, host calls recall to load a small set of relevant facts",
+            "Conversation proceeds normally using short term context for everything else",
+            "Model or host identifies a durable fact worth keeping and calls remember",
+            "Memory store applies capping, merging, or consolidation as needed",
+            "Next session starts fresh, but recall brings the important facts back"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "mem-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "A user tells a coding assistant they always want tests included with any function it writes, across several sessions this week."
+        },
+        {
+          "type": "paragraph",
+          "text": "The first time this comes up, the assistant calls remember with a short summarized fact rather than the full sentence the user typed."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "remember(user_id=\"u_42\", fact=\"Always include unit tests with generated functions\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "On day two, a new session starts, the host calls recall for user u_42, and this one fact comes back before the user has said anything."
+        },
+        {
+          "type": "paragraph",
+          "text": "By day five, the user has added three related preferences, so a consolidation pass merges them into one clean entry the next time the cap is checked."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "mem-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Saving entire raw conversation transcripts to memory instead of short summarized facts.",
+            "Never capping or consolidating memory, so the store grows without bound over months of use.",
+            "Loading every stored fact back into context on every session instead of recalling only what is relevant.",
+            "Treating short term context and long term memory as the same thing, and assuming the model remembers automatically.",
+            "Saving one off details, like a single question, as if they were durable preferences.",
+            "Storing near duplicate facts repeatedly instead of merging or updating an existing entry."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "mem-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Design a remember and recall tool pair for a study assistant that tracks a student topics of interest across many sessions."
+        },
+        {
+          "type": "paragraph",
+          "text": "Decide what counts as worth remembering, write a summarization step for raw notes, and add a cap so the store never exceeds twenty entries per student."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def add_topic_interest(student_id: str, raw_note: str):\n    # TODO: summarize raw_note into a short fact\n    # TODO: check for a similar existing entry and merge if found\n    # TODO: enforce a twenty entry cap per student\n    pass"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "mem-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Short term context handles the current conversation, long term memory is a separate store that an MCP server can expose through resources or tools so facts survive past the session."
+        },
+        {
+          "type": "paragraph",
+          "text": "Good memory management means being selective about what gets saved, and summarizing, capping, or consolidating what is kept so the store never grows into a burden of its own."
+        }
+      ]
+    }
+  ]
+}

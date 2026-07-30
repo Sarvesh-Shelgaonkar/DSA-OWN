@@ -1,0 +1,711 @@
+{
+  "slug": "object-storage",
+  "title": "Object Storage",
+  "content": [
+    {
+      "id": "object-storage",
+      "title": "Object Storage",
+      "blocks": [
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every large system eventually needs a place to put bytes that are too big or too unstructured for a database row: profile pictures, video files, PDF invoices, application logs, machine learning training sets, database backups. Object storage is the piece of infrastructure built specifically for that job."
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of organizing data as rows and columns, or as files inside nested folders, object storage treats every piece of data as a self contained object. An object bundles the raw bytes together with metadata that describes them, and the whole thing is addressed by a simple key inside a bucket. There is no directory tree underneath it, just a flat namespace of keys."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Object storage is a flat namespace of immutable objects, each identified by a unique key, each carrying its own metadata, and each reachable over a simple HTTP API rather than a filesystem mount."
+        },
+        {
+          "type": "paragraph",
+          "content": "This design sounds almost too simple to be interesting, but the simplicity is exactly what lets it scale to exabytes and survive hardware failures without anyone noticing. Amazon S3, Google Cloud Storage, and Azure Blob Storage are the three systems most engineers will touch in practice, and this lesson uses them as running examples throughout."
+        },
+        {
+          "type": "note",
+          "title": "Why this matters for interviews",
+          "content": "Almost every system design interview question that involves images, videos, backups, or large files eventually needs the candidate to say the phrase object storage and explain why it beats stuffing bytes into a relational database. This topic gives you the vocabulary and the reasoning to do that convincingly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Core Concept",
+          "text": "2. Core Concept"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 What an object actually is",
+          "text": "2.1 What an object actually is"
+        },
+        {
+          "type": "paragraph",
+          "content": "An object has three parts. First, the data itself, which is an opaque blob of bytes that the storage system never tries to interpret. It could be a JPEG, a JSON export, or a ten gigabyte video file, the storage layer treats it identically. Second, metadata, a set of key value pairs describing the object, things like content type, size, checksum, creation time, and any custom tags the application wants to attach. Third, a unique key, a string that identifies the object inside its bucket."
+        },
+        {
+          "type": "paragraph",
+          "content": "Together these three parts form the object. When you ask an object store for an object, you get back the bytes plus the metadata in one response. There is no concept of opening a file, seeking to an offset, and writing a few bytes in the middle. You either have the whole object or you do not."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285113588-106888497.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285113588-106888497.png",
+          "alt": "A bucket named photos containing three keys with no folder hierarchy, showing a flat namespace of key to object mappings"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Buckets, not folders",
+          "text": "2.2 Buckets, not folders"
+        },
+        {
+          "type": "paragraph",
+          "content": "A bucket is a top level container, roughly comparable to a namespace or a top level directory. You create a bucket once, give it a globally or account unique name, and then store any number of objects inside it. Buckets typically carry configuration like region, versioning status, access policy, and lifecycle rules."
+        },
+        {
+          "type": "paragraph",
+          "content": "Inside a bucket there is no real hierarchy. When you see a key like photos slash 2026 slash trip.jpg in a console, the slashes are just characters in the string. The storage system does not create actual folder objects for photos or for 2026, it stores one object whose key happens to contain slashes. Consoles and SDKs render this as a tree for human convenience, using the slashes as a delimiter to group listings, but underneath it is a single flat key space."
+        },
+        {
+          "type": "note",
+          "title": "Prefix listing is not a real directory scan",
+          "content": "Listing \"everything under photos slash 2026\" is implemented as a prefix query against a sorted key index, not as walking a directory inode. This is why object storage can hold billions of keys in one bucket without the kind of slowdown a filesystem with billions of files in one folder would suffer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.3 Immutability",
+          "text": "2.3 Immutability"
+        },
+        {
+          "type": "paragraph",
+          "content": "Objects are immutable by default. You cannot open an existing object and patch ten bytes in the middle of it the way you can with a file on disk. To change an object you upload a brand new version of it under the same key, and the new bytes fully replace the old ones, or become a new version if versioning is enabled."
+        },
+        {
+          "type": "paragraph",
+          "content": "This constraint feels restrictive at first, but it is a major source of object storage simplicity and scalability. Immutable data is trivial to cache, trivial to replicate, and trivial to reason about concurrently, because there is no partial write state to coordinate. Two clients reading the same key at the same time always see a complete, consistent object."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. How Addressing Works",
+          "text": "3. How Addressing Works"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every object is addressed by the pair of bucket name and key. Practically, this pair turns directly into a URL. A request to fetch an object usually looks like a plain HTTPS GET against a hostname derived from the bucket, with the key as the path."
+        },
+        {
+          "type": "code",
+          "content": "GET /users/42/avatar.jpg HTTP/1.1\nHost: photos-app-bucket.s3.amazonaws.com\n\nHTTP/1.1 200 OK\nContent-Type: image/jpeg\nContent-Length: 184320\nETag: \"9bd4e2f1a7c3\"\nLast-Modified: Wed, 08 Jul 2026 09:12:44 GMT",
+          "code": {
+            "language": "text",
+            "content": "GET /users/42/avatar.jpg HTTP/1.1\nHost: photos-app-bucket.s3.amazonaws.com\n\nHTTP/1.1 200 OK\nContent-Type: image/jpeg\nContent-Length: 184320\nETag: \"9bd4e2f1a7c3\"\nLast-Modified: Wed, 08 Jul 2026 09:12:44 GMT"
+          },
+          "codes": {
+            "text": "GET /users/42/avatar.jpg HTTP/1.1\nHost: photos-app-bucket.s3.amazonaws.com\n\nHTTP/1.1 200 OK\nContent-Type: image/jpeg\nContent-Length: 184320\nETag: \"9bd4e2f1a7c3\"\nLast-Modified: Wed, 08 Jul 2026 09:12:44 GMT"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Because access happens over plain HTTP, object storage composes naturally with the rest of the web stack. A browser can fetch an object directly, a CDN can cache the response using standard HTTP caching headers, and a load balancer never needs to know anything special about the backend, it just proxies HTTP requests to an endpoint."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Keys are just strings",
+          "text": "3.1 Keys are just strings"
+        },
+        {
+          "type": "paragraph",
+          "content": "A key can be almost any string up to a length limit, commonly around 1024 bytes. Applications typically encode useful structure into the key itself, such as a tenant id, a date, and a file name, because that structure makes prefix based listing and lifecycle rules easy to write later."
+        },
+        {
+          "type": "list",
+          "content": "[\"tenant-4471/invoices/2026-06/inv-88213.pdf\",\"uploads/user-9021/original/photo.png\",\"uploads/user-9021/thumb-200/photo.png\",\"logs/service-checkout/2026-07-08/00.log.gz\"]",
+          "items": [
+            "tenant-4471/invoices/2026-06/inv-88213.pdf",
+            "uploads/user-9021/original/photo.png",
+            "uploads/user-9021/thumb-200/photo.png",
+            "logs/service-checkout/2026-07-08/00.log.gz"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Design the key like a query pattern",
+          "content": "Because listing is a prefix scan over a sorted key space, put the fields you will filter by most often at the front of the key, similar to designing a sort key in a wide column database. Putting a random hash at the front of every key can also help spread very high throughput write traffic across the storage system's internal partitions."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Object Storage vs File Storage vs Block Storage",
+          "text": "4. Object Storage vs File Storage vs Block Storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "These three storage models solve overlapping but distinct problems, and interviewers frequently ask candidates to distinguish them. The short version: block storage is the raw disk, file storage is a shared filesystem on top of that disk, and object storage is a web service in front of a completely different internal architecture optimized for scale rather than for POSIX semantics."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Block storage",
+          "text": "4.1 Block storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "Block storage exposes raw fixed size blocks, the same abstraction a physical disk gives an operating system. A database engine or a filesystem sits on top and decides how to lay out its own structures across those blocks. Amazon EBS and Google Persistent Disk are block storage products. Block storage is attached to exactly one compute instance at a time in the common case, offers very low latency random reads and writes, and is what you want under a relational database."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 File storage",
+          "text": "4.2 File storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "File storage adds a filesystem on top of block storage and exposes it over a network protocol such as NFS or SMB, so multiple machines can mount the same share and see a familiar hierarchy of folders and files. Amazon EFS and Azure Files are examples. It supports partial writes, byte range reads, file locking, and POSIX permissions, which makes it a natural fit for legacy applications that already expect a real filesystem."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 Object storage",
+          "text": "4.3 Object storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "Object storage drops the filesystem abstraction entirely. There is no mount, no POSIX permission bits, no partial in place writes. In exchange it removes the scaling limits that a filesystem tree runs into, and it exposes a simple HTTP API that any application on the internet can call directly, with no network file protocol required."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Dimension\",\"Block storage\",\"File storage\",\"Object storage\"],\"rows\":[[\"Unit of data\",\"Fixed size block\",\"File inside a directory tree\",\"Object with key and metadata\"],[\"Access method\",\"Disk driver, mounted volume\",\"NFS or SMB mount\",\"HTTP API\"],[\"Typical latency\",\"Sub millisecond\",\"Low single digit milliseconds\",\"Tens of milliseconds\"],[\"Mutability\",\"In place byte level writes\",\"In place byte level writes\",\"Whole object replace, immutable versions\"],[\"Scale ceiling\",\"Single volume, terabytes\",\"Shared volume, up to petabytes\",\"Practically unbounded, exabytes\"],[\"Good fit\",\"Database data files, boot volumes\",\"Shared home directories, legacy apps\",\"Media, backups, logs, data lake files\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285117529-529477602.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285117529-529477602.png",
+          "alt": "Side by side comparison of a traditional nested folder tree against an object storage flat key namespace"
+        },
+        {
+          "type": "note",
+          "title": "Interview shorthand",
+          "content": "If someone in the room says use a database for the images themselves, that is almost always the wrong call once volume grows past a small prototype. Store the bytes in object storage and store only the key or URL as a small string column in the database."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Key Properties",
+          "text": "5. Key Properties"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Durability",
+          "text": "5.1 Durability"
+        },
+        {
+          "type": "paragraph",
+          "content": "Durability describes the odds that a stored object survives over a long period of time without being lost, independent of whether it is momentarily unavailable. Amazon S3 advertises eleven nines of durability per year for standard storage classes, meaning that if you stored ten million objects, you would statistically expect to lose roughly one object every ten thousand years."
+        },
+        {
+          "type": "paragraph",
+          "content": "This number comes from aggressive redundancy under the hood. Every object is copied across multiple devices, and in most regional storage classes across multiple physically separate data centers, often called availability zones. The system also runs continuous background integrity checks that compare checksums and automatically repair any copy that has silently degraded on disk, a phenomenon known as bit rot."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285120449-248756962.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285120449-248756962.png",
+          "alt": "An uploaded object written as three copies spread across three separate availability zones"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Replication versus erasure coding",
+          "text": "5.2 Replication versus erasure coding"
+        },
+        {
+          "type": "paragraph",
+          "content": "Full replication, keeping three or more complete copies of every object, is simple and fast to read from, but it multiplies storage cost by the number of copies. Erasure coding is a more storage efficient alternative, it splits an object into data fragments plus extra parity fragments, similar in spirit to RAID, so that the object can be reconstructed even if some fragments are missing. Large scale object stores typically use erasure coding for colder, less frequently accessed data, since it recovers a bit more slowly than plain replication but costs meaningfully less to store."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.3 Availability",
+          "text": "5.3 Availability"
+        },
+        {
+          "type": "paragraph",
+          "content": "Availability is a different property from durability, it describes whether a request succeeds right now, not whether the data is preserved somewhere. A provider might quote ninety nine point nine nine percent availability, meaning a small number of requests might fail or need a retry, even though the underlying object is never actually lost. Well behaved clients handle this with automatic retries and exponential backoff."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.4 Scale",
+          "text": "5.4 Scale"
+        },
+        {
+          "type": "paragraph",
+          "content": "A single bucket can hold an effectively unlimited number of objects, commonly documented as no practical limit, and individual object size can range from zero bytes up to five terabytes on the major providers. Total account storage scales into the exabyte range across large customers, and none of it requires the customer to think about disk partitioning, RAID arrays, or adding more servers, the provider manages all of that behind the API."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.5 Consistency",
+          "text": "5.5 Consistency"
+        },
+        {
+          "type": "paragraph",
+          "content": "Older generations of object storage were famous for eventual consistency, especially around listing operations. You might upload a new object and then immediately list the bucket and not see it yet, because the update had not fully propagated across every replica involved in serving list requests."
+        },
+        {
+          "type": "paragraph",
+          "content": "Modern object stores have largely closed this gap. Amazon S3 moved to strong read after write consistency for all operations in December of 2020, meaning a GET immediately after a successful PUT is guaranteed to return the new object, and list operations reflect the change as well. Google Cloud Storage and Azure Blob Storage similarly offer strong consistency for standard operations today. It is still worth knowing the history, because plenty of existing documentation, and plenty of interview questions, still assume eventual consistency as the default mental model."
+        },
+        {
+          "type": "note",
+          "title": "Say both halves in an interview",
+          "content": "If asked about consistency, mention that it used to be eventual and explain why that made sense given the underlying replication, then mention that the major providers now offer strong consistency. Showing you know both the history and the current state signals real depth."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Versioning and Lifecycle Policies",
+          "text": "6. Versioning and Lifecycle Policies"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Versioning",
+          "text": "6.1 Versioning"
+        },
+        {
+          "type": "paragraph",
+          "content": "When versioning is turned on for a bucket, uploading to an existing key does not overwrite the old object, it creates a new version and keeps the old one around, each with its own internal version id. A plain GET on the key returns the newest version by default, but older versions remain retrievable by specifying their version id, and a delete operation just adds a delete marker as the newest version rather than instantly destroying anything."
+        },
+        {
+          "type": "paragraph",
+          "content": "Versioning is what makes object storage safe against a whole class of mistakes, an application bug that overwrites the wrong file, or a user who deletes something they immediately regret. The tradeoff is storage cost, since every version of every object counts against your bill until it is explicitly cleaned up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Lifecycle policies",
+          "text": "6.2 Lifecycle policies"
+        },
+        {
+          "type": "paragraph",
+          "content": "A lifecycle policy is a rule, attached to a bucket or to a prefix within a bucket, that automatically moves or deletes objects after a set amount of time. This turns storage cost management from a manual chore into a background process that runs forever without anyone remembering to do it."
+        },
+        {
+          "type": "list",
+          "content": "[\"Transition objects from a standard tier to a cheaper infrequent access tier after 30 days of no reads.\",\"Transition to a deep archive or cold tier after 90 days for objects that are kept only for compliance.\",\"Permanently delete temporary upload objects, like partially processed video chunks, after 24 hours.\",\"Permanently delete old object versions after 365 days to cap versioning storage growth.\"]",
+          "items": [
+            "Transition objects from a standard tier to a cheaper infrequent access tier after 30 days of no reads.",
+            "Transition to a deep archive or cold tier after 90 days for objects that are kept only for compliance.",
+            "Permanently delete temporary upload objects, like partially processed video chunks, after 24 hours.",
+            "Permanently delete old object versions after 365 days to cap versioning storage growth."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285122437-437890742.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285122437-437890742.png",
+          "alt": "A new object moving through storage tiers over time from standard to infrequent access to archive to deleted"
+        },
+        {
+          "type": "example-box",
+          "title": "A concrete lifecycle rule",
+          "text": "A video streaming backend stores raw uploaded footage before transcoding. The raw footage is only ever read once, right after upload, by the transcoding job. A lifecycle rule deletes the raw upload 48 hours after creation, once transcoding has produced the final renditions, freeing multiple terabytes a day that would otherwise sit untouched and unbilled for nothing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Real Systems",
+          "text": "7. Real Systems"
+        },
+        {
+          "type": "paragraph",
+          "content": "Three products dominate production usage, and while the concepts are shared, the terminology and defaults differ slightly across them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Amazon S3",
+          "text": "7.1 Amazon S3"
+        },
+        {
+          "type": "paragraph",
+          "content": "Amazon Simple Storage Service, launched in 2006, is generally credited as the product that popularized the term object storage at internet scale. It organizes data into buckets and keys, offers storage classes ranging from S3 Standard through Infrequent Access down to Glacier for archival, and exposes access control through bucket policies and IAM permissions written as JSON documents."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Google Cloud Storage",
+          "text": "7.2 Google Cloud Storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "Google Cloud Storage uses the same bucket and object vocabulary and adds the idea of storage classes named Standard, Nearline, Coldline, and Archive, distinguished mainly by minimum storage duration and retrieval cost rather than by durability, since durability targets are the same across all classes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.3 Azure Blob Storage",
+          "text": "7.3 Azure Blob Storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "Azure calls its objects blobs and its buckets containers, grouped under a storage account. It supports three blob types, block blobs for typical files, append blobs optimized for log style sequential appends, and page blobs which back Azure virtual machine disks, showing how the same underlying platform can also offer block storage semantics through a different blob type."
+        },
+        {
+          "type": "note",
+          "title": "They are not interchangeable overnight",
+          "content": "The APIs, authentication schemes, and exact consistency guarantees differ enough between providers that migrating a production application from one to another is a real project, not a one line config change, even though the conceptual model is nearly identical."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Typical Use Cases",
+          "text": "8. Typical Use Cases"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Media and static assets",
+          "text": "8.1 Media and static assets"
+        },
+        {
+          "type": "paragraph",
+          "content": "User uploaded photos and videos, profile pictures, product images for an e commerce catalog, and the static JavaScript and CSS bundles for a web application are all a natural fit. These files are written once, read many times, and rarely if ever modified in place."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Backups and archives",
+          "text": "8.2 Backups and archives"
+        },
+        {
+          "type": "paragraph",
+          "content": "Database snapshots, disaster recovery copies, and compliance archives that must be retained for years benefit from object storage cheap archival tiers and extremely high durability, without anyone needing to manage physical tape or dedicated backup hardware."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.3 Logs",
+          "text": "8.3 Logs"
+        },
+        {
+          "type": "paragraph",
+          "content": "Application and infrastructure logs are typically written as append only files, rotated hourly or daily, then shipped to object storage for long term retention after a short window in a faster, more expensive system like a log aggregator or a local disk."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.4 Data lakes",
+          "text": "8.4 Data lakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Modern data platforms increasingly store raw and processed analytical data directly as objects, often in a columnar format like Parquet, and run query engines such as Presto, Trino, Spark, or serverless query services directly against object storage rather than first loading everything into a dedicated database. This pattern is usually called a data lake, and it decouples storage cost from compute cost, since the objects sit cheaply in storage and compute clusters spin up only when a query actually runs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Worked Example: A Photo Sharing App",
+          "text": "9. Worked Example: A Photo Sharing App"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consider a photo sharing application where users upload photos that are then viewed by potentially thousands of other users. This is a good end to end example because it exercises upload, storage, addressing, and read heavy delivery all in one flow."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 Upload path",
+          "text": "9.1 Upload path"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a user uploads a photo, the mobile client typically does not send the bytes through the application backend at all. Instead, the backend generates a short lived, pre signed URL that grants temporary permission to write directly to a specific key in the bucket, and the client uploads straight to object storage using that URL. The backend only handles a small metadata record, avoiding the cost and latency of proxying potentially large files through application servers."
+        },
+        {
+          "type": "code",
+          "content": "// Backend: generate a pre signed upload URL for a specific key\nconst key = `uploads/user-${userId}/original/${photoId}.jpg`;\nconst uploadUrl = await s3.getSignedUrlPromise('putObject', {\n  Bucket: 'photoapp-media',\n  Key: key,\n  Expires: 300,\n  ContentType: 'image/jpeg',\n});\n// Client then does a PUT of the raw bytes directly to uploadUrl\n// The backend only stores photoId, userId, and key in its database",
+          "code": {
+            "language": "javascript",
+            "content": "// Backend: generate a pre signed upload URL for a specific key\nconst key = `uploads/user-${userId}/original/${photoId}.jpg`;\nconst uploadUrl = await s3.getSignedUrlPromise('putObject', {\n  Bucket: 'photoapp-media',\n  Key: key,\n  Expires: 300,\n  ContentType: 'image/jpeg',\n});\n// Client then does a PUT of the raw bytes directly to uploadUrl\n// The backend only stores photoId, userId, and key in its database"
+          },
+          "codes": {
+            "javascript": "// Backend: generate a pre signed upload URL for a specific key\nconst key = `uploads/user-${userId}/original/${photoId}.jpg`;\nconst uploadUrl = await s3.getSignedUrlPromise('putObject', {\n  Bucket: 'photoapp-media',\n  Key: key,\n  Expires: 300,\n  ContentType: 'image/jpeg',\n});\n// Client then does a PUT of the raw bytes directly to uploadUrl\n// The backend only stores photoId, userId, and key in its database",
+            "python": "# Backend: generate a pre signed upload URL for a specific key\nkey = f\"uploads/user-{user_id}/original/{photo_id}.jpg\"\nupload_url = s3_client.generate_presigned_url(\n    \"put_object\",\n    Params={\"Bucket\": \"photoapp-media\", \"Key\": key, \"ContentType\": \"image/jpeg\"},\n    ExpiresIn=300,\n)\n# Client then does a PUT of the raw bytes directly to upload_url\n# The backend only stores photo_id, user_id, and key in its database"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285124305-53173096.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285124305-53173096.png",
+          "alt": "The photo app calling the storage API through a presigned URL to write an object and receiving an acknowledgement after replication"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 Processing",
+          "text": "9.2 Processing"
+        },
+        {
+          "type": "paragraph",
+          "content": "After the original upload lands, an event notification from the bucket triggers a background worker, which downloads the original, generates a few resized thumbnail variants, and writes each thumbnail back as its own object under a related key, such as uploads slash user id slash thumb 200 slash photo id.jpg. The application database stores just the keys for the original and each thumbnail size, never the image bytes themselves."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.3 Read path and the CDN",
+          "text": "9.3 Read path and the CDN"
+        },
+        {
+          "type": "paragraph",
+          "content": "When another user opens the app and views a photo, the client does not fetch the object directly from the storage service on every view. A content delivery network sits in front of the bucket, caching each object at edge locations close to end users. The first viewer in a region causes a cache miss that pulls the object from origin storage, every subsequent viewer in that region is served straight from the nearby cache, cutting both latency and load on the origin bucket."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285126295-517561671.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285126295-517561671.png",
+          "alt": "A user request hitting a CDN edge cache first, falling back to object storage only on a cache miss"
+        },
+        {
+          "type": "note",
+          "title": "Signed cookies or signed URLs for private photos",
+          "content": "If photos are private rather than public, the CDN still caches the encrypted or access controlled response, and the application issues short lived signed URLs or signed cookies so only authorized viewers can pull a given object through the CDN, without object storage itself needing to know about individual application users."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.4 Why not just use a database",
+          "text": "9.4 Why not just use a database"
+        },
+        {
+          "type": "paragraph",
+          "content": "A relational database could technically store image bytes as a binary large object column, but at scale this causes real damage. Every backup of the database now has to move image bytes too, query performance degrades because binary blobs blow out buffer cache and index locality, and the database becomes a single expensive bottleneck for what is fundamentally simple, high volume, rarely updated data. Object storage exists precisely because these two data shapes, structured relational rows and large immutable blobs, want completely different storage engines."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Durability and Replication in More Depth",
+          "text": "10. Durability and Replication in More Depth"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth separating two related but distinct guarantees that object stores offer: durability of the bytes, and consistency of reads and writes against those bytes. Durability answers can this object be permanently lost, consistency answers what will I see if I read right after a write."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.1 Multi zone replication",
+          "text": "10.1 Multi zone replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "For regional storage classes, an object write is acknowledged only after enough copies have been durably written across separate availability zones, following a quorum style write similar in spirit to how distributed databases acknowledge writes. This means the loss of an entire data center does not lose data that was already acknowledged as written."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.2 Cross region replication",
+          "text": "10.2 Cross region replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "For an even stronger disaster recovery posture, buckets can be configured to asynchronously replicate every new object to a bucket in an entirely different geographic region. This protects against a regional level outage or disaster, at the cost of replication lag, meaning the copy in the second region might trail the primary by anywhere from a few seconds to a few minutes depending on object size and network conditions."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.3 Checksums and repair",
+          "text": "10.3 Checksums and repair"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every object is stored with a checksum computed at write time. Background processes continuously re read stored data, recompute checksums, and compare them against the stored value, silently detecting and repairing any copy where the underlying disk has developed a fault, without any application or user ever noticing. This ongoing self healing is a major reason the durability numbers hold up over long time horizons."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Trade-offs",
+          "text": "11. Trade-offs"
+        },
+        {
+          "type": "paragraph",
+          "content": "Object storage is not a universal replacement for every other kind of storage, it makes a specific set of tradeoffs that are excellent for some workloads and poor for others."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Virtually unlimited scale with no capacity planning required from the application team.\",\"Higher and less predictable latency than block storage, typically tens of milliseconds versus sub millisecond.\"],[\"Extremely high durability through automatic replication or erasure coding, without any manual backup process.\",\"No partial in place writes, updating even one byte means rewriting the whole object.\"],[\"Simple HTTP based access that composes naturally with CDNs, browsers, and serverless compute.\",\"No native file locking, POSIX permissions, or directory rename semantics that legacy applications may expect.\"],[\"Low cost per gigabyte, especially in colder storage tiers, compared to block or file storage.\",\"Historically eventual consistency in some operations, still true on some providers or configurations.\"],[\"Rich metadata and lifecycle automation reduce ongoing operational toil.\",\"Cost model is easy to misjudge, request counts and data transfer out can dominate the bill far more than raw storage.\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.1 When a database is still the right call",
+          "text": "11.1 When a database is still the right call"
+        },
+        {
+          "type": "paragraph",
+          "content": "If data is small, frequently updated in place, needs transactional guarantees across multiple related fields, or needs to be queried by arbitrary predicates, a database remains the right tool. A user profile row with a name, an email, and a subscription status belongs in a database. The profile picture that row points to, referenced by a key string, belongs in object storage."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.2 When a file system is still the right call",
+          "text": "11.2 When a file system is still the right call"
+        },
+        {
+          "type": "paragraph",
+          "content": "If an existing application genuinely needs POSIX semantics, such as a legacy piece of software that opens files, seeks around inside them, and expects real directory renames, a managed network file system is a better fit than retrofitting that application onto an object API it was never written for."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Interview Angle",
+          "text": "12. Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "When object storage comes up in a system design interview, it is rarely the whole question, it is usually one component inside a bigger system such as a photo sharing app, a video platform, or a document management tool. The strongest answers do three things: name the right storage tier for the right data, explain durability and scale in plain terms, and mention the CDN and pre signed URL patterns that keep the application backend out of the hot path for large files."
+        },
+        {
+          "type": "list",
+          "content": "[\"State clearly that large binary blobs go to object storage, small structured metadata goes to a database, and explain why mixing the two hurts.\",\"Mention durability numbers like eleven nines and explain that they come from multi zone replication or erasure coding, not magic.\",\"Bring up pre signed URLs so uploads and downloads bypass the application server for the actual bytes.\",\"Mention a CDN in front of object storage for any read heavy, publicly cacheable content.\",\"Be ready to compare object storage against block and file storage crisply, in one or two sentences each.\"]",
+          "items": [
+            "State clearly that large binary blobs go to object storage, small structured metadata goes to a database, and explain why mixing the two hurts.",
+            "Mention durability numbers like eleven nines and explain that they come from multi zone replication or erasure coding, not magic.",
+            "Bring up pre signed URLs so uploads and downloads bypass the application server for the actual bytes.",
+            "Mention a CDN in front of object storage for any read heavy, publicly cacheable content.",
+            "Be ready to compare object storage against block and file storage crisply, in one or two sentences each."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "note",
+          "title": "A common follow up question",
+          "content": "An interviewer may ask how you would serve private, per user content through a CDN without letting one user see another user access controlled files. The answer is short lived signed URLs or signed cookies scoped to a specific object or path prefix, verified at the CDN edge before the request is even allowed to reach cache or origin."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Summary",
+          "text": "13. Summary"
+        },
+        {
+          "type": "paragraph",
+          "content": "Object storage gives large scale systems a place to put unstructured bytes, addressed by a simple key inside a flat bucket namespace, accessed over plain HTTP, and made durable through replication or erasure coding across multiple failure domains. It trades away in place partial writes and POSIX semantics in exchange for practically unlimited scale, very low operational overhead, and a cost profile that fits media, backups, logs, and data lake workloads far better than a database or a shared file system ever could."
+        },
+        {
+          "type": "blockQuote",
+          "content": "When in doubt about where large, rarely updated bytes should live in a system design answer, the safe default is object storage with a CDN in front of it and a small pointer key stored in whatever database already holds the rest of the application data."
+        },
+        {
+          "type": "list",
+          "content": "[\"Object equals bytes plus metadata plus a unique key, stored in a flat bucket namespace.\",\"Durability and consistency are separate guarantees, both are strong on modern major providers.\",\"Versioning and lifecycle policies turn manual cleanup into automated background rules.\",\"Pre signed URLs and a CDN keep large file traffic off the application backend entirely.\",\"Use object storage for large, rarely mutated blobs, use a database for small, frequently updated structured data.\"]",
+          "items": [
+            "Object equals bytes plus metadata plus a unique key, stored in a flat bucket namespace.",
+            "Durability and consistency are separate guarantees, both are strong on modern major providers.",
+            "Versioning and lifecycle policies turn manual cleanup into automated background rules.",
+            "Pre signed URLs and a CDN keep large file traffic off the application backend entirely.",
+            "Use object storage for large, rarely mutated blobs, use a database for small, frequently updated structured data."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,990 @@
+{
+  "slug": "three-phase-commit",
+  "title": "Three-Phase Commit (3PC)",
+  "content": [
+    {
+      "id": "three-phase-commit",
+      "title": "Three-Phase Commit (3PC)",
+      "blocks": [
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "The story starts where Two-Phase Commit left its biggest problem unsolved."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305053776-178540817.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305053776-178540817.png",
+          "alt": "2PC blocking problem recap: coordinator crashes after YES votes, before COMMIT/ABORT"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">You have a distributed transaction. The coordinator sent </span><b style=\"letter-spacing: -0.003em;\">PREPARE</b><span style=\"letter-spacing: -0.003em;\">. All participants voted YES. They're sitting there holding database locks, WAL written to disk, waiting for the coordinator to say COMMIT. The coordinator crashes.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>Now what</b>?&nbsp;<span style=\"letter-spacing: -0.003em;\">The participants cannot commit on their own what if one participant voted NO and the coordinator was about to send </span><b style=\"letter-spacing: -0.003em;\">ABORT</b><span style=\"letter-spacing: -0.003em;\">?&nbsp;</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">They cannot abort on their own what if the coordinator had already sent <b>COMMIT</b> to some other participant before crashing?&nbsp;</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">They have no way to know. So they wait. Holding locks. Blocking every other transaction that wants those rows. Until the coordinator comes back online.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the&nbsp;<strong>blocking problem</strong>&nbsp;of 2PC. Three-Phase Commit was designed specifically to solve it. It adds one more phase between PREPARE and COMMIT and that one phase changes everything about what participants can do when the coordinator disappears."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Why 2PC blocks&nbsp;",
+          "text": "1. Why 2PC blocks&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "Before 3PC makes sense, you need to understand exactly&nbsp;<em>which moment</em>&nbsp;in 2PC causes the block. It's not just \"coordinator crashes\" it's the specific window."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785399130611-55988346.png",
+          "alt": "Why 2PC blocks",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785399130611-55988346.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785399130611-55988346.png"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "Why Window 2 Is Dangerous in 2PC",
+          "text": "Why Window 2 Is Dangerous in 2PC"
+        },
+        {
+          "type": "paragraph",
+          "content": "To understand the blocking problem in Two-Phase Commit (2PC), focus on what happens after all participants vote&nbsp;<strong>YES</strong>."
+        },
+        {
+          "type": "paragraph",
+          "content": "When a participant sends a <b>YES</b> vote, it is making a promise that it is ready to commit the transaction. At that point, it enters the prepared state, keeps its locks, and waits for the coordinator's final decision. It cannot independently decide what to do next."
+        },
+        {
+          "type": "paragraph",
+          "content": "The critical moment occurs after the coordinator has received YES from every participant but before the final decision is safely recorded and communicated. During this short window, the coordinator is the only component that knows the outcome of the transaction."
+        },
+        {
+          "type": "paragraph",
+          "content": "If the coordinator crashes at this moment, every participant is left in uncertainty. They know they voted <b>YES</b>, but they do not know whether the coordinator decided to commit or abort. They also do not know what decisions other participants received before the crash."
+        },
+        {
+          "type": "paragraph",
+          "content": "Because of this uncertainty, a participant cannot safely commit. Another participant may have voted <b>NO</b>, which would require the transaction to abort. At the same time, it cannot safely abort because the coordinator may have already committed the transaction elsewhere."
+        },
+        {
+          "type": "paragraph",
+          "content": "Since neither action is safe, participants must simply wait. They continue holding locks and remain stuck until the coordinator recovers and reveals the final decision. If recovery takes a long time, the locks remain held for a long time. If recovery never happens, the participants can remain blocked indefinitely."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the exact reason 2PC is called a&nbsp;<strong>blocking protocol</strong>. The problem is not that the coordinator crashes in general. The problem is that the coordinator crashes after everyone has voted YES but before the final decision becomes known to all participants.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "During that brief period, the coordinator is the only source of truth, and when it disappears, the entire transaction becomes trapped in uncertainty."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The 3PC (Phase Commit)",
+          "text": "2. The 3PC (Phase Commit)"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">3PC inserts a&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">PRE-COMMIT</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;phase between </span><b style=\"letter-spacing: -0.003em;\">PREPARE</b><span style=\"letter-spacing: -0.003em;\"> and </span><b style=\"letter-spacing: -0.003em;\">COMMIT</b><span style=\"letter-spacing: -0.003em;\">. Before the coordinator tells anyone to commit, it first tells everyone:&nbsp;</span><em style=\"letter-spacing: -0.003em;\">\"I've decided to commit acknowledge that you know this.\"</em><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once a participant receives <b>PRE-COMMIT</b> and acknowledges, it knows:"
+        },
+        {
+          "type": "list",
+          "content": "[\"The coordinator decided to commit\",\"All other participants voted YES (because <b>PRE-COMMIT</b> is only sent if all voted YES)\"]",
+          "items": [
+            "The coordinator decided to commit",
+            "All other participants voted YES (because <b>PRE-COMMIT</b> is only sent if all voted YES)"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Now if the coordinator dies, the participant is no longer uncertain. It knows the decision was commit. It can contact other participants to confirm they also received PRE-COMMIT, and then proceed to commit with or without the coordinator."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the breakthrough. The knowledge of the decision is no longer trapped in the coordinator's head.<img src=\"https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305055707-349169932.png\" alt=\"image.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">",
+          "text": null
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "Phase 1: PREPARE",
+          "text": "Phase 1: PREPARE"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "The coordinator asks all participants:"
+        },
+        {
+          "type": "blockQuote",
+          "content": "\"Can you commit this transaction?\""
+        },
+        {
+          "type": "paragraph",
+          "content": "Each participant performs its local work, writes the information to disk, and sends either&nbsp;<strong>YES</strong>&nbsp;or&nbsp;<strong>NO</strong>.&nbsp;<span style=\"letter-spacing: -0.003em;\">If even one participant sends&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">NO</strong><span style=\"letter-spacing: -0.003em;\">, the coordinator immediately sends&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">ABORT</strong><span style=\"letter-spacing: -0.003em;\">, and everyone rolls back the transaction.&nbsp;</span><span style=\"letter-spacing: -0.003em;\">If everyone sends&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">YES</strong><span style=\"letter-spacing: -0.003em;\">, the protocol moves to the next phase.</span>"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "Phase 2: PRE-COMMIT",
+          "text": "Phase 2: PRE-COMMIT"
+        },
+        {
+          "type": "paragraph",
+          "content": "The coordinator now sends a&nbsp;<strong>PRE-COMMIT</strong>&nbsp;message.&nbsp;<span style=\"letter-spacing: -0.003em;\">This means:</span>"
+        },
+        {
+          "type": "blockQuote",
+          "content": "\"Everyone agreed. We are going to commit.\""
+        },
+        {
+          "type": "paragraph",
+          "content": "Participants acknowledge this message by sending&nbsp;<strong>ACK</strong>.&nbsp;<span style=\"letter-spacing: -0.003em;\">At this point, every participant knows that all nodes voted YES and that the transaction is moving toward commit. The uncertainty that existed in 2PC is removed.</span>"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "Phase 3: COMMIT",
+          "text": "Phase 3: COMMIT"
+        },
+        {
+          "type": "paragraph",
+          "content": "After receiving ACKs from all participants, the coordinator sends&nbsp;<strong>COMMIT</strong>.&nbsp;<span style=\"letter-spacing: -0.003em;\">Participants commit their changes locally, release any locks they are holding, and send a final acknowledgment.&nbsp;</span><span style=\"letter-spacing: -0.003em;\">The <b>transaction</b> is now complete.</span>"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "Why 3PC Adds PRE-COMMIT",
+          "text": "Why 3PC Adds PRE-COMMIT"
+        },
+        {
+          "type": "paragraph",
+          "content": "In 2PC, after everyone votes YES, only the coordinator knows the final state. If the coordinator crashes, participants become stuck waiting."
+        },
+        {
+          "type": "paragraph",
+          "content": "3PC adds the&nbsp;<strong>PRE-COMMIT</strong>&nbsp;phase so that participants learn:"
+        },
+        {
+          "type": "blockQuote",
+          "content": "\"Everyone has already agreed, and commit is the only possible next step.\""
+        },
+        {
+          "type": "paragraph",
+          "content": "Because participants have this extra knowledge, they can make progress even if the coordinator crashes later, reducing the blocking problem that exists in 2PC."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Participant states&nbsp;",
+          "text": "3. Participant states&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "In 2PC, a participant that voted YES has one state:&nbsp;<em>prepared</em>. Uncertain whether it will commit or abort. In 3PC, <b>there's an additional state</b>:&nbsp;<em>pre-committed</em>&nbsp;where the participant knows the decision is commit, even if the coordinator disappears."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "1. 2PC Participant States",
+          "text": "1. 2PC Participant States"
+        },
+        {
+          "type": "paragraph",
+          "content": "In Two-Phase Commit, a participant starts in the&nbsp;<strong>INIT</strong>&nbsp;state."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305057300-892166920.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305057300-892166920.png",
+          "alt": "2PC participant state machine: INIT to PREPARED to COMMITTED or ABORTED"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "When the coordinator sends&nbsp;<strong>PREPARE</strong>, the participant checks whether it can successfully commit the transaction. If everything is valid, it writes the necessary information to disk, keeps its locks, sends a&nbsp;<strong>YES</strong>&nbsp;vote, and moves to the&nbsp;<strong>PREPARED</strong>&nbsp;state."
+        },
+        {
+          "type": "paragraph",
+          "content": "The PREPARED state is the problem."
+        },
+        {
+          "type": "paragraph",
+          "content": "At this point, the participant has promised that it is ready to commit, but it does not know the final decision yet. The coordinator might later decide&nbsp;<strong>COMMIT</strong>&nbsp;or&nbsp;<strong>ABORT</strong>."
+        },
+        {
+          "type": "paragraph",
+          "content": "Because the participant does not know the decision, it cannot commit on its own. It also cannot abort on its own because the coordinator may have already decided to commit elsewhere."
+        },
+        {
+          "type": "paragraph",
+          "content": "The participant is therefore stuck waiting."
+        },
+        {
+          "type": "paragraph",
+          "content": "If the coordinator eventually sends&nbsp;<strong>COMMIT</strong>, the participant moves from PREPARED to COMMITTED."
+        },
+        {
+          "type": "paragraph",
+          "content": "If the coordinator sends&nbsp;<strong>ABORT</strong>, the participant moves from PREPARED to ABORTED."
+        },
+        {
+          "type": "paragraph",
+          "content": "The problem occurs when the coordinator crashes while participants are in the PREPARED state. Since only the coordinator knows the final decision, participants may wait forever. This is the blocking problem of 2PC."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2. 3PC Participant States",
+          "text": "2. 3PC Participant States"
+        },
+        {
+          "type": "paragraph",
+          "content": "Three-Phase Commit introduces an extra state called&nbsp;<strong>PRE-COMMITTED</strong>."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785399130611-466726720.png",
+          "alt": "3PC Participant States",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785399130611-466726720.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785399130611-466726720.png"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "A participant starts in&nbsp;<strong>INIT</strong>."
+        },
+        {
+          "type": "paragraph",
+          "content": "When it receives&nbsp;<strong>PREPARE</strong>, it performs the same checks as in 2PC. If everything is fine, it votes YES and moves to the&nbsp;<strong>PREPARED</strong>&nbsp;state.&nbsp;<span style=\"letter-spacing: -0.003em;\">However, 3PC changes the meaning of this state.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the participant stays in PREPARED for too long and does not hear from the coordinator, it can safely assume the transaction should abort and move to ABORTED after a timeout. It does not need to wait forever."
+        },
+        {
+          "type": "paragraph",
+          "content": "If the coordinator receives YES votes from everyone, it sends&nbsp;<strong>PRE-COMMIT</strong>.&nbsp;<span style=\"letter-spacing: -0.003em;\">When a participant receives PRE-COMMIT, it enters the&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">PRE-COMMITTED</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;state.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "This state is important because the participant now knows that:"
+        },
+        {
+          "type": "blockQuote",
+          "content": "Everyone voted YES and the system is moving toward commit."
+        },
+        {
+          "type": "paragraph",
+          "content": "The uncertainty is gone.&nbsp;<span style=\"letter-spacing: -0.003em;\">If the coordinator later sends COMMIT, the participant commits normally.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "Even if the coordinator crashes after PRE-COMMIT, participants already know that commit is the expected outcome. They can communicate with each other and eventually complete the commit process instead of remaining blocked forever."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. What happens when the coordinator crashes: 3PC recovery",
+          "text": "4. What happens when the coordinator crashes: 3PC recovery"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the critical part. 3PC's recovery protocol involves participants talking to each other when the coordinator goes silent. This is called the&nbsp;<strong>termination protocol</strong>."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "Scenario A: Coordinator Crashes Before PRE-COMMIT",
+          "text": "Scenario A: Coordinator Crashes Before PRE-COMMIT"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305058964-240455807.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305058964-240455807.png",
+          "alt": "Scenario A: coordinator crashes before PRE-COMMIT, participants abort safely"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Everyone has voted YES and is in the&nbsp;<strong>PREPARED</strong>&nbsp;state, but the coordinator crashes before sending any&nbsp;<strong>PRE-COMMIT</strong>&nbsp;message."
+        },
+        {
+          "type": "paragraph",
+          "content": "The participants wait for some time. When the timeout expires, they communicate with each other and ask:"
+        },
+        {
+          "type": "blockQuote",
+          "content": "\"Did anyone receive PRE-COMMIT?\""
+        },
+        {
+          "type": "paragraph",
+          "content": "The answer is no."
+        },
+        {
+          "type": "paragraph",
+          "content": "This means the coordinator never announced that the transaction was moving toward commit. Since nobody has entered the PRE-COMMITTED state, aborting is still safe."
+        },
+        {
+          "type": "paragraph",
+          "content": "As a result, all participants abort the transaction and release their locks."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "Scenario B: Coordinator Crashes After Sending Some PRE-COMMIT Messages",
+          "text": "Scenario B: Coordinator Crashes After Sending Some PRE-COMMIT Messages"
+        },
+        {
+          "type": "paragraph",
+          "content": "The coordinator successfully sends&nbsp;<strong>PRE-COMMIT</strong>&nbsp;to some participants but crashes before reaching everyone."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<br>"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305060636-839343674.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305060636-839343674.png",
+          "alt": "Scenario B: coordinator crashes after some PRE-COMMIT sent, participants elect temp coordinator and commit"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "For example, participant A receives PRE-COMMIT, but participant B does not."
+        },
+        {
+          "type": "paragraph",
+          "content": "After a timeout, participants communicate with each other."
+        },
+        {
+          "type": "paragraph",
+          "content": "B asks:"
+        },
+        {
+          "type": "blockQuote",
+          "content": "\"What state are you in?\""
+        },
+        {
+          "type": "paragraph",
+          "content": "A replies:"
+        },
+        {
+          "type": "blockQuote",
+          "content": "\"I am PRE-COMMITTED.\""
+        },
+        {
+          "type": "paragraph",
+          "content": "This changes everything."
+        },
+        {
+          "type": "paragraph",
+          "content": "PRE-COMMITTED means the system already passed the point where commit became the only valid direction. Someone knows the decision is commit."
+        },
+        {
+          "type": "paragraph",
+          "content": "The participants elect a temporary coordinator and finish the protocol themselves."
+        },
+        {
+          "type": "paragraph",
+          "content": "Everyone commits."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "Scenario C: Coordinator Crashes After Sending COMMIT",
+          "text": "Scenario C: Coordinator Crashes After Sending COMMIT"
+        },
+        {
+          "type": "paragraph",
+          "content": "The coordinator sends COMMIT to some participants and then crashes."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305062494-811327951.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305062494-811327951.png",
+          "alt": "Scenario C: coordinator crashes after some COMMIT sent, remaining participant commits"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "For example, participant A receives COMMIT and commits successfully. Participant B does not receive the COMMIT message before the crash."
+        },
+        {
+          "type": "paragraph",
+          "content": "After a timeout, participants communicate."
+        },
+        {
+          "type": "paragraph",
+          "content": "A reports:"
+        },
+        {
+          "type": "blockQuote",
+          "content": "\"I already committed.\""
+        },
+        {
+          "type": "paragraph",
+          "content": "B reports:"
+        },
+        {
+          "type": "blockQuote",
+          "content": "\"I am PRE-COMMITTED.\""
+        },
+        {
+          "type": "paragraph",
+          "content": "Since at least one participant has already committed, rolling back is impossible. The transaction has already become visible in the system."
+        },
+        {
+          "type": "paragraph",
+          "content": "Therefore B immediately commits as well."
+        },
+        {
+          "type": "paragraph",
+          "content": "No need to wait for the original coordinator to recover."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>The termination protocol works on a simple rule:</b> participants elect a new temporary coordinator among themselves. The new coordinator surveys everyone's state and applies this logic:"
+        },
+        {
+          "type": "list",
+          "content": "[\"If&nbsp;<strong>any participant is COMMITTED</strong>&nbsp;→ everyone commits (someone already went through)\",\"If&nbsp;<strong>any participant is PRE-COMMITTED</strong>&nbsp;→ everyone commits (decision was commit, it's safe to finish)\",\"If&nbsp;<strong>any participant is PREPARED</strong>&nbsp;→ everyone aborts (PRE-COMMIT was never sent, abort is safe)\",\"If&nbsp;<strong>any participant is ABORTED</strong>&nbsp;→ everyone aborts (follows the original abort decision)\"]",
+          "items": [
+            "If&nbsp;<strong>any participant is COMMITTED</strong>&nbsp;→ everyone commits (someone already went through)",
+            "If&nbsp;<strong>any participant is PRE-COMMITTED</strong>&nbsp;→ everyone commits (decision was commit, it's safe to finish)",
+            "If&nbsp;<strong>any participant is PREPARED</strong>&nbsp;→ everyone aborts (PRE-COMMIT was never sent, abort is safe)",
+            "If&nbsp;<strong>any participant is ABORTED</strong>&nbsp;→ everyone aborts (follows the original abort decision)"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "This ruleset is what makes 3PC non-blocking under coordinator failure as long as participants can talk to each other."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Message count comparison",
+          "text": "5. Message count comparison"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305064550-230921761.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305064550-230921761.png",
+          "alt": "Message count comparison overview: 2PC four exchanges versus 3PC six exchanges"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">Distributed commit protocols must exchange messages between the coordinator and participants to reach a consistent decision. The number of messages directly impacts network overhead and transaction latency.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "2PC (Two-Phase Commit)",
+          "text": "2PC (Two-Phase Commit)"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305066553-404580304.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305066553-404580304.png",
+          "alt": "2PC message flow: PREPARE, YES/NO, COMMIT/ABORT, ACK"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">In 2PC, the coordinator first sends a PREPARE request to all participants. The participants reply with YES or NO. If everyone votes YES, the coordinator sends COMMIT; otherwise, it sends ABORT. Finally, participants send acknowledgements back to the coordinator.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "For&nbsp;<strong>N participants</strong>, there are four message exchanges: PREPARE, YES/NO, COMMIT/ABORT, and ACK.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "This gives a total of&nbsp;<strong>4N messages</strong>. For example, with 3 participants, the total is&nbsp;<strong>4 × 3 = 12 messages</strong>. Since there are two communication rounds, if each round trip takes about 1 ms, the coordination overhead is roughly&nbsp;<strong>2 ms</strong>."
+        },
+        {
+          "type": "paragraph",
+          "content": "The advantage of 2PC is that it is simple and fast. The disadvantage is that participants can become blocked if the coordinator crashes at the wrong moment."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "3PC (Three-Phase Commit)",
+          "text": "3PC (Three-Phase Commit)"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305069761-615334481.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305069761-615334481.png",
+          "alt": "3PC message flow: PREPARE, YES/NO, PRE-COMMIT, ACK, COMMIT, ACK"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">3PC adds an extra PRE-COMMIT phase between voting and the final commit. After collecting YES votes from all participants, the coordinator sends PRE-COMMIT. Participants acknowledge it, after which the coordinator sends COMMIT and participants acknowledge again.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "For&nbsp;<strong>N participants</strong>, there are six message exchanges: PREPARE, YES/NO, PRE-COMMIT, ACK, COMMIT, and ACK.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "This gives a total of&nbsp;<strong>6N messages</strong>. For example, with 3 participants, the total is&nbsp;<strong>6 × 3 = 18 messages</strong>. Since there are three communication rounds, if each round trip takes about 1 ms, the coordination overhead is roughly&nbsp;<strong>3 ms</strong>."
+        },
+        {
+          "type": "paragraph",
+          "content": "The advantage of 3PC is that it avoids the blocking problem by ensuring participants know enough to continue even if the coordinator fails. The trade-off is extra messages and slightly higher latency."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading1",
+          "content": "<span style=\"font-size: 2.5rem; letter-spacing: -0.003em;\">6.&nbsp;The Fatal Flaw&nbsp;</span><br>",
+          "text": "<span style=\"font-size: 2.5rem; letter-spacing: -0.003em;\">6.&nbsp;The Fatal Flaw&nbsp;</span><br>"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is why 3PC is almost never used in production despite solving the blocking problem. It assumes a&nbsp;<strong>fail-stop</strong>&nbsp;failure model nodes either work correctly or crash completely. In a real distributed system, the failure mode that matters most is a&nbsp;<strong>network partition</strong>&nbsp;where nodes are alive and running but cannot communicate with each other."
+        },
+        {
+          "type": "paragraph",
+          "content": "Under a network partition, 3PC's termination protocol can produce split-brain."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "1. Partition A (Nodes 1 &amp; 2)",
+          "text": "1. Partition A (Nodes 1 &amp; 2)"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396027809-645210671.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396027809-645210671.png",
+          "alt": "Partition A: Nodes 1 and 2 isolated, no PRE-COMMIT seen, decide to ABORT"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "The coordinator crashes, and Nodes 1 and 2 become isolated from the rest of the system because of the network partition."
+        },
+        {
+          "type": "paragraph",
+          "content": "They communicate with each other and check the transaction state. Neither node has received a PRE-COMMIT message."
+        },
+        {
+          "type": "paragraph",
+          "content": "According to the 3PC rules, if no participant knows that the transaction was about to commit, the safest decision is to&nbsp;<strong>ABORT</strong>."
+        },
+        {
+          "type": "paragraph",
+          "content": "So Nodes 1 and 2 abort the transaction."
+        },
+        {
+          "type": "paragraph",
+          "content": "From their perspective, this decision is correct because they have no evidence that a commit was ever agreed upon."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2. Partition B (Nodes 3, 4 &amp; 5)",
+          "text": "2. Partition B (Nodes 3, 4 &amp; 5)"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305074261-239919621.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785305074261-239919621.png",
+          "alt": "Partition B: Nodes 3, 4, 5 connected, Node 3 already PRE-COMMITTED, decide to COMMIT"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "The coordinator crashes, but Nodes 3, 4, and 5 can still communicate with each other."
+        },
+        {
+          "type": "paragraph",
+          "content": "Node 3 has already received the PRE-COMMIT message before the crash."
+        },
+        {
+          "type": "paragraph",
+          "content": "When the nodes exchange information, they discover that at least one participant reached the PRE-COMMIT state."
+        },
+        {
+          "type": "paragraph",
+          "content": "According to the 3PC rules, this means the transaction was very close to being committed, so they decide to&nbsp;<strong>COMMIT</strong>."
+        },
+        {
+          "type": "paragraph",
+          "content": "From their perspective, this decision is also correct because they have evidence that the coordinator intended to commit the transaction."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading1",
+          "content": "7. 2PC vs 3PC&nbsp;",
+          "text": "7. 2PC vs 3PC&nbsp;"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785399130611-394627107.png",
+          "alt": "2PC vs 3PC",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785399130611-394627107.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785399130611-394627107.png"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. What Replaced 3PC in Practice?",
+          "text": "8. What Replaced 3PC in Practice?"
+        },
+        {
+          "type": "paragraph",
+          "content": "3PC solved the blocking problem of 2PC, but it introduced a bigger problem:&nbsp;<strong>data inconsistency during network partitions</strong>. Because of this, production systems rarely use 3PC."
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead, modern systems use other approaches."
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>1. Highly Available Coordinator:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">Rather than adding another phase, modern systems make the coordinator highly available using protocols like Raft.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "If one coordinator node fails, another node becomes the leader within milliseconds and continues the transaction.&nbsp;<span style=\"letter-spacing: -0.003em;\">This is the approach used by systems like Spanner and CockroachDB.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\"></span>"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>2. Paxos Commit:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">Paxos Commit removes the dependency on a single coordinator.&nbsp;</span><span style=\"letter-spacing: -0.003em;\">Participants use consensus to reach the commit decision.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "This avoids blocking due to coordinator failure, but the protocol is much more complex."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>3. Saga Pattern:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">Many distributed systems avoid distributed transactions completely.&nbsp;</span><span style=\"letter-spacing: -0.003em;\">Each service commits its own local transaction and publishes an event.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\"></span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "If something goes wrong later, compensating actions are used to undo previous work."
+        },
+        {
+          "type": "paragraph",
+          "content": "This improves availability and simplifies the system."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>4. Avoid Distributed Transactions:&nbsp;</b><span style=\"letter-spacing: -0.003em;\">The most common solution is to redesign the system so related data stays in the same database.</span>"
+        },
+        {
+          "type": "paragraph",
+          "content": "Then a normal local transaction can handle everything without needing 2PC or 3PC."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Why 3PC Is Still Asked in Interviews",
+          "text": "9. Why 3PC Is Still Asked in Interviews"
+        },
+        {
+          "type": "paragraph",
+          "content": "Interviewers usually don't care whether you would use 3PC in production. They want to know whether you understand the trade-offs."
+        },
+        {
+          "type": "heading2",
+          "content": "1. What Problem Does 3PC Solve?",
+          "text": "1. What Problem Does 3PC Solve?"
+        },
+        {
+          "type": "paragraph",
+          "content": "3PC adds a&nbsp;<strong>PRE-COMMIT</strong>&nbsp;phase before the final commit."
+        },
+        {
+          "type": "paragraph",
+          "content": "This allows participants to know that the transaction is about to commit, even if the coordinator crashes."
+        },
+        {
+          "type": "paragraph",
+          "content": "As a result, the protocol becomes&nbsp;<strong>non-blocking under coordinator failure</strong>."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "2. Why Isn't It Used?",
+          "text": "2. Why Isn't It Used?"
+        },
+        {
+          "type": "paragraph",
+          "content": "3PC assumes nodes either work correctly or crash completely."
+        },
+        {
+          "type": "paragraph",
+          "content": "Real systems also face&nbsp;<strong>network partitions</strong>, where nodes are alive but cannot communicate."
+        },
+        {
+          "type": "paragraph",
+          "content": "During a partition, one group of nodes may commit while another group aborts, leading to inconsistent data."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is worse than 2PC blocking."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "3. What Do Real Systems Use Instead?",
+          "text": "3. What Do Real Systems Use Instead?"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most systems use:"
+        },
+        {
+          "type": "list",
+          "content": "[\"2PC with a highly available Raft-backed coordinator.\",\"Consensus-based approaches like Paxos Commit.\",\"Saga Pattern for microservices.\",\"Data models that avoid distributed transactions entirely.\"]",
+          "items": [
+            "2PC with a highly available Raft-backed coordinator.",
+            "Consensus-based approaches like Paxos Commit.",
+            "Saga Pattern for microservices.",
+            "Data models that avoid distributed transactions entirely."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        }
+      ]
+    }
+  ]
+}

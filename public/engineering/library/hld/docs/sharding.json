@@ -1,0 +1,655 @@
+{
+  "slug": "sharding",
+  "title": "Sharding",
+  "content": [
+    {
+      "id": "sharding",
+      "title": "Sharding",
+      "blocks": [
+        {
+          "type": "heading1",
+          "content": "1. Introduction to Sharding",
+          "text": "1. Introduction to Sharding"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every database eventually runs into a wall. A single node can only accept so many writes per second, hold so much data on its disks, and keep so much of its working set in memory. Sharding is the standard answer to that wall: instead of one database doing all the work, the data is split across many independent database instances, and each instance only handles a slice of it."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Sharding is horizontal partitioning, splitting one logical table across multiple independent database instances, each holding a distinct slice of the rows, selected by a shard key."
+        },
+        {
+          "type": "paragraph",
+          "content": "The word horizontal matters here. Sharding splits a table by rows, not by columns. Every shard has the exact same schema as every other shard, just a different subset of the rows. Contrast this with vertical partitioning, which splits a table by columns, for example putting rarely accessed text fields on one server and frequently accessed numeric fields on another."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 Real-World Analogy",
+          "text": "1.1 Real-World Analogy"
+        },
+        {
+          "type": "paragraph",
+          "content": "Think of a large postal system. One central sorting facility for an entire country would be a single point of congestion, every letter in the country funnels through one building. Instead, postal systems split work by zip code region, each regional facility only handles mail for its own zip codes. Sharding does the same thing to a database: instead of one facility handling every row, each shard only handles the rows that fall into its assigned slice."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.2 Sharding vs Partitioning",
+          "text": "1.2 Sharding vs Partitioning"
+        },
+        {
+          "type": "paragraph",
+          "content": "Some engineers use partitioning and sharding as synonyms. Others draw a line: partitioning describes splitting data within a single database engine, for example Postgres table partitioning where the partitions still live on one server and one connection can see all of them. Sharding, in the stricter sense used throughout this lesson, means splitting data across separate database instances, often on separate physical or virtual machines, each reachable only through its own connection."
+        },
+        {
+          "type": "note",
+          "title": "Terminology check",
+          "content": "This lesson reserves the word sharding for splits across separate database instances, and uses partitioning only when referring to a split within a single instance. In interviews either usage is understood, but be consistent once you pick one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Why Sharding Is Needed",
+          "text": "2. Why Sharding Is Needed"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding is not the first tool to reach for. It is the tool you reach for after simpler options run out. Understanding why it becomes necessary helps you justify it correctly in a design discussion instead of applying it reflexively to every database problem."
+        },
+        {
+          "type": "paragraph",
+          "content": "There are really two separate ceilings a single database node runs into: a write throughput ceiling and a storage ceiling. Both eventually force a team toward sharding if the data keeps growing."
+        },
+        {
+          "type": "list",
+          "content": "[\"A single database node has a ceiling on write throughput, once every core and disk is saturated more writes cannot be absorbed no matter how the query is tuned\",\"A single node has a ceiling on storage, disks and memory are finite, and a table with billions of rows eventually will not fit\",\"Vertical scaling, buying a bigger machine, gets exponentially more expensive as it approaches the largest available hardware, and eventually hits a hard ceiling\",\"Read replicas help read heavy workloads scale, but every replica still has to apply the exact same stream of writes as the primary, so replicas do nothing for write throughput\",\"Sharding spreads both the write load and the total storage across many independent nodes, so each node only carries a fraction of the total\"]",
+          "items": [
+            "A single database node has a ceiling on write throughput, once every core and disk is saturated more writes cannot be absorbed no matter how the query is tuned",
+            "A single node has a ceiling on storage, disks and memory are finite, and a table with billions of rows eventually will not fit",
+            "Vertical scaling, buying a bigger machine, gets exponentially more expensive as it approaches the largest available hardware, and eventually hits a hard ceiling",
+            "Read replicas help read heavy workloads scale, but every replica still has to apply the exact same stream of writes as the primary, so replicas do nothing for write throughput",
+            "Sharding spreads both the write load and the total storage across many independent nodes, so each node only carries a fraction of the total"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Vertical Scaling Versus Horizontal Scaling",
+          "text": "2.1 Vertical Scaling Versus Horizontal Scaling"
+        },
+        {
+          "type": "paragraph",
+          "content": "Vertical scaling means giving one machine more CPU, memory, and faster disks. It is simple, requires no application changes, and is usually the right first move. But it has a hard ceiling: at some point there is no bigger machine to buy, and even before that point the cost per unit of extra capacity grows sharply."
+        },
+        {
+          "type": "paragraph",
+          "content": "Horizontal scaling means adding more machines rather than a bigger one. Sharding is the write side version of horizontal scaling for databases, in the same way read replicas are the read side version. Instead of one machine doing everything, work is distributed across many ordinary machines, and capacity is added by adding more of them."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284833579-675245844.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284833579-675245844.png",
+          "alt": "A single overloaded database node splitting into four independent shards, each holding a slice of the data"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Core Concept: Shard Keys and Routing",
+          "text": "3. Core Concept: Shard Keys and Routing"
+        },
+        {
+          "type": "paragraph",
+          "content": "The entire sharding scheme hinges on one decision: the shard key. Every row in the sharded table must have a value for this key, and that value determines which shard the row lives on."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A shard key is the column or set of columns whose value determines which physical shard a given row lives on."
+        },
+        {
+          "type": "paragraph",
+          "content": "Once a shard key is chosen, the system needs a routing function, a deterministic rule that takes a shard key value and returns which shard to talk to. Every part of the application that reads or writes that table must run the same routing function, otherwise two parts of the system could disagree about where a row lives."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 A Minimal Routing Function",
+          "text": "3.1 A Minimal Routing Function"
+        },
+        {
+          "type": "paragraph",
+          "content": "The simplest routing function hashes the shard key value and takes the remainder after dividing by the number of shards. This spreads keys roughly evenly across all shards without needing any lookup table."
+        },
+        {
+          "type": "code",
+          "content": "import hashlib\n\ndef shard_for_key(key, shard_count):\n    digest = hashlib.md5(str(key).encode()).hexdigest()\n    return int(digest, 16) % shard_count\n\nshard = shard_for_key(58831, 4)\nprint(shard)",
+          "code": {
+            "language": "python",
+            "content": "import hashlib\n\ndef shard_for_key(key, shard_count):\n    digest = hashlib.md5(str(key).encode()).hexdigest()\n    return int(digest, 16) % shard_count\n\nshard = shard_for_key(58831, 4)\nprint(shard)"
+          },
+          "codes": {
+            "python": "import hashlib\n\ndef shard_for_key(key, shard_count):\n    digest = hashlib.md5(str(key).encode()).hexdigest()\n    return int(digest, 16) % shard_count\n\nshard = shard_for_key(58831, 4)\nprint(shard)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This function is deterministic: the same key always produces the same shard number, so any service instance can independently figure out where a row lives without asking a central coordinator. That property is what makes hash based routing fast and simple compared to schemes that need a lookup step."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284835588-157088640.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284835588-157088640.png",
+          "alt": "A hash function taking a user_id key, computing hash mod 4, and routing the write to one specific shard out of four"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Shard Key Examples",
+          "text": "3.2 Shard Key Examples"
+        },
+        {
+          "type": "paragraph",
+          "content": "The right shard key depends entirely on the table and the access pattern. A few common examples show the range of choices teams make in practice."
+        },
+        {
+          "type": "list",
+          "content": "[\"A users table is commonly sharded by user_id, since almost every query already has the user_id available\",\"A multi tenant SaaS product commonly shards by tenant_id or organization_id, so one customer never spans shards\",\"An orders table in an e commerce system is commonly sharded by customer_id, since most order lookups happen in the context of a specific customer\",\"A chat application commonly shards by conversation_id, so all messages in one conversation stay together on one shard\"]",
+          "items": [
+            "A users table is commonly sharded by user_id, since almost every query already has the user_id available",
+            "A multi tenant SaaS product commonly shards by tenant_id or organization_id, so one customer never spans shards",
+            "An orders table in an e commerce system is commonly sharded by customer_id, since most order lookups happen in the context of a specific customer",
+            "A chat application commonly shards by conversation_id, so all messages in one conversation stay together on one shard"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Sharding Strategies",
+          "text": "4. Sharding Strategies"
+        },
+        {
+          "type": "paragraph",
+          "content": "There are three common strategies for deciding which shard a given key maps to: range based, hash based, and directory based. Each makes a different tradeoff between simplicity, even distribution, and flexibility."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Range Based Sharding",
+          "text": "4.1 Range Based Sharding"
+        },
+        {
+          "type": "paragraph",
+          "content": "Range based sharding assigns each shard a contiguous range of key values. Shard A might hold ids 1 through 1,000,000, shard B the next million, and so on. Finding the shard for a given key is a simple comparison against known boundaries, and range queries, like fetch all orders between two dates, can often be satisfied by a single shard or a small contiguous set of shards."
+        },
+        {
+          "type": "paragraph",
+          "content": "The weakness is that real world data is rarely uniform across a range. New rows are usually inserted at the current end of a range, for example the newest orders or the newest events, which means every new write lands on the same shard while older shards go idle."
+        },
+        {
+          "type": "example-box",
+          "title": "Range sharding gone wrong",
+          "text": "An events table is sharded by event timestamp range, one shard per month. Every write from the current month lands on a single shard while the other eleven shards sit nearly idle. The team added more shards for storage headroom, but write throughput never improved, because every new event still targets the same current month shard."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Hash Based Sharding",
+          "text": "4.2 Hash Based Sharding"
+        },
+        {
+          "type": "paragraph",
+          "content": "Hash based sharding runs the shard key through a hash function and uses the result to pick a shard, as shown in the routing function earlier. Because a good hash function scatters similar inputs across very different outputs, writes spread evenly across all shards even when the underlying key values are sequential or clustered."
+        },
+        {
+          "type": "paragraph",
+          "content": "The tradeoff is that range queries become expensive. Fetching all rows with ids between 1000 and 2000 with hash based sharding means every shard might contain a few matching rows, so the query has to fan out to every shard and merge the results, instead of hitting one contiguous shard."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 Directory Based Sharding",
+          "text": "4.3 Directory Based Sharding"
+        },
+        {
+          "type": "paragraph",
+          "content": "Directory based sharding, sometimes called lookup based sharding, keeps an explicit mapping table from key to shard, maintained by a separate lookup service or table. To find where a row lives, the application first asks the directory, then routes the actual query to the shard the directory names."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the most flexible strategy: any individual key can be moved to a different shard just by updating one row in the directory, which makes rebalancing far less disruptive than range or hash schemes. The cost is an extra network hop on every access, and the directory service itself becomes a critical dependency that must be highly available and fast."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Strategy\",\"How keys map to shards\",\"Strength\",\"Weakness\"],\"rows\":[[\"Range based\",\"Contiguous key ranges assigned to each shard\",\"Simple to reason about, efficient range scans\",\"Prone to hotspots when writes cluster at one end of the range\"],[\"Hash based\",\"A hash function maps each key to a shard number\",\"Even distribution of writes across shards\",\"Range queries must fan out to every shard\"],[\"Directory based\",\"A lookup service stores an explicit key to shard mapping\",\"Full flexibility, easy to move individual keys during rebalancing\",\"The lookup service becomes a critical dependency and potential bottleneck\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523737-972394524.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523737-972394524.png",
+          "alt": "A range based shard boundary map showing four shards each owning a contiguous slice of the id space"
+        },
+        {
+          "type": "note",
+          "title": "Sharding is not one size fits all",
+          "content": "Large systems frequently mix strategies. A table with a natural, evenly distributed key might use hash based sharding, while a table that benefits heavily from range scans might use range based sharding with careful attention paid to avoiding a hot current range."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Choosing a Good Shard Key",
+          "text": "5. Choosing a Good Shard Key"
+        },
+        {
+          "type": "paragraph",
+          "content": "The shard key is close to a one way door. Changing it later usually means physically moving most of the data, so it deserves careful thought up front. Four properties matter most."
+        },
+        {
+          "type": "list",
+          "content": "[\"High cardinality, many distinct values so the data actually spreads across all shards instead of collapsing onto a few\",\"Even distribution, no single value or narrow band of values should account for a disproportionate share of the rows or the traffic\",\"Matches the application most common query pattern, so the majority of queries can be satisfied by talking to one shard\",\"Rarely or never changes after a row is created, since moving a row between shards after the fact is an expensive operation\",\"Avoids monotonically increasing values as the sole key, because they concentrate all new writes onto a single shard at any given moment\"]",
+          "items": [
+            "High cardinality, many distinct values so the data actually spreads across all shards instead of collapsing onto a few",
+            "Even distribution, no single value or narrow band of values should account for a disproportionate share of the rows or the traffic",
+            "Matches the application most common query pattern, so the majority of queries can be satisfied by talking to one shard",
+            "Rarely or never changes after a row is created, since moving a row between shards after the fact is an expensive operation",
+            "Avoids monotonically increasing values as the sole key, because they concentrate all new writes onto a single shard at any given moment"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Common shard key mistakes",
+          "content": "Two mistakes show up repeatedly in real systems: sharding by a low cardinality field like country code, which creates a few enormous shards and many tiny ones, and sharding by an auto incrementing primary key, which sends every new insert to whichever shard currently owns the top of the range."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Composite Shard Keys",
+          "text": "5.1 Composite Shard Keys"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sometimes no single column satisfies all four properties. A composite shard key combines two columns, for example tenant_id and a hash of user_id, so that data for one tenant is distributed across multiple shards instead of concentrating one very large tenant on a single shard, while still keeping most per user queries local to one shard."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Common Shard Key Mistakes",
+          "text": "5.2 Common Shard Key Mistakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth restating the most expensive mistake separately: picking a shard key that does not appear in the applications most frequent query. If the majority of queries do not know the shard key up front, the application must either query every shard, or maintain a separate directory just to find it, both of which erase much of the benefit of sharding in the first place."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. The Hot Shard Problem",
+          "text": "6. The Hot Shard Problem"
+        },
+        {
+          "type": "paragraph",
+          "content": "Even a well chosen shard key can produce a hot shard, a single shard that receives far more read or write traffic than its neighbors. The cluster as a whole might have plenty of spare capacity, but the hot shard is saturated, and adding more shards elsewhere does nothing to relieve it."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A hot shard is not a hardware failure, it is a data distribution failure, one shard is doing far more work than its neighbors while the rest of the cluster sits underused."
+        },
+        {
+          "type": "paragraph",
+          "content": "Hot shards usually trace back to one of two causes: a shard key value that is unusually popular, such as one account with a huge following, or a shard key that is monotonically increasing, such as an auto incrementing id or a current timestamp, which routes every new write to whichever shard currently owns the top of the range."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284838689-730319485.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284838689-730319485.png",
+          "alt": "A router sending disproportionate traffic to one shard hosting a single very popular account while the other shards receive normal traffic"
+        },
+        {
+          "type": "example-box",
+          "title": "The celebrity user problem",
+          "text": "A social app shards its posts and interactions table by user_id, which ordinarily spreads writes evenly. One account gains ten million new followers in a single day after a viral moment. Every like, comment, and view on that one account routes to the same single shard, which now handles far more traffic than any other shard in the cluster, even though the overall key distribution is otherwise healthy."
+        },
+        {
+          "type": "list",
+          "content": "[\"Add a random suffix or salt to a hot key so its writes spread across several shards, then fan in and merge on read\",\"Cache the hottest keys aggressively in front of the database, so most reads never reach the hot shard at all\",\"Use a composite shard key that combines the hot attribute with a second, better distributed attribute\",\"Split the single hot shard further, sometimes called micro sharding, once monitoring identifies it as hot\",\"Rate limit or queue writes to the single hottest key during a known traffic spike, such as a scheduled livestream\"]",
+          "items": [
+            "Add a random suffix or salt to a hot key so its writes spread across several shards, then fan in and merge on read",
+            "Cache the hottest keys aggressively in front of the database, so most reads never reach the hot shard at all",
+            "Use a composite shard key that combines the hot attribute with a second, better distributed attribute",
+            "Split the single hot shard further, sometimes called micro sharding, once monitoring identifies it as hot",
+            "Rate limit or queue writes to the single hottest key during a known traffic spike, such as a scheduled livestream"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Resharding and Rebalancing",
+          "text": "7. Resharding and Rebalancing"
+        },
+        {
+          "type": "paragraph",
+          "content": "No shard count is permanent. As data keeps growing, or as a hot shard is identified, the system eventually needs more shards, or a different split of the existing shards. That process is called resharding, and it is one of the hardest operational challenges a sharded system faces."
+        },
+        {
+          "type": "paragraph",
+          "content": "The core difficulty is that resharding usually means physically moving rows from their old shard to a new one, while the system keeps serving live traffic. Get the migration wrong and rows can be lost, duplicated, or briefly invisible to reads."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Consistent Hashing",
+          "text": "7.1 Consistent Hashing"
+        },
+        {
+          "type": "paragraph",
+          "content": "Plain hash mod shard count has a painful property: changing the shard count from 4 to 5 changes the target shard for nearly every key, because the modulus itself changed. Consistent hashing solves this by mapping both shards and keys onto a single ring of hash values. A key belongs to the next shard clockwise from its position on the ring. Adding a shard only moves the keys between the new shard and its clockwise neighbor, leaving every other key untouched."
+        },
+        {
+          "type": "code",
+          "content": "function shardForKey(key, shardCount) {\n  const hash = crypto.createHash('md5').update(String(key)).digest('hex');\n  const value = parseInt(hash.slice(0, 8), 16);\n  return value % shardCount;\n}\n\nconst pool = [db0, db1, db2, db3];\n\nfunction getConnection(userId) {\n  const shardId = shardForKey(userId, pool.length);\n  return pool[shardId];\n}",
+          "code": {
+            "language": "javascript",
+            "content": "function shardForKey(key, shardCount) {\n  const hash = crypto.createHash('md5').update(String(key)).digest('hex');\n  const value = parseInt(hash.slice(0, 8), 16);\n  return value % shardCount;\n}\n\nconst pool = [db0, db1, db2, db3];\n\nfunction getConnection(userId) {\n  const shardId = shardForKey(userId, pool.length);\n  return pool[shardId];\n}"
+          },
+          "codes": {
+            "javascript": "function shardForKey(key, shardCount) {\n  const hash = crypto.createHash('md5').update(String(key)).digest('hex');\n  const value = parseInt(hash.slice(0, 8), 16);\n  return value % shardCount;\n}\n\nconst pool = [db0, db1, db2, db3];\n\nfunction getConnection(userId) {\n  const shardId = shardForKey(userId, pool.length);\n  return pool[shardId];\n}",
+            "java": "public int shardForKey(String key, int shardCount) {\n    int hash = Math.abs(key.hashCode());\n    return hash % shardCount;\n}\n\npublic Connection getConnection(String userId) {\n    int shardId = shardForKey(userId, pool.size());\n    return pool.get(shardId);\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Live Migration Challenges",
+          "text": "7.2 Live Migration Challenges"
+        },
+        {
+          "type": "paragraph",
+          "content": "Moving a shard while it is serving live traffic is delicate. Rows written during the migration must end up on both the old and new location until the cutover is confirmed safe, otherwise a write that lands only on the old shard is silently lost once the old shard is retired."
+        },
+        {
+          "type": "paragraph",
+          "content": "Most teams solve this with a dual write and backfill pattern: start writing every new row to both the old and new layout, backfill historical rows in the background, verify the two layouts agree, then cut reads over and finally stop writing to the old layout."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523737-485525731.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523737-485525731.png",
+          "alt": "A resharding migration moving data from four old shards through dual write and verification into eight new shards"
+        },
+        {
+          "type": "list",
+          "content": "[\"Provision the new shard nodes\",\"Start dual writing, every write goes to both the old and new shard layout\",\"Backfill historical data from the old layout into the new layout in the background\",\"Verify data parity between old and new layouts with checksums or row counts\",\"Cut reads over to the new layout\",\"Stop dual writes and decommission the old layout\"]",
+          "items": [
+            "Provision the new shard nodes",
+            "Start dual writing, every write goes to both the old and new shard layout",
+            "Backfill historical data from the old layout into the new layout in the background",
+            "Verify data parity between old and new layouts with checksums or row counts",
+            "Cut reads over to the new layout",
+            "Stop dual writes and decommission the old layout"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Cross Shard Queries and Transactions",
+          "text": "8. Cross Shard Queries and Transactions"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding trades away one of the conveniences of a single database: the ability to join any two tables, or wrap any set of writes in one transaction, without thinking about where the data physically lives."
+        },
+        {
+          "type": "paragraph",
+          "content": "A query that only needs rows from one shard, for example fetch this users orders, stays fast, since it hits exactly one node. A query that needs to aggregate across every user, for example count all orders placed today across the whole system, has to touch every shard."
+        },
+        {
+          "type": "list",
+          "content": "[\"Scatter gather, send the query to every shard in parallel and merge the results in the application layer\",\"Denormalize data so the applications common query pattern only ever needs one shard\",\"Maintain a separate read optimized store, such as a search index or a data warehouse, specifically for cross shard analytical queries\",\"Use a distributed query engine that understands the shard layout and can push filters down to each shard before merging\"]",
+          "items": [
+            "Scatter gather, send the query to every shard in parallel and merge the results in the application layer",
+            "Denormalize data so the applications common query pattern only ever needs one shard",
+            "Maintain a separate read optimized store, such as a search index or a data warehouse, specifically for cross shard analytical queries",
+            "Use a distributed query engine that understands the shard layout and can push filters down to each shard before merging"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Denormalization as a Workaround",
+          "text": "8.1 Denormalization as a Workaround"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most common practical fix is denormalization: instead of joining two sharded tables at query time, store a copy of the fields you need directly alongside the row that needs them. This trades some storage and write complexity for the ability to answer a query from a single shard."
+        },
+        {
+          "type": "note",
+          "title": "Distributed transactions",
+          "content": "A transaction that touches rows on two different shards cannot rely on a single database engine to guarantee atomicity. Teams typically reach for two phase commit, which is slow and adds a coordination point that can block the whole transaction, or redesign the operation as a saga, a sequence of local single shard transactions with compensating actions if a later step fails."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Worked Example: Sharding a Users Table",
+          "text": "9. Worked Example: Sharding a Users Table"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consider a users table that has grown to 400 million rows and is taking on more writes than a single Postgres instance can absorb during peak hours. The team decides to shard it by user_id across four database nodes, using hash based routing."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every service that reads or writes the users table now runs the same routing function shown earlier: hash the user_id, take the result modulo 4, and connect to the corresponding node. A small routing layer sits in front of the four physical databases so application code calls one interface, getConnection, without needing to know how many shards exist underneath."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523738-954085045.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523738-954085045.png",
+          "alt": "The users table sharded by user_id, with a hash mod 4 routing function directing traffic to one of four database nodes"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"user_id\",\"hash mod 4\",\"Assigned shard\"],\"rows\":[[\"1042\",\"2\",\"Shard 2\"],[\"58831\",\"3\",\"Shard 3\"],[\"9\",\"1\",\"Shard 1\"],[\"400\",\"0\",\"Shard 0\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "When the application needs to fetch user 58831, it runs the same routing function, gets shard 3, and sends the query only to that node. No other shard is ever contacted for this request."
+        },
+        {
+          "type": "code",
+          "content": "-- Executed against Shard 3 only, since user_id 58831 hashes to shard 3\nSELECT id, name, email, created_at\nFROM users\nWHERE user_id = 58831;",
+          "code": {
+            "language": "sql",
+            "content": "-- Executed against Shard 3 only, since user_id 58831 hashes to shard 3\nSELECT id, name, email, created_at\nFROM users\nWHERE user_id = 58831;"
+          },
+          "codes": {
+            "sql": "-- Executed against Shard 3 only, since user_id 58831 hashes to shard 3\nSELECT id, name, email, created_at\nFROM users\nWHERE user_id = 58831;"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "With four shards, each node now holds roughly 100 million rows instead of 400 million, and each node only absorbs roughly a quarter of the total write volume. If the team later needs more headroom, they can reshard from 4 to 8 nodes using the dual write and backfill pattern described earlier, ideally paired with consistent hashing so the migration only moves a fraction of the keys rather than nearly all of them."
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice what this example does not solve. A query like find all users who signed up this week now has to scatter across all four shards and merge the results, since signup date was not the shard key. That tradeoff was accepted deliberately because the dominant query pattern, look up one user by id, is far more frequent than the cross shard reporting query."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Trade-offs and Alternatives",
+          "text": "10. Trade-offs and Alternatives"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding solves a real scaling problem, but it is not free. It replaces a single hard problem, one node running out of capacity, with a collection of smaller ongoing problems spread across the life of the system."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Write throughput scales roughly linearly as more shards are added\",\"Cross shard queries and joins become expensive scatter gather operations\"],[\"Each shard holds a smaller data set, so indexes fit in memory and queries stay fast\",\"Transactions that span multiple shards lose simple single node ACID guarantees\"],[\"A single shard failure only affects the rows routed to that shard, not the whole system\",\"Resharding to add capacity is a slow, operationally risky migration\"],[\"Storage capacity scales by adding more shards rather than needing bigger and bigger disks\",\"Application code and operational tooling must become shard aware everywhere\"],[\"\",\"A poorly chosen shard key can create hot shards that erase most of the scaling benefit\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Because of this cost, sharding is usually the last scaling lever a team pulls, not the first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.1 Alternatives to Consider First",
+          "text": "10.1 Alternatives to Consider First"
+        },
+        {
+          "type": "list",
+          "content": "[\"Vertical scaling, a bigger single machine, viable until write throughput or storage outgrows the largest available hardware\",\"Read replicas, help read heavy workloads scale but add no write capacity at all\",\"Caching, removes read load from the database but does nothing for write throughput\",\"Functional partitioning, splitting different tables or services onto different databases without sharding any single table\",\"Distributed SQL databases such as Spanner or CockroachDB, which shard automatically under the hood and hide much of this complexity from the application\"]",
+          "items": [
+            "Vertical scaling, a bigger single machine, viable until write throughput or storage outgrows the largest available hardware",
+            "Read replicas, help read heavy workloads scale but add no write capacity at all",
+            "Caching, removes read load from the database but does nothing for write throughput",
+            "Functional partitioning, splitting different tables or services onto different databases without sharding any single table",
+            "Distributed SQL databases such as Spanner or CockroachDB, which shard automatically under the hood and hide much of this complexity from the application"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.2 When Not to Shard",
+          "text": "10.2 When Not to Shard"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the current bottleneck can still be solved by a bigger machine, a read replica, or a cache, sharding is premature. It introduces permanent operational and application complexity that is very hard to undo, so it should be reserved for the point where write throughput or storage genuinely cannot be solved any other way."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Sharding in System Design Interviews",
+          "text": "11. Sharding in System Design Interviews"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding comes up constantly in system design interviews, almost anywhere the discussion turns to a table growing past a billion rows or a write path that a single database cannot keep up with. Interviewers are less interested in the word sharding itself and more interested in whether a candidate can justify a specific shard key and reason about its consequences."
+        },
+        {
+          "type": "paragraph",
+          "content": "A strong answer confirms the bottleneck is actually a write or storage problem before reaching for sharding, proposes a specific shard key with a reason, and proactively raises the hot shard and resharding tradeoffs rather than waiting to be asked."
+        },
+        {
+          "type": "list",
+          "content": "[\"State the bottleneck first, confirm the system is write bound or storage bound before proposing sharding at all\",\"Propose a concrete shard key and justify it against cardinality, distribution, and the dominant query pattern\",\"Call out the hot shard risk specific to the shard key chosen\",\"Address at least one cross shard query or transaction the design will need to handle\",\"Mention how the system will reshard as it grows, even at a high level, rather than treating the initial shard count as permanent\"]",
+          "items": [
+            "State the bottleneck first, confirm the system is write bound or storage bound before proposing sharding at all",
+            "Propose a concrete shard key and justify it against cardinality, distribution, and the dominant query pattern",
+            "Call out the hot shard risk specific to the shard key chosen",
+            "Address at least one cross shard query or transaction the design will need to handle",
+            "Mention how the system will reshard as it grows, even at a high level, rather than treating the initial shard count as permanent"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.1 Sample Interview Dialogue",
+          "text": "11.1 Sample Interview Dialogue"
+        },
+        {
+          "type": "paragraph",
+          "content": "Interviewer: this users table is going to hit two billion rows, what do you do. Candidate: first I would confirm whether reads or writes are the bottleneck, since read replicas alone might be enough if writes are not the issue. If writes genuinely need to scale, I would shard the table by user_id using hash based routing, since almost every query already carries user_id, and hashing avoids the hot shard problem a simple auto incrementing key would create."
+        },
+        {
+          "type": "note",
+          "title": "Common follow up questions",
+          "content": "Interviewers often follow up by asking what happens when one shard runs out of space, how a user is found if the shard key is not part of the incoming request, and how the system avoids downtime during a resharding migration. Having a short answer ready for each of these signals real hands on understanding rather than a memorized term."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Summary",
+          "text": "12. Summary"
+        },
+        {
+          "type": "list",
+          "content": "[\"Sharding splits one large data set across many independent database nodes by a shard key\",\"It exists to scale writes and storage past what a single node can hold, after vertical scaling and read replicas are exhausted\",\"Range based, hash based, and directory based are the three common strategies, each trading simplicity against flexibility\",\"A good shard key has high cardinality, even distribution, rarely changes, and matches the dominant query pattern\",\"Hot shards form when one key or narrow band of keys absorbs a disproportionate share of traffic\",\"Resharding is slow and operationally risky, so plan for it early rather than treating it as an afterthought\",\"Cross shard queries and transactions are the recurring operational cost of sharding, and denormalization is the most common workaround\"]",
+          "items": [
+            "Sharding splits one large data set across many independent database nodes by a shard key",
+            "It exists to scale writes and storage past what a single node can hold, after vertical scaling and read replicas are exhausted",
+            "Range based, hash based, and directory based are the three common strategies, each trading simplicity against flexibility",
+            "A good shard key has high cardinality, even distribution, rarely changes, and matches the dominant query pattern",
+            "Hot shards form when one key or narrow band of keys absorbs a disproportionate share of traffic",
+            "Resharding is slow and operationally risky, so plan for it early rather than treating it as an afterthought",
+            "Cross shard queries and transactions are the recurring operational cost of sharding, and denormalization is the most common workaround"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "Sharding buys write and storage scale by trading away single node simplicity, cross shard operations become the permanent cost of that trade."
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding is a powerful tool for a real problem, a single database node running out of write throughput or storage. It is not, however, a default architecture. The strongest engineers reach for it deliberately, choose the shard key with real care, and design for resharding from day one instead of being surprised by it later."
+        }
+      ]
+    }
+  ]
+}

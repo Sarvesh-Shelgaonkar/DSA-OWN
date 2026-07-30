@@ -1,0 +1,510 @@
+{
+  "slug": "langgraph-mcp",
+  "title": "LangGraph and MCP",
+  "content": [
+    {
+      "id": "langgraph-mcp",
+      "title": "LangGraph and MCP",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "LangGraph is a framework for building agents as graphs, where each step is a node and the connections between steps are edges. That structure makes it a natural place to plug in MCP tools as one kind of step among many."
+        },
+        {
+          "type": "paragraph",
+          "text": "Instead of a single hard coded loop, a LangGraph agent can branch, loop back, and pause, all while keeping track of state along the way. MCP tools slot into this as ordinary nodes that a graph can call and route around."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson covers how LangGraph graphs are put together, how an MCP tool becomes a node inside one, and how LangGraph checkpointing connects back to the long running session ideas from earlier in this module."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What LangGraph Is and Why Agents Need Graphs",
+          "id": "lgm-what-why"
+        },
+        {
+          "type": "paragraph",
+          "text": "LangGraph is a library for building agents as explicit state machines, where you define nodes, edges, and a shared state object rather than one long function."
+        },
+        {
+          "type": "paragraph",
+          "text": "A plain chat loop works fine for simple back and forth, but real agents often need to branch, retry, or wait, and a graph makes those paths visible instead of buried in nested conditionals."
+        },
+        {
+          "type": "paragraph",
+          "text": "Each node in a LangGraph graph is just a function that reads the current state and returns updates to it, which keeps individual pieces small and testable."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Core Building Blocks: State, Nodes, and Edges",
+          "id": "lgm-building-blocks"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580234484-237437055.png",
+          "alt": "State, nodes, and edges are the core building blocks of a LangGraph",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every LangGraph graph is built from three pieces, a state schema describing what data flows through the graph, nodes that transform that state, and edges that decide what runs next."
+        },
+        {
+          "type": "list",
+          "items": [
+            "State: a typed dictionary or Pydantic model shared across every node in the graph.",
+            "Node: a function that takes the current state and returns a partial update to it.",
+            "Edge: a fixed or conditional link deciding which node runs after the current one.",
+            "Graph: the compiled combination of state, nodes, and edges into something you can invoke."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Once compiled, a graph behaves like a single callable object, even though internally it might loop through several nodes before returning."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Defining the Graph State",
+          "id": "lgm-defining-state"
+        },
+        {
+          "type": "paragraph",
+          "text": "State in LangGraph is usually a TypedDict, with special annotations telling LangGraph how to merge updates from different nodes."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from typing import Annotated, TypedDict\nfrom langgraph.graph.message import add_messages\n\nclass AgentState(TypedDict):\n    messages: Annotated[list, add_messages]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The add_messages annotation tells LangGraph to append new messages to the list rather than replacing it, which is exactly the behavior a chat style agent needs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Adding Nodes as Python Functions",
+          "id": "lgm-adding-nodes"
+        },
+        {
+          "type": "paragraph",
+          "text": "A node is registered with a name and a plain function, and that function is what LangGraph calls whenever the graph reaches that point."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from langgraph.graph import StateGraph\n\nbuilder = StateGraph(AgentState)\n\ndef call_model(state: AgentState):\n    response = llm.invoke(state[\"messages\"])\n    return {\"messages\": [response]}\n\nbuilder.add_node(\"assistant\", call_model)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Nothing here is MCP specific yet, this is just an ordinary LLM call wrapped in the shape LangGraph expects."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Wiring Edges and Conditional Routing",
+          "id": "lgm-edges-routing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580236605-137511406.png",
+          "alt": "A conditional edge routes execution to one of two possible nodes",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Edges connect nodes together, and a conditional edge picks the next node based on a function that inspects the current state."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from langgraph.graph import START, END\nfrom langgraph.prebuilt import tools_condition\n\nbuilder.add_edge(START, \"assistant\")\nbuilder.add_conditional_edges(\"assistant\", tools_condition)\nbuilder.add_edge(\"tools\", \"assistant\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "tools_condition is a small helper that checks whether the last message contains a tool call, and routes to a tools node if it does, or to the end if it does not."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Compiling and Invoking a Graph",
+          "id": "lgm-compile-invoke"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once every node and edge is defined, calling compile turns the builder into a runnable graph object."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "graph = builder.compile()\n\nresult = graph.invoke({\"messages\": [{\"role\": \"user\", \"content\": \"What is 12 times 4?\"}]})\nprint(result[\"messages\"][-1].content)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "From the caller's side, a compiled graph looks like any other object with an invoke method, the branching and looping happen entirely inside."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Where MCP Tools Fit Into a LangGraph Node",
+          "id": "lgm-mcp-tools-fit"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580238602-747282461.png",
+          "alt": "An MCP tool call sits inside one node of the graph",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "An MCP tool is just a function with a name, a description, and a schema, which is exactly what LangGraph expects a tool to look like."
+        },
+        {
+          "type": "paragraph",
+          "text": "That means an MCP tool can be handed to a model as one of its available tools, and any resulting tool call can be executed inside a graph node, the same way a locally defined Python function would be."
+        },
+        {
+          "type": "note",
+          "title": "MCP tools are not a special case in LangGraph",
+          "content": "LangGraph does not know or care that a tool happens to come from an MCP server. Once it is wrapped as a LangChain tool object, it is treated exactly like any other tool bound to the model."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Connecting to an MCP Server with langchain-mcp-adapters",
+          "id": "lgm-adapters"
+        },
+        {
+          "type": "paragraph",
+          "text": "The langchain-mcp-adapters package bridges MCP servers and LangChain or LangGraph tools, handling the session and converting each MCP tool into a callable LangChain tool."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "pip install langchain-mcp-adapters langgraph langchain-openai"
+          }
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from langchain_mcp_adapters.client import MultiServerMCPClient\n\nmcp_client = MultiServerMCPClient({\n    \"weather\": {\n        \"command\": \"python\",\n        \"args\": [\"weather_server.py\"],\n        \"transport\": \"stdio\",\n    }\n})\n\ntools = await mcp_client.get_tools()"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Under the hood this opens an MCP session, lists the server's tools, and wraps each one so it can be passed straight into a LangGraph node."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Wrapping an MCP Tool Call Inside a Node",
+          "id": "lgm-wrapping-node"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580243042-856573972.png",
+          "alt": "A node function wraps an MCP tool call and returns the updated state",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The simplest way to use an MCP tool is to bind it to the model, then let a plain assistant node decide when to call it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "model_with_tools = llm.bind_tools(tools)\n\ndef call_model(state: AgentState):\n    response = model_with_tools.invoke(state[\"messages\"])\n    return {\"messages\": [response]}\n\nbuilder.add_node(\"assistant\", call_model)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The node itself never mentions MCP directly, all the protocol details stay inside the tool objects the adapter produced."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Using MCP Tools with a Prebuilt ToolNode",
+          "id": "lgm-toolnode"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580246185-773338989.png",
+          "alt": "MCP tools are wired directly into a prebuilt ToolNode",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "LangGraph ships a ToolNode helper that takes a list of tools and executes whichever one the model asked for, so you rarely write that dispatch logic by hand."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from langgraph.prebuilt import ToolNode\n\nbuilder.add_node(\"tools\", ToolNode(tools))"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Because ToolNode works with any LangChain style tool, MCP tools slot in with zero special casing on the graph side."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Persistence and Checkpointing in LangGraph",
+          "id": "lgm-checkpointing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580247835-561801382.png",
+          "alt": "Graph state is checkpointed so a run can resume after an interruption",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A checkpointer saves the graph's state after every step, so a run can be paused, inspected, or resumed later instead of living only in memory."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from langgraph.checkpoint.memory import MemorySaver\n\ncheckpointer = MemorySaver()\ngraph = builder.compile(checkpointer=checkpointer)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Production graphs usually swap MemorySaver for a durable backend, such as a SQLite or Postgres backed checkpointer, so state survives a process restart."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. How Checkpointing Relates to Long Running MCP Sessions",
+          "id": "lgm-checkpointing-vs-mcp"
+        },
+        {
+          "type": "paragraph",
+          "text": "Earlier lessons on long running MCP sessions covered how a server can hold onto session state across many requests from the same client."
+        },
+        {
+          "type": "paragraph",
+          "text": "LangGraph checkpointing solves a closely related problem from the agent side, keeping the conversation and intermediate results alive across many graph invocations, not just across many tool calls inside one MCP session."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Concept\",\"MCP long running session\",\"LangGraph checkpointing\"],\"rows\":[[\"What is persisted\",\"Server side session state tied to a connection\",\"Full graph state, including messages and node outputs\"],[\"Identifier used\",\"Session id from the transport layer\",\"Thread id passed in the invoke config\"],[\"Who owns the state\",\"The MCP server process\",\"The checkpointer backend the graph is compiled with\"],[\"Typical use\",\"Keeping a tool aware of prior calls in one session\",\"Resuming a whole agent run after a pause or crash\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "In a combined system, an MCP session can stay open for the duration of a tool connection, while the LangGraph checkpointer independently tracks the agent's own progress across turns."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Threads, Thread IDs, and Resuming a Conversation",
+          "id": "lgm-threads"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580249553-923532921.png",
+          "alt": "A thread id lets a conversation resume exactly where it left off",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A thread id is how a checkpointed graph knows which saved state to load, letting the same graph serve many independent conversations."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "config = {\"configurable\": {\"thread_id\": \"user-42-session-1\"}}\n\ngraph.invoke({\"messages\": [{\"role\": \"user\", \"content\": \"Remember my name is Asha\"}]}, config)\ngraph.invoke({\"messages\": [{\"role\": \"user\", \"content\": \"What is my name?\"}]}, config)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Reusing the same thread id across calls is what lets the second invoke see everything saved from the first one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Streaming and Observing Graph Execution",
+          "id": "lgm-streaming"
+        },
+        {
+          "type": "paragraph",
+          "text": "Instead of waiting for a full invoke to finish, LangGraph can stream state updates as each node completes, which is useful for showing progress while an MCP tool call is in flight."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "for update in graph.stream(\n    {\"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Pune?\"}]},\n    config,\n    stream_mode=\"updates\",\n):\n    print(update)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Each streamed update shows exactly which node just ran, so you can see the tool node fire the moment the MCP call completes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Error Handling and Retries Across Graph and MCP Boundaries",
+          "id": "lgm-error-handling"
+        },
+        {
+          "type": "paragraph",
+          "text": "An MCP tool call can fail the same way any network call can, a server timeout, a bad argument, or a dropped connection."
+        },
+        {
+          "type": "paragraph",
+          "text": "ToolNode surfaces a tool error back into the message list by default, which lets the model see the failure and decide whether to retry with different arguments."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from langgraph.prebuilt import ToolNode\n\ntool_node = ToolNode(tools, handle_tool_errors=True)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "For failures that should stop the whole run instead of being retried by the model, it is usually clearer to catch them in the node function and update the state explicitly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "lgm-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is a complete small graph that connects to an MCP weather server, binds its tools to a model, and answers a question using a tool call."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from typing import Annotated, TypedDict\nfrom langgraph.graph import StateGraph, START\nfrom langgraph.graph.message import add_messages\nfrom langgraph.prebuilt import ToolNode, tools_condition\nfrom langgraph.checkpoint.memory import MemorySaver\nfrom langchain_mcp_adapters.client import MultiServerMCPClient\nfrom langchain_openai import ChatOpenAI\n\nclass AgentState(TypedDict):\n    messages: Annotated[list, add_messages]\n\nasync def build_graph():\n    mcp_client = MultiServerMCPClient({\n        \"weather\": {\"command\": \"python\", \"args\": [\"weather_server.py\"], \"transport\": \"stdio\"}\n    })\n    tools = await mcp_client.get_tools()\n\n    llm = ChatOpenAI(model=\"gpt-4o-mini\")\n    model_with_tools = llm.bind_tools(tools)\n\n    def assistant(state: AgentState):\n        return {\"messages\": [model_with_tools.invoke(state[\"messages\"])]}\n\n    builder = StateGraph(AgentState)\n    builder.add_node(\"assistant\", assistant)\n    builder.add_node(\"tools\", ToolNode(tools))\n    builder.add_edge(START, \"assistant\")\n    builder.add_conditional_edges(\"assistant\", tools_condition)\n    builder.add_edge(\"tools\", \"assistant\")\n\n    return builder.compile(checkpointer=MemorySaver())\n\ngraph = await build_graph()\nconfig = {\"configurable\": {\"thread_id\": \"demo-1\"}}\nresult = await graph.ainvoke(\n    {\"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Pune right now?\"}]},\n    config,\n)\nprint(result[\"messages\"][-1].content)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The assistant node decides whether to call the weather tool, the tool node executes it through the MCP session, and the loop back edge lets the model use the result to form a final answer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "lgm-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Forgetting to keep the MCP client session open for the lifetime of the graph, causing tool calls to fail after the first one.",
+            "Reusing the same thread id across unrelated conversations, mixing unrelated history into one saved state.",
+            "Assuming MemorySaver persists across process restarts, when it only holds state in memory for the current run.",
+            "Skipping tools_condition and writing custom routing logic that misses a tool call the model actually made.",
+            "Not handling MCP tool errors, so a single failed call crashes the whole graph instead of letting the model retry.",
+            "Binding tools to the model but forgetting to add a matching ToolNode, leaving tool calls with nowhere to execute."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "lgm-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Extend the worked example with a second MCP server, such as a notes server, and confirm the model can call tools from either server inside the same graph run."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "mcp_client = MultiServerMCPClient({\n    \"weather\": {\"command\": \"python\", \"args\": [\"weather_server.py\"], \"transport\": \"stdio\"},\n    \"notes\": {\"command\": \"python\", \"args\": [\"notes_server.py\"], \"transport\": \"stdio\"},\n})\ntools = await mcp_client.get_tools()"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Then try invoking the graph twice with the same thread id and confirm the second call can see context from the first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "lgm-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "LangGraph turns an agent into an explicit graph of nodes and edges, and MCP tools plug into that graph as ordinary tools with no special casing needed."
+        },
+        {
+          "type": "paragraph",
+          "text": "Checkpointing gives the graph its own persistence story, saving state across turns, which sits alongside rather than replaces the session state an MCP server manages on its side."
+        }
+      ]
+    }
+  ]
+}

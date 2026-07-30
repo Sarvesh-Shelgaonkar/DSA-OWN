@@ -1,0 +1,536 @@
+{
+  "slug": "dynamic-resources",
+  "title": "Dynamic Resources",
+  "content": [
+    {
+      "id": "dynamic-resources",
+      "title": "Dynamic Resources",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Not everything a server wants to expose can be written down ahead of time."
+        },
+        {
+          "type": "paragraph",
+          "text": "A search over a document store depends on the query someone just typed, the rows returned by a live database change as records get inserted and deleted, the set of currently open browser tabs shifts by the second."
+        },
+        {
+          "type": "paragraph",
+          "text": "Dynamic resources are MCP's way of modeling exactly this kind of moving target, a set of resources generated or discovered on the fly rather than fixed in advance."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson looks at what sets dynamic resources apart from the static ones you just learned about, and how that difference ripples through discovery and handling on both sides of the connection."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Makes a Resource Dynamic",
+          "id": "dr-what-makes-dynamic"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173302405-622026144.png",
+          "alt": "A dynamic resource list is computed live and can change between calls",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173302405-622026144.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A resource set is dynamic when its membership, the actual entries returned by resources/list, is computed at the moment of the call rather than fixed ahead of time. Call resources/list twice on a dynamic server and you may get two different answers, not because anything is broken, but because the underlying thing the server is reflecting, a database table, a live search index, a set of open connections, genuinely changed between the two calls."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a fundamentally different contract from a static server. With static resources, a client can treat one resources/list response as authoritative for the whole session. With dynamic resources, a single response is only a snapshot, accurate at the instant it was taken, and potentially stale a moment later."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a genuinely different mental model from most static file listings a developer is used to, closer to querying a live API than to browsing a folder, and it is worth internalizing that shift before designing a dynamic server, since a lot of static-resource intuition simply does not transfer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Real-World Examples of Dynamic Resources",
+          "id": "dr-examples"
+        },
+        {
+          "type": "paragraph",
+          "text": "The clearest dynamic use cases involve state that is naturally in flux. A customer support server might expose currently open support tickets as resources, a set that grows and shrinks constantly as tickets get filed and closed. A database wrapper might expose the rows matching a given filter as individual resources, a set entirely dependent on both the current data and the filter applied."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Search results over a document store, one resource per matching document, dependent entirely on the query just run.",
+            "Rows returned by a live SQL query against a table that other processes are actively writing to.",
+            "Currently open pull requests in a code review server, a set that shrinks every time one gets merged.",
+            "Recently uploaded files in a shared folder, growing as new uploads arrive."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "In each case, trying to write the list down ahead of time and treat it as fixed would immediately produce something misleading, since the whole point of exposing this data is that it reflects current, live state."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Domain\",\"Example dynamic set\",\"What drives the change\"],\"rows\":[[\"Support\",\"Currently open tickets\",\"Tickets being filed and closed\"],[\"Search\",\"Documents matching a query\",\"The query text itself\"],[\"Monitoring\",\"Recent error log entries\",\"Time passing and new errors occurring\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. How a Dynamic Server Implements resources/list",
+          "id": "dr-implementing-list"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173304167-301171581.png",
+          "alt": "A server queries its current state to build the list on each request",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173304167-301171581.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "On the server side, a dynamic resources/list handler actually does work at call time, running a query, checking a live data structure, rather than returning a precomputed array. This is the core implementation difference from the static case, and it means a dynamic handler needs to be reasonably fast, since a client may call it more often, expecting a fresh answer each time."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# A dynamic resource list handler, pseudocode\ndef list_resources():\n    open_tickets = ticket_db.query(\"SELECT id, subject FROM tickets WHERE status = 'open'\")\n    return [\n        {\"uri\": f\"ticket://support/{t.id}\", \"name\": t.subject, \"mimeType\": \"text/plain\"}\n        for t in open_tickets\n    ]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. The resources/list Response Shape for Dynamic Sets",
+          "id": "dr-response-shape"
+        },
+        {
+          "type": "paragraph",
+          "text": "On the wire, a dynamic server's response looks exactly like a static one, the same resources array of uri, name, and mimeType entries. There is nothing in the JSON-RPC shape itself that flags a set as dynamic, which is why understanding a server's domain, and reading its documentation, matters more here than trying to infer behavior purely from the response format."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 7,\n  \"result\": {\n    \"resources\": [\n      { \"uri\": \"ticket://support/4021\", \"name\": \"Login page returns a 500 error\", \"mimeType\": \"text/plain\" },\n      { \"uri\": \"ticket://support/4022\", \"name\": \"Dashboard chart not rendering\", \"mimeType\": \"text/plain\" }\n    ]\n  }\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Dynamic Does Not Mean Random",
+          "id": "dr-not-random"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth being precise about what dynamic means here. A dynamic resource set is not random or arbitrary, it is deterministic given the current state of whatever it reflects. Query the same open tickets table twice within the same second and you will get the same result both times, the variability comes entirely from real changes to the underlying data over time, not from any unpredictability in the server's logic itself."
+        },
+        {
+          "type": "note",
+          "title": "Worth remembering",
+          "content": "A dynamic resource list is a faithful mirror of live state, not a source of nondeterminism. If two calls a second apart return different results, something in the real world actually changed in between."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Static vs Dynamic: Revisited",
+          "id": "dr-static-vs-dynamic"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173305932-396021928.png",
+          "alt": "A static list is compared against a dynamic list computed per request",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173305932-396021928.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The previous lesson introduced the static side of this distinction, a fixed set known ahead of time. Placing the two side by side makes the practical implications clearer, particularly around what a client is allowed to assume between calls."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Question\",\"Static resources\",\"Dynamic resources\"],\"rows\":[[\"Can the client cache the list for the whole session?\",\"Yes, generally safe\",\"No, needs periodic or event-driven re-fetching\"],[\"Does resources/list do real work at call time?\",\"Usually just returns a precomputed array\",\"Usually runs a live query or check\"],[\"Can an entry vanish between list and read?\",\"Very unlikely\",\"Possible, and must be handled gracefully\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth noting that many servers are not purely one or the other in every corner, a server might have a mostly static core set of reference resources and a smaller dynamic slice layered on top, covered in more detail a few sections ahead. What matters is that a client can tell, ideally from documentation or naming convention, which parts of a given server's resource set fall into which category."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Discovery Becomes a Live Operation",
+          "id": "dr-discovery-live"
+        },
+        {
+          "type": "paragraph",
+          "text": "For a dynamic server, calling resources/list is not a one-time bootstrap step the way it often is for a static one, it is closer to a live query that a client may need to repeat whenever it wants an up to date view. This changes how a client should think about discovery: not once at connection time, but potentially many times across a session, triggered either by explicit user action or by server-sent notifications."
+        },
+        {
+          "type": "paragraph",
+          "text": "This live nature also affects how a client should present results in a user interface. A picker built for a static list can safely populate itself once, but a picker for a dynamic list should be ready to refresh, or at least indicate that its contents might be out of date if the user pauses for a while before acting on them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Why Clients Cannot Cache Dynamic Lists Blindly",
+          "id": "dr-caching-caveat"
+        },
+        {
+          "type": "paragraph",
+          "text": "Caching a dynamic list the same way you would a static one introduces a subtle but real risk: a client showing a stale ticket list might let a user click on a ticket that has since been closed and archived, leading to a confusing error on resources/read that has nothing to do with anything the user did wrong."
+        },
+        {
+          "type": "paragraph",
+          "text": "The fix is not to avoid caching entirely, short-lived caches are still useful for reducing chatter, but to treat any cached dynamic list as provisional and be ready to handle it turning out to be stale."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# A short-lived cache with an explicit expiry, pseudocode\nCACHE_TTL_SECONDS = 5\n\nif not cache.has(\"resources\") or cache.age(\"resources\") > CACHE_TTL_SECONDS:\n    cache[\"resources\"] = await session.list_resources()\nresources = cache[\"resources\"]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. List-Changed Notifications",
+          "id": "dr-list-changed-notifications"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173307586-606797779.png",
+          "alt": "A server notifies the client when its resource list changes",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173307586-606797779.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Rather than forcing a client to poll resources/list on a timer and guess how fresh its view is, MCP supports an explicit notification a server can send whenever its resource set changes, telling a subscribed client exactly when it is worth re-fetching rather than leaving it to guess."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"notifications/resources/list_changed\"\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A client that supports this notification can drop its polling loop entirely and instead re-fetch resources/list only when told to, which is both more efficient and more accurate than any fixed polling interval could be."
+        },
+        {
+          "type": "note",
+          "title": "Worth remembering",
+          "content": "Not every client and server pair supports list-changed notifications. Check the capability negotiation at connection time, covered in an earlier module, before relying on this instead of polling."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Query-Driven Dynamic Resources",
+          "id": "dr-query-driven"
+        },
+        {
+          "type": "paragraph",
+          "text": "One common flavor of dynamic resource is entirely driven by an explicit input, most often exposed through a tool rather than resources/list itself, where calling a search tool causes the server to mint a fresh batch of resource URIs representing the matching documents, valid for that search but not part of any permanent enumerable list."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"results\": [\n    { \"uri\": \"search://docs/result/8f21\", \"name\": \"Refund policy overview\", \"mimeType\": \"text/markdown\" },\n    { \"uri\": \"search://docs/result/8f22\", \"name\": \"Refund exceptions for enterprise plans\", \"mimeType\": \"text/markdown\" }\n  ]\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This pattern blurs slightly with tool calls, since a search tool and a dynamic resource list can both mint fresh URIs on demand, the distinction usually comes down to whether the result is meant to be browsed as a resource, with its own mimeType and content, or whether it is meant to be consumed directly as a tool's structured output."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Time-Driven Dynamic Resources",
+          "id": "dr-time-driven"
+        },
+        {
+          "type": "paragraph",
+          "text": "Another flavor changes purely with the passage of time rather than any explicit query, a set of the last twenty error log entries, for instance, where the same URI scheme keeps producing a shifting window of results just because time keeps moving forward. These are dynamic in the truest sense, nobody has to do anything for the set to change, it changes on its own."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Dynamic Resources and Race Conditions",
+          "id": "dr-race-conditions"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173309268-14606952.png",
+          "alt": "A list fetch and a concurrent state change can race with each other",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173309268-14606952.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because the underlying data can change between a resources/list call and a subsequent resources/read call, dynamic servers need to be deliberate about handling the gap. A ticket that was open when listed might get closed a second later, and the read call needs a sensible answer for that case, either still returning the last known content, or a clear error explaining the resource is no longer available, rather than crashing."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Return the resource's content as it existed at read time, even if that differs from what it looked like at list time.",
+            "Return a clear, typed error if the underlying thing has been deleted entirely since the list call.",
+            "Avoid silently returning an empty or default value that could be misread as valid content."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to think of every dynamic resource read as happening against a moving target, similar to how a database transaction has to account for concurrent writers. The server does not need full transactional guarantees for this to work well, it just needs to be honest about what it returns, current content or a clear not-found, rather than something ambiguous."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Handling a Resource That Disappears Mid-Session",
+          "id": "dr-disappearing-resource"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173310763-634387520.png",
+          "alt": "A resource read fails after the resource has disappeared mid session",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173310763-634387520.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A well behaved client treats a read failure against a dynamic resource as an expected possibility, not an exceptional crash. Surfacing a friendly message, this ticket appears to have been closed since it was listed, is far better than propagating a raw error up to whatever is driving the conversation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "try:\n    content = await session.read_resource(uri)\nexcept ResourceNotFoundError:\n    print(f\"{uri} is no longer available, it may have changed since it was listed\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A model working through a client sees this failure the same way a person would, a clear message rather than a raw exception, and a well designed client passes that context through faithfully so the model can adjust, perhaps by re-listing resources rather than retrying the exact same read."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Combining Static and Dynamic Resources on One Server",
+          "id": "dr-combining"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single server is free to mix both kinds, a fixed set of static config resources alongside a dynamic set of live query results, as long as it is clear to a client which entries fall into which category. Many real servers do exactly this, a handful of always-present reference resources plus a larger, shifting set reflecting live data."
+        },
+        {
+          "type": "paragraph",
+          "text": "One practical convention is to distinguish the two by URI scheme or path prefix, so a client, or the person reading the resource list, can tell at a glance which entries are safe to treat as stable and which should be treated as a live snapshot."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Static: a shipped help article explaining how the ticketing system works.",
+            "Dynamic: the actual list of currently open tickets.",
+            "Both live comfortably on the same server, as long as the distinction is documented."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Performance Considerations for Dynamic Lists",
+          "id": "dr-performance"
+        },
+        {
+          "type": "paragraph",
+          "text": "Since a dynamic resources/list handler does real work on every call, unlike a static one that just returns a precomputed array, it is worth paying attention to how expensive that work is. A handler that runs an unindexed full table scan on every single resources/list call will feel fine in testing with ten rows and fall over in production with ten million, so the same performance discipline you would apply to any live query path applies here too."
+        },
+        {
+          "type": "paragraph",
+          "text": "Indexing the underlying query the same way you would for any user-facing feature usually resolves most of this, an index on status and assignee for the ticket example, for instance, turns a full table scan into a fast lookup, and that difference only grows more important as the table grows."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Testing a Dynamic Resource Server",
+          "id": "dr-testing"
+        },
+        {
+          "type": "paragraph",
+          "text": "Testing a dynamic server is necessarily different from testing a static one, since asserting that two calls return identical results is the wrong test here. Instead, tests should seed known underlying state, call resources/list, and assert the result reflects that seeded state accurately, then mutate the state and assert the next call reflects the mutation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def test_dynamic_list_reflects_current_state():\n    ticket_db.insert(id=9001, subject=\"Test ticket\", status=\"open\")\n    resources = server.list_resources()\n    assert any(r[\"uri\"] == \"ticket://support/9001\" for r in resources)\n\n    ticket_db.update(id=9001, status=\"closed\")\n    resources = server.list_resources()\n    assert not any(r[\"uri\"] == \"ticket://support/9001\" for r in resources)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "It is also worth writing a test for the race condition case directly, seeding a resource, listing it, deleting it, and then asserting that a subsequent read returns a clear not-found rather than stale or corrupted content."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Designing URIs for Dynamic Resources",
+          "id": "dr-uri-design"
+        },
+        {
+          "type": "paragraph",
+          "text": "A dynamic resource still needs a stable, meaningful URI, the same rules from the resource URI lesson apply just as much here, use the underlying record's durable identifier, a primary key or a slug, never something like its position in the current result set, which would silently point at a different item once the underlying data shifts."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "// Good: durable identifier survives reordering\nticket://support/4021\n\n// Risky: position in a result set is not durable\nticket://support/result-item-3"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "18. Rate Limiting and Load on Dynamic Handlers",
+          "id": "dr-rate-limiting"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173312455-854700146.png",
+          "alt": "Requests under the rate limit are allowed while requests over it are throttled",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173312455-854700146.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because a dynamic resources/list handler can be called repeatedly, sometimes by a client polling on its own timer, it is worth thinking about rate limiting the same way you would for any frequently hit endpoint. A server can debounce rapid repeated calls, or simply ensure the underlying query is cheap enough that even frequent polling does not become a real problem."
+        },
+        {
+          "type": "paragraph",
+          "text": "This matters more the larger the underlying dataset gets. A handler that is comfortably fast against a thousand rows can become a genuine bottleneck against ten million, so it is worth load testing a dynamic handler against realistic data volumes rather than the small dataset used during initial development."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "dr-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider an MCP server wrapping a project management tool, exposing currently open issues assigned to the requesting user as dynamic resources. Each call to resources/list runs a live query filtered by assignee and status, so the exact set returned depends entirely on what is actually open and assigned at that moment."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def list_resources(current_user):\n    issues = issue_tracker.query(assignee=current_user, status=\"open\")\n    return [\n        {\"uri\": f\"issue://project/{i.id}\", \"name\": i.title, \"mimeType\": \"text/plain\"}\n        for i in issues\n    ]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "If the user closes one of those issues in a separate browser tab mid-conversation, the next resources/list call simply reflects that change, no special invalidation logic required, since the handler always queries current state rather than serving a stale cached array."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "dr-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Caching a dynamic resource list for an entire session the same way you would a static one, leading to stale entries a user can click on.",
+            "Building a resources/list handler with an expensive, unindexed query, so discovery gets slower as the underlying dataset grows.",
+            "Using a result set's position or index as part of a resource's URI instead of a durable identifier.",
+            "Crashing or returning an opaque error when a resource disappears between list and read, instead of a clear, expected-case message.",
+            "Failing to send a list-changed notification when the server supports one, forcing every client to fall back to guesswork polling.",
+            "Assuming a dynamic list is inherently unpredictable, when in fact it is a deterministic reflection of real, changing state."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "dr-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Design a dynamic resources/list handler for an MCP server exposing a team's currently active on-call shifts, where the set of on-call engineers changes as shifts start and end. Write the pseudocode for the handler, plus one example resources/list JSON response taken at a specific moment."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "// One reasonable answer\ndef list_resources():\n    active = oncall_db.query(\"SELECT engineer_id, name FROM shifts WHERE now() BETWEEN start_time AND end_time\")\n    return [\n        {\"uri\": f\"oncall://team-a/{s.engineer_id}\", \"name\": s.name, \"mimeType\": \"text/plain\"}\n        for s in active\n    ]\n\n// Example response at 2026-07-07T14:00:00Z\n{\n  \"resources\": [\n    { \"uri\": \"oncall://team-a/eng-102\", \"name\": \"Priya Shah\", \"mimeType\": \"text/plain\" }\n  ]\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "dr-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A dynamic resource set is generated or discovered at call time, a live reflection of state that can genuinely change, search results, database rows, currently open items, rather than something fixed and known ahead of time. That single difference from static resources ripples outward, into how clients cache, how servers implement resources/list, and how both sides need to handle a resource that has quietly vanished between being listed and being read."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson looks at resource templates, parameterized URI patterns that let a client construct a valid resource URI itself for an entire family of resources, a middle ground between a server enumerating everything up front and a client having no way to guess a URI at all."
+        }
+      ]
+    }
+  ]
+}

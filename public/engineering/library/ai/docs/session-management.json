@@ -1,0 +1,508 @@
+{
+  "slug": "session-management",
+  "title": "Session Management",
+  "content": [
+    {
+      "id": "session-management",
+      "title": "Session Management",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Before a client and server can exchange a single tool call, they need something to call a session, a shared understanding that this particular connection, right now, is the one they are both talking through. Sessions are easy to take for granted because most of the time they just work quietly in the background, but knowing how one actually gets created, tracked, and eventually closed is essential to understanding MCP as a system rather than a list of message types."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What a Session Actually Is",
+          "id": "sm-what-is-session"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172799101-543513998.png",
+          "alt": "A client and server share a session",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172799101-543513998.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A session is the shared state that exists between one client and one server for the duration of a single connection, everything from the negotiated capabilities agreed during initialization to the running set of outstanding requests belongs to that session, and none of it exists before the session starts or after it ends."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is easy to confuse a session with the connection itself, but they are not quite the same thing, the connection is the physical or logical channel, the session is the agreement and shared context layered on top of it. In almost all MCP implementations the two share the same lifetime, but keeping the distinction clear helps when reasoning about what exactly gets torn down and when."
+        },
+        {
+          "type": "note",
+          "title": "A useful analogy",
+          "content": "A session is like a phone call rather than the phone line itself. The line, the transport, can carry many different calls over its lifetime, but each call has its own beginning, its own conversation, and its own end, entirely separate from any call that came before or after it."
+        },
+        {
+          "type": "paragraph",
+          "text": "This distinction matters most when something goes wrong, if a session ends up in a confusing state, the fix is almost always to inspect the session's data, capabilities, subscriptions, and pending requests, rather than the raw connection, the connection rarely has anything more to say once the session logic sits on top of it correctly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. A Session Begins With Initialization",
+          "id": "sm-begins-with-init"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172800886-344255258.png",
+          "alt": "A client initializes to begin a session",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172800886-344255258.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A session formally starts the moment a client sends an initialize request, and it is not considered fully established until the server responds and the client sends back an initialized notification confirming the handshake is complete. Nothing that requires session context, a tool call, a resource read, is valid before that handshake finishes."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{ \"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"initialize\", \"params\": { \"protocolVersion\": \"2025-06-18\", \"capabilities\": {}, \"clientInfo\": { \"name\": \"example-host\", \"version\": \"1.0.0\" } } }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Until that initialized notification is sent and received, both sides are technically mid-handshake, not mid-session. A server that receives a tools/call request before initialization has completed is expected to reject it, since no capabilities have been agreed on yet, and answering would mean guessing what the client actually supports."
+        },
+        {
+          "type": "paragraph",
+          "text": "Rejecting requests sent before initialization completes is not just a formality, it prevents a whole category of bugs where a client assumes a capability exists before the server has actually confirmed supporting it, acting on an assumption rather than a negotiated agreement."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. One Session Per Client-Server Pair",
+          "id": "sm-one-per-pair"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP sessions are strictly one to one, a single session belongs to exactly one client instance and exactly one server. If a host needs to talk to three different servers, it does not multiplex that traffic through one shared session, it opens three separate client instances, each maintaining its own independent session, exactly as described in MCP Host Architecture."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Scenario\",\"Number of sessions\"],\"rows\":[[\"One host talking to one server\",\"1\"],[\"One host talking to three servers\",\"3, one per client instance\"],[\"Two different users each talking to the same server\",\"2, entirely separate sessions\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This one to one rule holds even if the same physical server process happens to be handling several clients at once, network transports especially. From the server's perspective those are still entirely separate sessions, each with its own capabilities, subscriptions, and pending requests, simply handled by the same running process for efficiency."
+        },
+        {
+          "type": "paragraph",
+          "text": "This also means capabilities negotiated on one session never leak into another, even between the same two applications, if a host disconnects from a server and reconnects, the new session negotiates capabilities fresh rather than assuming last time's agreement still holds."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Session Identity",
+          "id": "sm-session-identity"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172802551-650997813.png",
+          "alt": "A session has a unique identity",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172802551-650997813.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "For transports where the connection itself is inherently one to one, a subprocess's pipes for instance, the connection is the session identity, there is nothing else to track."
+        },
+        {
+          "type": "paragraph",
+          "text": "For transports where one server might handle many separate connections at once, a network transport serving multiple remote clients, the server typically assigns an explicit session identifier during or immediately after initialization, and that identifier is what distinguishes one client's session from another's on the same server."
+        },
+        {
+          "type": "note",
+          "title": "Session identifiers are opaque",
+          "content": "A session id is just a token used to look up the right session state on the server, a client should never try to parse meaning out of it, only pass it back on subsequent requests exactly as given."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{ \"jsonrpc\": \"2.0\", \"id\": 1, \"result\": { \"protocolVersion\": \"2025-06-18\", \"capabilities\": {}, \"serverInfo\": { \"name\": \"example-server\", \"version\": \"2.0.0\" } } }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Whether or not that response is accompanied by an explicit session id header or field depends on the transport, some network transports carry the session id outside the JSON-RPC body entirely, as a header on every subsequent request, precisely because it is transport-level routing information, not protocol payload."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some transports fold the session id directly into the connection itself, and never expose it as a separate value application code needs to handle at all, this is common for subprocess transports where the pipe already uniquely identifies the session with no ambiguity possible."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. What the Server Tracks Per Session",
+          "id": "sm-server-tracks"
+        },
+        {
+          "type": "paragraph",
+          "text": "For each active session, a server typically keeps the negotiated capabilities from initialization, any subscriptions the client has registered for resource change notifications, and bookkeeping for outstanding requests in both directions. None of this is shared across sessions, session A's subscriptions have no effect on what session B receives."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "sessions = {}\n\ndef create_session(session_id, capabilities):\n    sessions[session_id] = {\n        \"capabilities\": capabilities,\n        \"subscriptions\": set(),\n        \"pending_requests\": {}\n    }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth noticing that none of this per-session state is really about the tools or resources themselves, a server's actual tool implementations are typically shared code running for every session, what differs per session is only which client is subscribed to what, and which requests from that particular client are still outstanding."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping this state keyed strictly by session id, rather than by anything about the client's identity or history, is what makes the isolation guarantee airtight, there is no code path where one session's bookkeeping could accidentally be looked up under a different session's key."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. What the Client Tracks Per Session",
+          "id": "sm-client-tracks"
+        },
+        {
+          "type": "paragraph",
+          "text": "Symmetrically, the client side of a session tracks the server's declared capabilities, which tools, resources, and prompts are currently available, and its own outstanding requests. This is exactly the information a host relies on when deciding which client instance to route a given tool call through."
+        },
+        {
+          "type": "paragraph",
+          "text": "A client also needs to remember which session a given piece of cached information came from, if a host caches a server's tool list, that cache should be invalidated the moment the session that produced it ends, stale tool listings from a session that no longer exists are a common source of confusing failures."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "client_session = {\n    \"server_capabilities\": {...},\n    \"known_tools\": [...],\n    \"known_resources\": [...],\n    \"pending_requests\": {}\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Session State Lives Above the Transport",
+          "id": "sm-above-transport"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth being precise about where session state actually lives architecturally, the transport, as covered in Transport Layer, only knows about bytes and connections, it has no concept of a session at all. Session state is maintained entirely by the client and server logic sitting above the transport, the transport is simply the channel that session's messages travel through."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Layer\",\"Has a concept of a session\"],\"rows\":[[\"Transport\",\"No, only connections and bytes\"],[\"Client-server communication\",\"Partially, ids are scoped per connection\"],[\"Session management\",\"Yes, this is exactly its job\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This layering also explains why a transport swap, moving a deployment from a subprocess to a network transport, never requires touching session management code at all, the session logic was never aware of transport details to begin with."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Session Termination",
+          "id": "sm-termination"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172804184-285982456.png",
+          "alt": "A session terminates and becomes closed",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172804184-285982456.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A session ends when either side deliberately closes the connection, when the underlying transport fails, a subprocess crashing or a network connection dropping, or in some implementations, after a period of inactivity beyond a configured limit. In every case, ending a session means discarding every piece of state tied to it, capabilities, subscriptions, and pending requests alike."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a deliberately strict rule rather than an optimization detail, allowing any session state to survive past the session itself would mean a server or client could accidentally act on stale capabilities or subscriptions from a conversation that, as far as either side is concerned, no longer exists."
+        },
+        {
+          "type": "paragraph",
+          "text": "A session ending is therefore a fairly loud event architecturally, everything downstream of it, cached tool listings, active subscriptions, in-flight calls, has to be treated as invalid the instant it happens, rather than allowed to linger and potentially be acted on afterward."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Clean Shutdown Versus Abrupt Termination",
+          "id": "sm-clean-vs-abrupt"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172805824-332222191.png",
+          "alt": "A clean shutdown is compared against an abrupt termination",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172805824-332222191.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A clean shutdown gives both sides a chance to finish or reject outstanding work gracefully, a client might wait briefly for in-flight requests to resolve before closing, a server might flush any final notifications. An abrupt termination, a crash or a severed network link, gives neither side that chance, and the other side has to detect the loss and clean up its own session state reactively instead."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Termination style\",\"Outstanding requests\",\"Who notices first\"],\"rows\":[[\"Clean shutdown\",\"Resolved or explicitly rejected before closing\",\"Both sides, cooperatively\"],[\"Abrupt termination\",\"Left hanging until timeout or transport error\",\"Whichever side is still running\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice, most production systems have to handle abrupt termination as the common case rather than the exception, network connections drop, processes get killed by resource limits, and a robust session management implementation treats detecting and cleaning up after an abrupt loss as a first-class path, not an afterthought bolted on after the clean shutdown code was written."
+        },
+        {
+          "type": "note",
+          "title": "Design for the worse case",
+          "content": "Because abrupt termination is common in real deployments, it is safer to design session cleanup logic around detecting and recovering from it well, and treat a clean, cooperative shutdown as simply a faster, friendlier version of the same cleanup path, rather than the primary path with abrupt termination as an exception."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Cleaning Up Server-Side Session State",
+          "id": "sm-cleanup-server"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a session ends, a well-behaved server needs to release everything tied to it, cancel any subscriptions so it stops trying to send notifications nobody will read, free any resources that were held open on the session's behalf, and reject any requests still marked pending against that session id."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def end_session(session_id):\n    session = sessions.pop(session_id, None)\n    if session is None:\n        return\n    for pending in session[\"pending_requests\"].values():\n        pending.reject(session_closed_error())\n    session[\"subscriptions\"].clear()"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Skipping this cleanup is one of the more common sources of slow resource leaks in long-running MCP servers, a server that accumulates thousands of dead session entries over days of uptime, each holding onto a handful of subscription objects and pending-request futures that will never be resolved or read."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Cleaning Up Client-Side Session State",
+          "id": "sm-cleanup-client"
+        },
+        {
+          "type": "paragraph",
+          "text": "On the client side, ending a session means the host needs to know that server's tools, resources, and prompts are no longer available, and should stop offering them as options for the current task. This is exactly the kind of update the host-level aggregation logic covered in MCP Host Architecture needs to react to immediately, not on the next periodic refresh."
+        },
+        {
+          "type": "paragraph",
+          "text": "A host aggregating tools from many servers, as described in MCP Host Architecture, needs this cleanup to happen immediately and reliably, presenting a tool from a server whose session already ended, only to have the call fail, is a worse user experience than simply not offering that tool in the first place."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well-designed host treats this update as a single atomic step, remove the server's tools and resources from whatever aggregate list it maintains, rather than leaving them half-visible while other bookkeeping catches up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Reconnection Is a New Session, Not a Resumed One",
+          "id": "sm-reconnection-new"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172807409-877981900.png",
+          "alt": "An old session is compared against a new session on reconnect",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172807409-877981900.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "If a client reconnects to the same server after a dropped connection, that reconnection creates an entirely new session by default, a fresh initialize handshake, fresh capability negotiation, and no memory of whatever subscriptions or state existed before. Some implementations layer session resumption on top of this as an optimization, but it is never assumed by the base architecture."
+        },
+        {
+          "type": "note",
+          "title": "Do not assume server memory across reconnects",
+          "content": "Unless a specific resumption mechanism is explicitly supported and negotiated, a client should treat a reconnect as starting from zero, re-subscribing to anything it still needs rather than assuming the server remembers."
+        },
+        {
+          "type": "paragraph",
+          "text": "This has a very concrete practical implication, any client code that assumes a reconnect picks up exactly where the last session left off will be wrong far more often than it is right, and should instead be written to rebuild subscriptions and re-fetch capabilities from scratch every time initialize completes."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some newer transport-level extensions do support resuming a prior session's stream of events after a brief disconnect, but that is an explicit, negotiated capability layered on top of the base model, not something a client should assume works by default."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Why Sessions Are Scoped This Narrowly",
+          "id": "sm-why-scoped-narrow"
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping sessions strictly one to one, and strictly tied to a single connection's lifetime, keeps failure isolated. If one server crashes, only its session is affected, a host's other sessions with other servers continue completely unaffected, exactly because there was never any shared session state to begin with."
+        },
+        {
+          "type": "paragraph",
+          "text": "This isolation property compounds well as a system grows, a host that scales up to dozens of connected servers still only ever has to reason about one session's worth of state failing at a time, never a cascading failure that spreads session state across unrelated server connections."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is the same isolation principle that shows up throughout well-designed distributed systems generally, a fault confined to the smallest unit that can meaningfully absorb it, here that unit is a single session."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Session Timeouts for Idle Connections",
+          "id": "sm-idle-timeouts"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172809096-155751416.png",
+          "alt": "An idle session times out and closes",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172809096-155751416.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Some server implementations add a further safeguard on top of relying purely on transport failure, an idle session timeout, if no messages have been exchanged on a session for some configured period, the server proactively ends it rather than waiting indefinitely for a transport failure that may never come, for example if a network connection is left open but silent."
+        },
+        {
+          "type": "note",
+          "title": "This is a policy choice, not a protocol requirement",
+          "content": "MCP itself does not mandate any specific idle timeout, individual server implementations choose one based on their own resource constraints and expected usage patterns."
+        },
+        {
+          "type": "paragraph",
+          "text": "Choosing too aggressive an idle timeout can end a perfectly healthy session just because a user paused for a few minutes between tool calls, while too lax a timeout leaves dead sessions accumulating server resources for far longer than necessary, this is a real tuning tradeoff, not a fixed number every server should copy."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Multiple Sessions on One Server Process",
+          "id": "sm-multiple-on-one-process"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single running server process very commonly serves many sessions at once, one per connected client, and the session table is exactly what keeps that safe, every incoming message is first routed to the correct session's state before anything else happens, so one client's requests can never accidentally read or modify another client's subscriptions or pending requests."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Concept\",\"Scope\"],\"rows\":[[\"Server process\",\"One running program, potentially many sessions\"],[\"Session\",\"One client-server pair, its own isolated state\"],[\"Session table\",\"The server-side structure mapping session ids to that state\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This isolation is also what makes horizontal scaling straightforward at the architecture level, if one server process is handling too many sessions, additional process instances can be started, each with its own independent session table, and a load balancer in front simply routes new sessions to whichever instance has capacity."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Worked Example: A Session From Start to Finish",
+          "id": "sm-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Trace a complete session lifecycle for a host connecting to a single tool server over a network transport."
+        },
+        {
+          "type": "list",
+          "items": [
+            "1. Client opens a connection and sends initialize with its capabilities.",
+            "2. Server responds with its own capabilities and assigns a session id.",
+            "3. Client sends initialized, the session is now fully active.",
+            "4. Client subscribes to a resource, the server records that subscription against the session id.",
+            "5. Several tool calls happen over the following minutes, all scoped to that same session.",
+            "6. The network connection drops unexpectedly.",
+            "7. The server detects the drop, ends the session, cancels the subscription, and rejects any pending requests.",
+            "8. The client detects the drop, marks that server unavailable, and if it reconnects, starts an entirely new session from step 1."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Common Mistakes in Session Management",
+          "id": "sm-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Assuming a reconnect resumes the previous session instead of starting a fresh one.",
+            "Sharing one session across multiple servers instead of giving each server its own client instance and session.",
+            "Leaving subscriptions and pending requests dangling after a session ends instead of explicitly cleaning them up.",
+            "Treating the session id as meaningful data rather than an opaque token to pass back unchanged.",
+            "Confusing the transport connection closing with the session ending, when a clean protocol-level close should happen first."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "18. Practice: Design a Session Table",
+          "id": "sm-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Design the in-memory data structure a server would use to track multiple simultaneous sessions from different clients, then walk through what has to happen to that structure at each of these three moments, a new client completes initialize, a client sends a request referencing an unknown session id, and a connection drops unexpectedly."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Sketch the shape only, not full logic\nsessions = {\n    \"session-abc\": { \"capabilities\": {...}, \"subscriptions\": set(), \"pending_requests\": {...} },\n    \"session-xyz\": { \"capabilities\": {...}, \"subscriptions\": set(), \"pending_requests\": {...} }\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "sm-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A session is the shared, one to one context between a single client and a single server, created by the initialize handshake, holding capabilities and subscriptions for as long as the connection lives, and fully discarded the moment that connection ends, with a reconnect starting completely fresh unless resumption is explicitly supported."
+        },
+        {
+          "type": "paragraph",
+          "text": "Sessions define the boundary a client and server operate inside, but they say nothing yet about where the actual data inside that session lives, which is exactly what the next lesson, State Management, looks at."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,416 @@
+{
+  "slug": "product-quantization-mathematics",
+  "title": "Product Quantization Mathematics",
+  "content": [
+    {
+      "id": "product-quantization-mathematics",
+      "title": "Product Quantization Mathematics",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Product quantization pushes the basic quantization idea from the previous lesson much further by splitting each vector into several smaller subvectors, quantizing each subvector independently with its own small codebook, and combining the resulting codes together, this simple decomposition trick creates an effective codebook of an astronomically large size while keeping both memory usage and computation tiny, making it the compression technique behind most billion-scale production vector search systems."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146093573-576854251.png",
+          "alt": "Overview of product quantization",
+          "caption": "The core ideas this lesson connects together",
+          "size": "large",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146093573-576854251.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why Plain Quantization Is Not Enough",
+          "id": "pq-why-plain-not-enough"
+        },
+        {
+          "type": "paragraph",
+          "text": "Plain vector quantization from the previous lesson needs a codebook large enough to represent the true diversity of the full, high-dimensional data, but building and searching a codebook of, say, a billion centroids directly is computationally infeasible, k-means clustering itself becomes far too slow and memory-hungry at that scale, product quantization sidesteps this problem entirely through decomposition."
+        },
+        {
+          "type": "note",
+          "title": "The scaling problem in one line",
+          "content": "Doubling the codebook size in plain vector quantization roughly doubles the k-means training cost, while product quantization can grow its effective codebook exponentially just by adding a few more subvectors, at nearly constant training cost per subvector."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is exactly the same divide-and-conquer intuition seen elsewhere in computer science, breaking one hard, large problem into several smaller, independent, easily solvable problems whose combined solutions still cover the original problem well."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Splitting a Vector into Subvectors",
+          "id": "pq-splitting-into-subvectors"
+        },
+        {
+          "type": "paragraph",
+          "text": "The first step of product quantization divides each full vector into a fixed number of equal-sized, non-overlapping chunks, called subvectors, a 128-dimensional vector split into 8 subvectors, for instance, produces 8 chunks of 16 dimensions each, this splitting is purely mechanical, just slicing the vector at fixed positions."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\nvector = np.random.normal(0, 1, size=128)\nnum_subvectors = 8\nsubvector_dim = 128 // num_subvectors\nsubvectors = vector.reshape(num_subvectors, subvector_dim)\nprint(subvectors.shape)   # (8, 16)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The subvector boundaries are fixed once and reused consistently for every vector in the collection, and for the query at search time, this consistency is essential, since distances are only meaningful when every vector was split at exactly the same positions."
+        },
+        {
+          "type": "note",
+          "title": "A subtle requirement",
+          "content": "The original dimensionality must be evenly divisible by the chosen number of subvectors, or the last subvector ends up a different size than the rest, complicating both codebook training and distance computation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. A Separate Codebook per Subvector",
+          "id": "pq-codebook-per-subvector"
+        },
+        {
+          "type": "paragraph",
+          "text": "Product quantization builds a completely independent, small codebook for each subvector position, using k-means clustering restricted to just that slice of the data across the whole collection, with 8 subvector positions and 256 centroids per position, this produces 8 separate small codebooks, each covering only its own 16-dimensional slice of the original space."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from sklearn.cluster import KMeans\ncodebooks = []\nfor i in range(num_subvectors):\n    slice_data = all_vectors[:, i*subvector_dim:(i+1)*subvector_dim]\n    km = KMeans(n_clusters=256, random_state=0).fit(slice_data)\n    codebooks.append(km)"
+          }
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# each codebook only ever sees its own 16-dimensional slice of the data\nprint(codebooks[0].cluster_centers_.shape)   # (256, 16)\nprint(codebooks[7].cluster_centers_.shape)   # (256, 16)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Training these codebooks independently also parallelizes trivially, each subvector codebook can be trained on a separate CPU core or machine entirely independently of the others, since they never interact during training."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Encoding a Vector as a Tuple of Codes",
+          "id": "pq-encoding-as-tuple"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once all subvector codebooks are built, encoding a full vector means quantizing each of its subvectors independently against its own codebook, producing a tuple of small integer codes, one per subvector, an 8-subvector vector with a 256-entry codebook per position needs only 8 bytes total to store the entire compressed representation, regardless of how many original dimensions it had."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def pq_encode(vector, codebooks, subvector_dim):\n    codes = []\n    for i, km in enumerate(codebooks):\n        chunk = vector[i*subvector_dim:(i+1)*subvector_dim].reshape(1, -1)\n        codes.append(km.predict(chunk)[0])\n    return codes   # e.g. [12, 200, 88, 5, 240, 3, 176, 61]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This tuple of small integer codes is the entire stored representation of the vector going forward, the original full-precision vector can be discarded after encoding if only approximate search is needed, or kept separately if exact re-ranking will be used later."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# encoding an entire batch of vectors at once, not just one\ncodes_matrix = np.array([pq_encode(v, codebooks, subvector_dim) for v in all_vectors])\nprint(codes_matrix.shape)   # (num_vectors, num_subvectors)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. The Combinatorial Codebook Size Trick",
+          "id": "pq-combinatorial-codebook-trick"
+        },
+        {
+          "type": "paragraph",
+          "text": "The real power of product quantization comes from combinatorics, with 8 subvector positions and 256 centroids each, the number of distinct full-vector codes representable is 256 raised to the power of 8, over 18 quintillion, an effective codebook of that size would be utterly impossible to build directly with ordinary k-means, yet product quantization achieves it by building only 8 small, independent 256-centroid codebooks."
+        },
+        {
+          "type": "note",
+          "title": "The key insight",
+          "content": "A huge combined codebook is assembled implicitly from small, cheap, independently trained pieces, this is the same divide-and-conquer principle that shows up throughout computer science applied directly to the geometry of vector compression."
+        },
+        {
+          "type": "paragraph",
+          "text": "This same trick of assembling an enormous effective search space from a small number of independent, cheaply combined pieces echoes the multiplication principle covered in the Discrete Mathematics module, where independent choices multiply together into a combined total."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Approximate Distance via Asymmetric Distance Computation",
+          "id": "pq-asymmetric-distance-computation"
+        },
+        {
+          "type": "paragraph",
+          "text": "To compute an approximate distance between a full-precision query and a product-quantized database vector, the query is first split into the same subvector chunks, then the distance from each query subvector to every centroid in the corresponding codebook is precomputed once, producing a small lookup table per subvector position, the total approximate distance is then just the sum of looked-up values for each of the stored codes, no floating-point vector math required at query time."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "distance_tables = []\nfor i, km in enumerate(codebooks):\n    q_chunk = query[i*subvector_dim:(i+1)*subvector_dim]\n    distance_tables.append(np.linalg.norm(km.cluster_centers_ - q_chunk, axis=1))\n\ndef pq_distance(codes):\n    return sum(distance_tables[i][code] for i, code in enumerate(codes))"
+          }
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Step\",\"Cost\"],\"rows\":[[\"Build distance table per subvector\",\"Centroids times subvector dimension\"],[\"Look up distance for one stored code\",\"Constant time\"],[\"Total for n stored vectors\",\"n times number of subvectors, simple additions\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This distance decomposition relies on the subvector slices being treated as independent contributions to the total squared distance, which is exact for Euclidean distance and only approximate for other distance measures."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Choosing the Number of Subvectors",
+          "id": "pq-choosing-subvectors"
+        },
+        {
+          "type": "paragraph",
+          "text": "More subvectors, each with a smaller dimension, generally give a finer, more accurate approximation, since each individual codebook only needs to represent a smaller slice of the original space well, but too many subvectors can eventually hurt accuracy if each resulting slice becomes too low-dimensional to capture meaningful structure, in practice the number of subvectors is chosen to evenly divide the original dimensionality, common choices being 8, 16, or 32."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Subvectors\",\"Dimension per subvector\",\"Total code size (256 centroids each)\"],\"rows\":[[\"8\",\"16\",\"8 bytes\"],[\"16\",\"8\",\"16 bytes\"],[\"32\",\"4\",\"32 bytes\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "The number of centroids per subvector is a second, related tuning knob, typically fixed at 256 so that each subvector code fits exactly in a single byte, though some systems use larger per-subvector codebooks when extra accuracy is worth the additional storage."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Subvectors\",\"Training cost\",\"Effective codebook size (256 centroids each)\"],\"rows\":[[\"4\",\"Lowest\",\"256 to the 4th, about 4 billion\"],[\"8\",\"Moderate\",\"256 to the 8th, over 18 quintillion\"],[\"16\",\"Higher\",\"256 to the 16th, astronomically large\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Product Quantization vs Plain Vector Quantization",
+          "id": "pq-vs-plain-vq"
+        },
+        {
+          "type": "paragraph",
+          "text": "Plain vector quantization from the previous lesson uses one single codebook over the entire vector, limited to however many centroids can feasibly be trained and stored directly, product quantization instead achieves a vastly larger effective codebook by combining many small, independently trained per-subvector codebooks, at the cost of a slightly less globally optimal approximation, since each subvector is quantized independently of the others."
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice, most systems that reach billion-vector scale use product quantization rather than plain vector quantization specifically because of this combinatorial codebook advantage, plain vector quantization remains more common only at smaller scales where its simpler, single-codebook design is easier to reason about."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Storage Layout and Cache Efficiency",
+          "id": "pq-storage-layout"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because each product-quantized vector shrinks to just a handful of bytes, entire large collections often fit comfortably in fast CPU cache or RAM, avoiding slow disk or network access entirely during search, this cache-friendliness is itself a major, sometimes underappreciated, part of why product quantization delivers such large real-world speedups, not just the reduced storage footprint on its own."
+        },
+        {
+          "type": "paragraph",
+          "text": "A collection stored as compact byte codes can also be transferred across a network far more cheaply than full floating-point vectors, an important consideration for distributed vector search systems that shard data across many machines."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Precomputing Distance Tables Efficiently",
+          "id": "pq-precomputing-tables"
+        },
+        {
+          "type": "paragraph",
+          "text": "The lookup table approach from asymmetric distance computation means the expensive part of a query, computing distances from the query to every centroid, happens only once per query, regardless of how many stored vectors are ultimately compared against, after that, each stored vector comparison costs only a handful of table lookups and additions."
+        },
+        {
+          "type": "paragraph",
+          "text": "Reusing the same precomputed distance tables across many stored vectors within a single query is what turns an otherwise expensive per-vector floating-point calculation into a handful of cheap integer table lookups and additions."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Combining with Inverted File Indexes",
+          "id": "pq-with-inverted-file-index"
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice, product quantization is frequently combined with an inverted file index, a coarse quantization step that first assigns each vector to one of a moderate number of coarse clusters, at query time, only the vectors within the closest coarse clusters need to be scanned using product-quantized distances, combining coarse pruning with fine-grained compressed comparison for both speed and memory efficiency."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a simplified two-level pipeline\ncoarse_cluster = coarse_kmeans.predict(query.reshape(1, -1))[0]\ncandidates_in_cluster = inverted_lists[coarse_cluster]\n# only these candidates get compared using product-quantized distances"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This two-level combination, coarse clustering for pruning plus product quantization for compact, fast comparison within each cluster, is the design used by many of the most widely cited billion-scale vector search benchmarks and libraries."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Training Considerations",
+          "id": "pq-training-considerations"
+        },
+        {
+          "type": "paragraph",
+          "text": "Product quantization codebooks are typically trained once on a large, representative sample drawn from the full collection, and then reused to encode every vector, including new ones added later, retraining the codebooks periodically as the underlying data distribution shifts helps keep reconstruction accuracy from degrading over time."
+        },
+        {
+          "type": "paragraph",
+          "text": "A representative training sample for product quantization codebooks usually needs to be at least a few thousand times larger than the number of centroids per subvector, to reliably capture the true shape of each subvector slice of the data distribution."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Optimized Product Quantization",
+          "id": "pq-optimized-variant"
+        },
+        {
+          "type": "paragraph",
+          "text": "A refinement called optimized product quantization first applies a learned rotation to the vectors before splitting them into subvectors, chosen specifically to balance the variance more evenly across subvector positions, since plain product quantization can perform poorly when the natural coordinate ordering happens to group highly correlated dimensions into the same subvector."
+        },
+        {
+          "type": "paragraph",
+          "text": "This learned rotation step in optimized product quantization is closely related to principal component analysis and the eigendecomposition covered in the Linear Algebra module, both aim to find directions that better separate and balance variance before further processing."
+        },
+        {
+          "type": "paragraph",
+          "text": "Applying this rotation before splitting into subvectors typically improves reconstruction accuracy noticeably compared to plain product quantization, at the modest one-time cost of learning and storing the rotation matrix."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. A Worked Example",
+          "id": "pq-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Encode a small 8-dimensional vector using 2 subvectors of 4 dimensions each, with 4 centroids per subvector, and compare the reconstructed vector to the original."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\nfrom sklearn.cluster import KMeans\nnp.random.seed(0)\ndata = np.random.normal(0, 1, size=(500, 8))\n\ncodebooks, codes_per_sub = [], []\nfor i in range(2):\n    chunk = data[:, i*4:(i+1)*4]\n    km = KMeans(n_clusters=4, random_state=0).fit(chunk)\n    codebooks.append(km)\n    codes_per_sub.append(km.predict(chunk))\n\nvector_0_code = [codes_per_sub[0][0], codes_per_sub[1][0]]\nreconstructed = np.concatenate([codebooks[0].cluster_centers_[vector_0_code[0]],\n                                  codebooks[1].cluster_centers_[vector_0_code[1]]])\nprint(np.linalg.norm(data[0] - reconstructed))"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Interpreting this result",
+          "content": "A small reconstruction distance here confirms that even with just 2 subvectors and 4 centroids each, this toy example already recovers a reasonably close approximation of the original 8-dimensional vector."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# checking the second vector as well for comparison\nvector_1_code = [codes_per_sub[0][1], codes_per_sub[1][1]]\nreconstructed_1 = np.concatenate([codebooks[0].cluster_centers_[vector_1_code[0]],\n                                    codebooks[1].cluster_centers_[vector_1_code[1]]])\nprint(np.linalg.norm(data[1] - reconstructed_1))"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Common Mistakes",
+          "id": "pq-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Choosing a number of subvectors that does not evenly divide the original dimensionality, requiring awkward padding or truncation.",
+            "Training subvector codebooks on too small a sample, leaving some codebooks poorly fit to the true data distribution in that slice.",
+            "Ignoring strong correlations between dimensions that end up split across different subvectors, hurting reconstruction accuracy, a problem optimized product quantization directly addresses.",
+            "Assuming product quantization gives exact search results, like plain quantization, it always introduces some approximation error in exchange for its large compression gains."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "A fifth common mistake is choosing too few centroids per subvector for the true diversity of that slice of data, causing many unrelated vectors to collapse onto the same subvector code and blurring together in the compressed representation."
+        },
+        {
+          "type": "paragraph",
+          "text": "A sixth common mistake is applying product quantization directly to raw, unnormalized embeddings when the downstream search actually relies on cosine similarity, normalizing vectors first is often necessary for the reconstructed distances to correspond meaningfully to the intended similarity measure."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Practice: Compare Compression Ratios",
+          "id": "pq-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Compute the storage size of 1 million 768-dimensional float32 vectors both uncompressed and product-quantized with 8, 16, and 32 subvectors at 256 centroids each, and compare the resulting compression ratios."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "original_bytes = 768 * 4   # float32\nfor num_sub in [8, 16, 32]:\n    pq_bytes = num_sub   # 1 byte per subvector code, 256 centroids\n    print(num_sub, original_bytes / pq_bytes)   # compression ratio"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Extending this comparison to also measure actual search recall, not just compression ratio, at each subvector count gives a fuller picture, since a higher compression ratio sometimes comes with a small but measurable accuracy cost."
+        },
+        {
+          "type": "paragraph",
+          "text": "Comparing product quantization against plain vector quantization at a roughly matched total code size is a valuable final exercise, showing directly why the combinatorial subvector approach tends to win at scale."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "pq-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Product quantization splits each vector into subvectors, quantizes each slice independently with its own small codebook, and combines the resulting codes, creating an effective codebook of astronomical size from a handful of small, cheap, independently trained pieces, which is exactly why it underlies nearly every billion-scale production vector search system in use today."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson closes out the ANN Search Mathematics module, tying together random projections, hashing, probability distributions, and plain quantization into the single most widely deployed compression technique in modern vector search, the same asymmetric distance computation trick from the quantization lesson reappears here, scaled up through the combinatorial subvector decomposition covered throughout this lesson."
+        },
+        {
+          "type": "paragraph",
+          "text": "The storage layout and cache efficiency benefits covered in the newly added section are frequently just as important in practice as the raw compression ratio, since keeping an entire billion-vector collection resident in fast memory avoids costly disk or network access during every single search query."
+        }
+      ]
+    }
+  ]
+}

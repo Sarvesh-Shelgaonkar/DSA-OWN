@@ -1,0 +1,569 @@
+{
+  "slug": "multi-server-support",
+  "title": "Multi Server Support",
+  "content": [
+    {
+      "id": "multi-server-support",
+      "title": "Multi Server Support",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "A single MCP server is easy to reason about. One connection, one set of tools, one thing that can go wrong."
+        },
+        {
+          "type": "paragraph",
+          "text": "Real assistants rarely stop at one server though. A single host often talks to a filesystem server, a GitHub server, and a database server, all at the same time."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson looks at how a host manages several servers at once, keeps their tools from colliding, and stays useful even when one of them falls over."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Multi Server Support Means",
+          "id": "mss-what-it-means"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577728197-460079186.png",
+          "alt": "A host application connects to three separate MCP servers at once",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Multi server support means a single host keeps live connections open to more than one MCP server at the same time."
+        },
+        {
+          "type": "paragraph",
+          "text": "Each connection is its own independent session, with its own handshake, its own capabilities, and its own lifecycle."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A filesystem server for reading and writing local files",
+            "A GitHub server for issues, pull requests, and repository search",
+            "A database server for running read only queries",
+            "A ticketing server for looking up support tickets"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "The host is the only thing that knows all of these servers exist. From the model's point of view, there is just one big toolbox."
+        },
+        {
+          "type": "paragraph",
+          "text": "That single toolbox illusion is the whole point, and everything in this lesson is about how the host builds and maintains it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Why One Server Is Rarely Enough",
+          "id": "mss-why-one-is-not-enough"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most real tasks cross more than one system. Fixing a bug might mean reading a file, checking a ticket, and opening a pull request."
+        },
+        {
+          "type": "paragraph",
+          "text": "Splitting these into separate MCP servers keeps each one small, focused, and easy to maintain on its own."
+        },
+        {
+          "type": "note",
+          "title": "Small servers age better",
+          "content": "A server that only talks to one system is easier to test, easier to secure, and easier to hand off to a different team than one giant server trying to do everything."
+        },
+        {
+          "type": "paragraph",
+          "text": "The cost of that separation is that the host now has to manage several connections instead of one, and that is exactly what this lesson covers."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of that cost falls on the model. It should still feel like talking to one assistant with one set of capabilities."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. One Host, Many Live Connections",
+          "id": "mss-one-host-many-connections"
+        },
+        {
+          "type": "paragraph",
+          "text": "Under the hood, the host keeps a small object for every server it is connected to, usually holding the session, the transport, and the list of things that server offers."
+        },
+        {
+          "type": "list",
+          "items": [
+            "The session object used to send requests and receive responses",
+            "The transport, whether stdio, HTTP, or something else",
+            "The tools, resources, and prompts that server declared during initialization",
+            "A simple status flag such as connected, reconnecting, or down"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "None of these per server objects need to know about each other. They just need to report faithfully to whatever is keeping the combined picture."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "connections = {\n    \"filesystem\": ServerConnection(session=fs_session, status=\"connected\"),\n    \"github\": ServerConnection(session=gh_session, status=\"connected\"),\n    \"database\": ServerConnection(session=None, status=\"down\"),\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A dictionary keyed by server name like this is usually enough to track everything the rest of the host needs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. The Naming Collision Problem",
+          "id": "mss-naming-collision"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577732073-110209662.png",
+          "alt": "Two servers offering a tool with the same name creates a naming collision",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once more than one server is connected, name collisions become a real problem instead of a theoretical one."
+        },
+        {
+          "type": "paragraph",
+          "text": "Two completely unrelated servers might both expose a tool called search, or both expose a resource called config."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Server\",\"Tool Name\",\"What It Actually Does\"],\"rows\":[[\"filesystem\",\"search\",\"Searches file contents on disk\"],[\"github\",\"search\",\"Searches issues and pull requests\"],[\"database\",\"search\",\"Runs a full text query against a table\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "If the host handed the model three tools all named search, the model would have no reliable way to tell them apart."
+        },
+        {
+          "type": "paragraph",
+          "text": "Worse, calling the wrong one silently would look like a normal, successful tool call from the outside."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Namespacing Tools and Resources",
+          "id": "mss-namespacing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577737265-892033881.png",
+          "alt": "A server prefix namespaces each tool name to avoid collisions",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The fix is namespacing. Every tool and resource name gets prefixed with the name of the server it came from."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "filesystem.search\ngithub.search\ndatabase.search"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A simple dot separator works well, as long as the host applies it consistently everywhere a name is shown."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Prefix every tool name with its server name before showing it to the model",
+            "Apply the same prefix to resource URIs and prompt names, not just tools",
+            "Keep the prefix stable across reconnects so cached references still resolve",
+            "Pick one separator and use it everywhere, never mix styles"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "This one convention removes an entire category of confusing, hard to debug behavior before it ever shows up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Aggregating Tools Into One List for the LLM",
+          "id": "mss-aggregating-tools"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577744222-557959731.png",
+          "alt": "Tools from every connected server aggregate into one list for the LLM",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The model never sees three separate tool lists. It sees one combined list, built by the host from everything every connected server offers."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "async def aggregate_tools(connections):\n    aggregated = []\n    for server_name, conn in connections.items():\n        if conn.status != \"connected\":\n            continue\n        server_tools = await conn.session.list_tools()\n        for tool in server_tools.tools:\n            aggregated.append({\n                \"name\": f\"{server_name}.{tool.name}\",\n                \"description\": tool.description,\n                \"inputSchema\": tool.inputSchema,\n                \"_server\": server_name,\n                \"_original_name\": tool.name,\n            })\n    return aggregated"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Two details matter here. The prefixed name is what the model sees and calls, and the original name plus server name are kept around so the host knows where to route the call."
+        },
+        {
+          "type": "paragraph",
+          "text": "This same function is called again every time a server reconnects, so the aggregated list always reflects who is actually available right now."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Aggregating Resources and Prompts Too",
+          "id": "mss-aggregating-resources-prompts"
+        },
+        {
+          "type": "paragraph",
+          "text": "Tools get most of the attention, but resources and prompts need exactly the same treatment."
+        },
+        {
+          "type": "paragraph",
+          "text": "A resource URI from one server can collide with a resource URI from another just as easily as a tool name can."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Prefix resource URIs the same way tools are prefixed",
+            "Merge prompt lists from every connected server into one combined list",
+            "Keep a lookup table from prefixed name back to server and original name for all three"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Treating tools, resources, and prompts as three separate aggregation problems with the same solution keeps the whole host consistent."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Routing a Call Back to the Right Server",
+          "id": "mss-routing-calls"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577749335-434455038.png",
+          "alt": "A namespaced tool call is routed back to the right server",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Aggregating names is only half the job. When the model calls github.search, the host has to know that means the search tool on the github server, not the search tool anywhere else."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "async def call_tool(name, arguments, connections):\n    server_name, _, original_name = name.partition(\".\")\n    conn = connections.get(server_name)\n    if conn is None or conn.status != \"connected\":\n        raise ToolCallError(f\"server {server_name} is not available right now\")\n    return await conn.session.call_tool(original_name, arguments)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Stripping the prefix before the call reaches the actual server keeps that server completely unaware that namespacing exists at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lookup is cheap, a dictionary access and a string split, so it adds no meaningful latency to any tool call."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Configuring Multiple Servers Declaratively",
+          "id": "mss-configuration"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most hosts let a user declare which servers to connect to in a config file rather than hardcoding them."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"mcpServers\": {\n    \"filesystem\": { \"command\": \"mcp-server-filesystem\", \"args\": [\"--root\", \"/home/user/projects\"] },\n    \"github\": { \"command\": \"mcp-server-github\", \"args\": [] },\n    \"database\": { \"command\": \"mcp-server-postgres\", \"args\": [\"--readonly\"] }\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The keys in that config, filesystem, github, database, are exactly the prefixes that show up later in the aggregated tool list."
+        },
+        {
+          "type": "paragraph",
+          "text": "Reading server identity from configuration also means adding a fourth server never requires touching the aggregation or routing code at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. When a Server Goes Down",
+          "id": "mss-server-down"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577754823-145600279.png",
+          "alt": "One server going down should not take the whole host with it",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Servers crash, get killed, or lose network connectivity. In a multi server host, that should be a local problem, not a global one."
+        },
+        {
+          "type": "paragraph",
+          "text": "If the database server dies mid session, the filesystem and github servers should keep working exactly as before."
+        },
+        {
+          "type": "note",
+          "title": "Isolate failure at the connection boundary",
+          "content": "Wrap every call to a server in its own error handling, and never let one server's exception propagate up and take down the whole host process."
+        },
+        {
+          "type": "paragraph",
+          "text": "The practical fix is simple, catch errors per connection and mark that one connection as down without touching the others."
+        },
+        {
+          "type": "paragraph",
+          "text": "This one habit is the difference between a host that degrades gracefully and one that goes completely dark over a single unrelated crash."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Reconnection and Health Checks",
+          "id": "mss-reconnection"
+        },
+        {
+          "type": "paragraph",
+          "text": "A down server does not have to stay down for the rest of the session. Most hosts retry a connection on a backoff schedule."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Detect the failure, usually a closed pipe or a timed out request",
+            "Mark that one server as down and remove its tools from the aggregated list",
+            "Retry the connection on a short backoff, doubling the wait after each failed attempt",
+            "Once reconnected, refresh that server's tool list and merge it back in"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Removing a down server's tools from the list is just as important as reconnecting it later. The model should never be offered a tool it cannot actually use."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well behaved reconnect loop runs quietly in the background and never blocks any request that does not involve the failing server."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Partial Failure, Not Total Failure",
+          "id": "mss-partial-failure"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577757894-73559564.png",
+          "alt": "A partial failure in one server is isolated from a total host failure",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The whole point of isolating servers is that partial failure looks nothing like total failure to the person using the assistant."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Situation\",\"Bad Design\",\"Good Design\"],\"rows\":[[\"One server crashes\",\"Host process crashes too\",\"Host keeps running with the remaining servers\"],[\"One tool call times out\",\"Whole request hangs forever\",\"That one call fails, others proceed\"],[\"One server is slow to start\",\"Host blocks until it responds\",\"Host connects to the rest first, adds the slow one later\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "None of this requires anything exotic. It just requires treating each server connection as something that can fail independently, and coding for that from the start."
+        },
+        {
+          "type": "paragraph",
+          "text": "Users notice this kind of resilience even when they cannot name it. It just feels like the assistant works."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Performance and Scaling Considerations",
+          "id": "mss-performance-scaling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Connecting to five or six servers is trivial. Connecting to fifty starts to matter for both speed and cost."
+        },
+        {
+          "type": "paragraph",
+          "text": "Every tool, from every server, adds tokens to the context window the model sees on every single turn."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Connect to servers lazily, only opening ones actually needed for the current task",
+            "Cache tool lists and only refresh them when a server reconnects or explicitly changes",
+            "Consider letting the user or the model enable and disable whole servers rather than always sending everything"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "A host that blindly aggregates everything from every server it knows about will eventually hand the model a tool list too large to reason about well."
+        },
+        {
+          "type": "paragraph",
+          "text": "Treat the aggregated list as a budget to manage, not just a sum to compute."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "mss-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a host connected to three servers, filesystem, github, and database, with the database server crashing partway through a session."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "async def handle_turn(user_request, connections):\n    tools = await aggregate_tools(connections)\n    response = await llm.complete(user_request, tools=tools)\n    for call in response.tool_calls:\n        try:\n            result = await call_tool(call.name, call.arguments, connections)\n        except ToolCallError as e:\n            result = {\"error\": str(e)}\n        yield result\n\nasync def reconnect_loop(connections):\n    while True:\n        for name, conn in connections.items():\n            if conn.status == \"down\":\n                try:\n                    conn.session = await connect(name)\n                    conn.status = \"connected\"\n                except ConnectionError:\n                    pass\n        await asyncio.sleep(5)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "When the database server goes down mid session, aggregate_tools simply stops including its tools on the next turn, call_tool returns a clean error for anything already in flight, and reconnect_loop quietly brings it back once it recovers."
+        },
+        {
+          "type": "list",
+          "items": [
+            "The model keeps working with filesystem and github tools the entire time",
+            "No exception from the database server ever reaches the model or crashes the host",
+            "Once reconnected, database tools reappear in the very next aggregated list"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Nothing about this design is complicated. It is just consistent, every path checks status before trusting a connection."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "mss-common-mistakes"
+        },
+        {
+          "type": "paragraph",
+          "text": "A handful of mistakes show up again and again in multi server hosts, most of them easy to avoid once you know to look for them."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Skipping namespacing and hoping two servers never happen to pick the same tool name",
+            "Letting one server's exception propagate up and crash the entire host process",
+            "Never removing a down server's tools from the aggregated list, so the model keeps trying to call something that cannot respond",
+            "Reconnecting instantly and repeatedly instead of backing off, hammering a server that is still recovering",
+            "Refreshing every server's tool list on every single turn instead of only when something actually changes",
+            "Hardcoding server names in the routing logic instead of reading them from configuration"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Most of these come from treating the multi server case as a bigger version of the single server case, instead of its own design problem."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "mss-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take a host connected to two toy servers and simulate one of them crashing mid session."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Confirm the aggregated tool list drops the crashed server's tools on the very next turn",
+            "Confirm a call already in flight to the crashed server fails cleanly instead of hanging",
+            "Add a reconnect loop and confirm the crashed server's tools reappear once it comes back"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "If any of those three steps surprises you, that is exactly the gap this lesson was trying to close."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "mss-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Multi server support comes down to three habits, namespace every name so servers never collide, aggregate everything into one list the model can actually use, and isolate failure so one server going down never takes the others with it."
+        },
+        {
+          "type": "paragraph",
+          "text": "That closes out Building MCP Clients. The next module, Authentication and Security, looks at how to actually secure these connections, covering credentials, permission scoping, and safe handling of untrusted servers."
+        }
+      ]
+    }
+  ]
+}

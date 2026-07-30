@@ -1,0 +1,559 @@
+{
+  "slug": "concurrent-collections",
+  "title": "Concurrent Collections",
+  "content": [
+    {
+      "id": "concurrent-collections",
+      "title": "Concurrent Collections",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Most collections you reach for every day, a HashMap, an ArrayList, a plain dictionary, were never designed with threads in mind. They assume one caller at a time, reading and writing in a predictable order."
+        },
+        {
+          "type": "paragraph",
+          "content": "The moment two threads touch the same collection at the same time, that assumption breaks quietly. Nothing crashes right away. The map just starts lying to you."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson looks at why ordinary collections fall apart under concurrent access, what it costs to fix that with a single big lock, and how purpose built concurrent collections do better by spreading the work instead of serializing all of it."
+        },
+        {
+          "type": "paragraph",
+          "content": "By the end you should be able to look at an access pattern, mostly reads or mostly writes, and pick a collection that fits it instead of reaching for the same lock every time."
+        },
+        {
+          "type": "blockQuote",
+          "content": "An ordinary collection is unsafe to share across threads because its internal state, size counters, bucket arrays, next pointers, can be read and written half updated at the same time, corrupting the structure itself, not just the data inside it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Why a plain collection is not thread safe",
+          "text": "1. Why a plain collection is not thread safe"
+        },
+        {
+          "type": "paragraph",
+          "content": "A HashMap is not just a container of key value pairs. It is a data structure with internal invariants: a bucket array, a size count, chains or trees inside each bucket, and pointers that link entries together."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every method call on that map assumes it starts from a consistent state and leaves a consistent state behind. When only one thread ever calls those methods, that assumption always holds."
+        },
+        {
+          "type": "paragraph",
+          "content": "Add a second thread and the assumption stops holding. Two threads can both decide a bucket needs to grow, both start resizing, and stomp on each other halfway through."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512251298-643765528.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512251298-643765528.png",
+          "alt": "Two threads both reading count as 5 and both writing 6, so one increment is silently lost"
+        },
+        {
+          "type": "heading3",
+          "content": "What actually goes wrong",
+          "text": "What actually goes wrong"
+        },
+        {
+          "type": "list",
+          "content": "[\"Lost updates: two threads read the same counter, both add one, and only one increment survives.\",\"Torn resizes: a HashMap growing its bucket array while another thread reads from it can produce an infinite loop or a silently dropped entry.\",\"Visibility gaps: a write on one thread may sit in a CPU cache and never become visible to a thread running on another core.\",\"Iterator corruption: mutating a list while another thread iterates it can throw or, worse, just skip elements silently.\"]",
+          "items": [
+            "Lost updates: two threads read the same counter, both add one, and only one increment survives.",
+            "Torn resizes: a HashMap growing its bucket array while another thread reads from it can produce an infinite loop or a silently dropped entry.",
+            "Visibility gaps: a write on one thread may sit in a CPU cache and never become visible to a thread running on another core.",
+            "Iterator corruption: mutating a list while another thread iterates it can throw or, worse, just skip elements silently."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "This is not about \"usually fine\"",
+          "content": "Under low contention a broken plain collection might work for months. The bugs surface under load, in production, at the worst possible time, because that is exactly when two threads are most likely to overlap."
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix people reach for first is a lock. Wrap every operation on the shared collection in the same lock, and only one thread can be inside at a time."
+        },
+        {
+          "type": "heading3",
+          "content": "A broken shared HashMap",
+          "text": "A broken shared HashMap"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is the failure in code. Multiple threads increment counters in a plain map with no synchronization at all."
+        },
+        {
+          "type": "code",
+          "content": "import java.util.HashMap;\nimport java.util.Map;\n\npublic class BrokenCounter {\n    static Map<String, Integer> counts = new HashMap<>();\n\n    static void increment(String key) {\n        Integer current = counts.get(key);\n        int next = (current == null) ? 1 : current + 1;\n        counts.put(key, next);\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        Runnable task = () -> {\n            for (int i = 0; i < 100000; i++) {\n                increment(\"clicks\");\n            }\n        };\n        Thread t1 = new Thread(task);\n        Thread t2 = new Thread(task);\n        t1.start(); t2.start();\n        t1.join(); t2.join();\n        // Expected 200000, actual is usually lower, or the map\n        // throws an exception during an internal resize.\n        System.out.println(counts.get(\"clicks\"));\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "import java.util.HashMap;\nimport java.util.Map;\n\npublic class BrokenCounter {\n    static Map<String, Integer> counts = new HashMap<>();\n\n    static void increment(String key) {\n        Integer current = counts.get(key);\n        int next = (current == null) ? 1 : current + 1;\n        counts.put(key, next);\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        Runnable task = () -> {\n            for (int i = 0; i < 100000; i++) {\n                increment(\"clicks\");\n            }\n        };\n        Thread t1 = new Thread(task);\n        Thread t2 = new Thread(task);\n        t1.start(); t2.start();\n        t1.join(); t2.join();\n        // Expected 200000, actual is usually lower, or the map\n        // throws an exception during an internal resize.\n        System.out.println(counts.get(\"clicks\"));\n    }\n}"
+          },
+          "codes": {
+            "java": "import java.util.HashMap;\nimport java.util.Map;\n\npublic class BrokenCounter {\n    static Map<String, Integer> counts = new HashMap<>();\n\n    static void increment(String key) {\n        Integer current = counts.get(key);\n        int next = (current == null) ? 1 : current + 1;\n        counts.put(key, next);\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        Runnable task = () -> {\n            for (int i = 0; i < 100000; i++) {\n                increment(\"clicks\");\n            }\n        };\n        Thread t1 = new Thread(task);\n        Thread t2 = new Thread(task);\n        t1.start(); t2.start();\n        t1.join(); t2.join();\n        // Expected 200000, actual is usually lower, or the map\n        // throws an exception during an internal resize.\n        System.out.println(counts.get(\"clicks\"));\n    }\n}",
+            "python": "import threading\n\ncounts = {}\n\ndef increment(key):\n    current = counts.get(key, 0)\n    counts[key] = current + 1\n\ndef worker():\n    for _ in range(100000):\n        increment(\"clicks\")\n\nt1 = threading.Thread(target=worker)\nt2 = threading.Thread(target=worker)\nt1.start(); t2.start()\nt1.join(); t2.join()\n# CPython's GIL protects individual bytecode ops but not this\n# read-modify-write sequence, so the final count is often short.\nprint(counts.get(\"clicks\"))",
+            "cpp": "#include <iostream>\n#include <string>\n#include <thread>\n#include <unordered_map>\nusing namespace std;\n\nunordered_map<string, int> counts;\n\nvoid increment(const string& key) {\n    auto it = counts.find(key);\n    int next = (it == counts.end()) ? 1 : it->second + 1;\n    counts[key] = next;\n}\n\nvoid worker() {\n    for (int i = 0; i < 100000; i++) {\n        increment(\"clicks\");\n    }\n}\n\nint main() {\n    thread t1(worker);\n    thread t2(worker);\n    t1.join();\n    t2.join();\n    // Expected 200000, actual is usually lower, or the program\n    // crashes outright: std::unordered_map has no protection at\n    // all against two threads rehashing or writing at once.\n    cout << counts[\"clicks\"] << endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Run this a few times and the printed count drifts. Two threads read the same value, both compute the same next value, and one increment vanishes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Wrapping everything in one big lock",
+          "text": "2. Wrapping everything in one big lock"
+        },
+        {
+          "type": "paragraph",
+          "content": "The obvious fix is to put a single lock around the shared collection and require every thread to hold that lock before touching it."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is called coarse grained locking, one lock guards the whole structure, regardless of which part of it a given operation actually touches."
+        },
+        {
+          "type": "heading3",
+          "content": "Why it works",
+          "text": "Why it works"
+        },
+        {
+          "type": "paragraph",
+          "content": "With one lock, only one thread can be inside the collection at any moment. All the interleavings that produced torn resizes and lost updates simply cannot happen anymore, because there is no second thread present to interleave with."
+        },
+        {
+          "type": "heading3",
+          "content": "Why it is expensive",
+          "text": "Why it is expensive"
+        },
+        {
+          "type": "list",
+          "content": "[\"Every read now competes with every write for the same lock, even reads to completely different keys.\",\"Threads spend time waiting instead of working, and that wait time grows with thread count.\",\"A single slow operation, one big resize, holds the lock and stalls every other thread that wanted the map.\",\"Throughput stops scaling once you add more cores, because the lock is now the bottleneck, not the CPU.\"]",
+          "items": [
+            "Every read now competes with every write for the same lock, even reads to completely different keys.",
+            "Threads spend time waiting instead of working, and that wait time grows with thread count.",
+            "A single slow operation, one big resize, holds the lock and stalls every other thread that wanted the map.",
+            "Throughput stops scaling once you add more cores, because the lock is now the bottleneck, not the CPU."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "heading3",
+          "content": "Fixing the counter with one coarse lock",
+          "text": "Fixing the counter with one coarse lock"
+        },
+        {
+          "type": "paragraph",
+          "content": "This version is correct. It is also strictly serial: no two threads ever run inside the map at the same time."
+        },
+        {
+          "type": "code",
+          "content": "import java.util.HashMap;\nimport java.util.Map;\nimport java.util.concurrent.locks.ReentrantLock;\n\npublic class CoarseLockCounter {\n    static Map<String, Integer> counts = new HashMap<>();\n    static ReentrantLock lock = new ReentrantLock();\n\n    static void increment(String key) {\n        lock.lock();\n        try {\n            Integer current = counts.get(key);\n            int next = (current == null) ? 1 : current + 1;\n            counts.put(key, next);\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        Runnable task = () -> {\n            for (int i = 0; i < 100000; i++) increment(\"clicks\");\n        };\n        Thread t1 = new Thread(task);\n        Thread t2 = new Thread(task);\n        t1.start(); t2.start();\n        t1.join(); t2.join();\n        System.out.println(counts.get(\"clicks\")); // always 200000\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "import java.util.HashMap;\nimport java.util.Map;\nimport java.util.concurrent.locks.ReentrantLock;\n\npublic class CoarseLockCounter {\n    static Map<String, Integer> counts = new HashMap<>();\n    static ReentrantLock lock = new ReentrantLock();\n\n    static void increment(String key) {\n        lock.lock();\n        try {\n            Integer current = counts.get(key);\n            int next = (current == null) ? 1 : current + 1;\n            counts.put(key, next);\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        Runnable task = () -> {\n            for (int i = 0; i < 100000; i++) increment(\"clicks\");\n        };\n        Thread t1 = new Thread(task);\n        Thread t2 = new Thread(task);\n        t1.start(); t2.start();\n        t1.join(); t2.join();\n        System.out.println(counts.get(\"clicks\")); // always 200000\n    }\n}"
+          },
+          "codes": {
+            "java": "import java.util.HashMap;\nimport java.util.Map;\nimport java.util.concurrent.locks.ReentrantLock;\n\npublic class CoarseLockCounter {\n    static Map<String, Integer> counts = new HashMap<>();\n    static ReentrantLock lock = new ReentrantLock();\n\n    static void increment(String key) {\n        lock.lock();\n        try {\n            Integer current = counts.get(key);\n            int next = (current == null) ? 1 : current + 1;\n            counts.put(key, next);\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        Runnable task = () -> {\n            for (int i = 0; i < 100000; i++) increment(\"clicks\");\n        };\n        Thread t1 = new Thread(task);\n        Thread t2 = new Thread(task);\n        t1.start(); t2.start();\n        t1.join(); t2.join();\n        System.out.println(counts.get(\"clicks\")); // always 200000\n    }\n}",
+            "python": "import threading\n\ncounts = {}\nlock = threading.Lock()\n\ndef increment(key):\n    with lock:\n        current = counts.get(key, 0)\n        counts[key] = current + 1\n\ndef worker():\n    for _ in range(100000):\n        increment(\"clicks\")\n\nt1 = threading.Thread(target=worker)\nt2 = threading.Thread(target=worker)\nt1.start(); t2.start()\nt1.join(); t2.join()\nprint(counts.get(\"clicks\"))  # always 200000, but slower under load",
+            "cpp": "#include <iostream>\n#include <string>\n#include <thread>\n#include <unordered_map>\n#include <mutex>\nusing namespace std;\n\nunordered_map<string, int> counts;\nmutex mtx;\n\nvoid increment(const string& key) {\n    lock_guard<mutex> lock(mtx);\n    auto it = counts.find(key);\n    int next = (it == counts.end()) ? 1 : it->second + 1;\n    counts[key] = next;\n}\n\nvoid worker() {\n    for (int i = 0; i < 100000; i++) increment(\"clicks\");\n}\n\nint main() {\n    thread t1(worker);\n    thread t2(worker);\n    t1.join();\n    t2.join();\n    cout << counts[\"clicks\"] << endl; // always 200000\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Correctness is fixed, but so is the concurrency. Two threads incrementing different, unrelated keys still take turns waiting on the same single lock."
+        },
+        {
+          "type": "note",
+          "title": "Coarse locking is a valid starting point",
+          "content": "It is simple, it is obviously correct, and it is a fine choice when contention is low. The problem only shows up once many threads genuinely need to work at the same time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. ConcurrentHashMap and how it does better",
+          "text": "3. ConcurrentHashMap and how it does better"
+        },
+        {
+          "type": "paragraph",
+          "content": "Java's ConcurrentHashMap solves the same correctness problem without forcing every operation through one lock."
+        },
+        {
+          "type": "heading3",
+          "content": "The core idea, lock striping and per bucket coordination",
+          "text": "The core idea, lock striping and per bucket coordination"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of one lock for the whole map, the internal state is split so that unrelated operations can proceed independently. Modern versions synchronize at the level of an individual bucket, using compare and swap for the common cases and a small per bin lock only when a bucket actually has to change shape."
+        },
+        {
+          "type": "paragraph",
+          "content": "Two threads updating different keys usually land in different buckets and never contend with each other at all. They only block if they happen to target the same bucket at the same instant."
+        },
+        {
+          "type": "heading3",
+          "content": "Reads do not block at all",
+          "text": "Reads do not block at all"
+        },
+        {
+          "type": "paragraph",
+          "content": "Get operations on a ConcurrentHashMap generally do not take a lock. They rely on volatile reads and careful publication of updated nodes, so a reader sees either the old value or the new one, never a torn one, without ever waiting."
+        },
+        {
+          "type": "heading3",
+          "content": "Atomic compound operations",
+          "text": "Atomic compound operations"
+        },
+        {
+          "type": "paragraph",
+          "content": "ConcurrentHashMap also exposes methods like putIfAbsent, computeIfAbsent, and merge, which perform a whole read-modify-write sequence atomically, inside the map itself, so callers never need their own external lock for these common patterns."
+        },
+        {
+          "type": "heading3",
+          "content": "Fixing the counter properly with ConcurrentHashMap",
+          "text": "Fixing the counter properly with ConcurrentHashMap"
+        },
+        {
+          "type": "paragraph",
+          "content": "This version scales because unrelated keys stop contending with each other."
+        },
+        {
+          "type": "code",
+          "content": "import java.util.concurrent.ConcurrentHashMap;\n\npublic class ConcurrentMapCounter {\n    static ConcurrentHashMap<String, Integer> counts = new ConcurrentHashMap<>();\n\n    static void increment(String key) {\n        // merge is atomic: no external lock needed, and unrelated\n        // keys never block each other.\n        counts.merge(key, 1, Integer::sum);\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        Runnable task = () -> {\n            for (int i = 0; i < 100000; i++) increment(\"clicks\");\n        };\n        Thread t1 = new Thread(task);\n        Thread t2 = new Thread(task);\n        t1.start(); t2.start();\n        t1.join(); t2.join();\n        System.out.println(counts.get(\"clicks\")); // always 200000\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "import java.util.concurrent.ConcurrentHashMap;\n\npublic class ConcurrentMapCounter {\n    static ConcurrentHashMap<String, Integer> counts = new ConcurrentHashMap<>();\n\n    static void increment(String key) {\n        // merge is atomic: no external lock needed, and unrelated\n        // keys never block each other.\n        counts.merge(key, 1, Integer::sum);\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        Runnable task = () -> {\n            for (int i = 0; i < 100000; i++) increment(\"clicks\");\n        };\n        Thread t1 = new Thread(task);\n        Thread t2 = new Thread(task);\n        t1.start(); t2.start();\n        t1.join(); t2.join();\n        System.out.println(counts.get(\"clicks\")); // always 200000\n    }\n}"
+          },
+          "codes": {
+            "java": "import java.util.concurrent.ConcurrentHashMap;\n\npublic class ConcurrentMapCounter {\n    static ConcurrentHashMap<String, Integer> counts = new ConcurrentHashMap<>();\n\n    static void increment(String key) {\n        // merge is atomic: no external lock needed, and unrelated\n        // keys never block each other.\n        counts.merge(key, 1, Integer::sum);\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        Runnable task = () -> {\n            for (int i = 0; i < 100000; i++) increment(\"clicks\");\n        };\n        Thread t1 = new Thread(task);\n        Thread t2 = new Thread(task);\n        t1.start(); t2.start();\n        t1.join(); t2.join();\n        System.out.println(counts.get(\"clicks\")); // always 200000\n    }\n}",
+            "python": "# Python's queue module is the standard purpose built concurrent\n# structure: a thread safe queue with its own internal lock and\n# condition variables, tuned for the producer, consumer pattern\n# rather than for arbitrary map access.\nimport queue\nimport threading\n\nwork_queue = queue.Queue()\n\ndef producer():\n    for i in range(100000):\n        work_queue.put(i)\n\ndef consumer(results):\n    total = 0\n    while True:\n        item = work_queue.get()\n        if item is None:\n            break\n        total += 1\n    results.append(total)\n\nresults = []\nt1 = threading.Thread(target=producer)\nt1.start()\nt1.join()\nwork_queue.put(None)\nt2 = threading.Thread(target=consumer, args=(results,))\nt2.start()\nt2.join()\nprint(results)",
+            "cpp": "#include <array>\n#include <iostream>\n#include <mutex>\n#include <string>\n#include <thread>\n#include <unordered_map>\nusing namespace std;\n\n// C++ has no built in ConcurrentHashMap. The idiomatic fallback is\n// to stripe the map across several independent locks, the same\n// lock striping idea ConcurrentHashMap uses internally per bucket.\nconstexpr int STRIPES = 16;\narray<mutex, STRIPES> stripeLocks;\narray<unordered_map<string, int>, STRIPES> shards;\n\nint stripeFor(const string& key) {\n    return static_cast<int>(hash<string>{}(key) % STRIPES);\n}\n\nvoid increment(const string& key) {\n    int s = stripeFor(key);\n    lock_guard<mutex> lock(stripeLocks[s]);\n    shards[s][key]++; // unrelated keys in other stripes never wait\n}\n\nint getCount(const string& key) {\n    int s = stripeFor(key);\n    lock_guard<mutex> lock(stripeLocks[s]);\n    auto it = shards[s].find(key);\n    return it == shards[s].end() ? 0 : it->second;\n}\n\nvoid worker() {\n    for (int i = 0; i < 100000; i++) increment(\"clicks\");\n}\n\nint main() {\n    thread t1(worker);\n    thread t2(worker);\n    t1.join();\n    t2.join();\n    cout << getCount(\"clicks\") << endl; // always 200000\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Correctness is preserved, and threads working on different keys no longer wait for each other."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494848703-126157013.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494848703-126157013.png",
+          "alt": "One coarse lock forcing every thread through a single gate around a plain HashMap"
+        },
+        {
+          "type": "paragraph",
+          "content": "The diagram above shows the coarse lock world: every thread funnels through one gate before it can touch the map, no matter which key it wants."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494850476-301209401.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494850476-301209401.png",
+          "alt": "A concurrent map letting threads work through separate segments in parallel"
+        },
+        {
+          "type": "paragraph",
+          "content": "Compare that to a concurrent map, where each thread can proceed through its own segment of the structure, and only threads that collide on the same segment ever wait on each other."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. CopyOnWriteArrayList and when it fits",
+          "text": "4. CopyOnWriteArrayList and when it fits"
+        },
+        {
+          "type": "paragraph",
+          "content": "Lists have a different shape of problem. Iterating a list while another thread mutates it is one of the most common sources of concurrent bugs."
+        },
+        {
+          "type": "paragraph",
+          "content": "CopyOnWriteArrayList takes a different approach entirely. Every mutation, add, remove, set, makes a full copy of the underlying array, changes the copy, and then swaps the internal reference to point at the new array."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512253699-235489094.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512253699-235489094.png",
+          "alt": "CopyOnWriteArrayList writer copying the array, appending the new element and swapping the reference while a reader keeps iterating the old snapshot"
+        },
+        {
+          "type": "heading3",
+          "content": "Why iteration becomes trivial",
+          "text": "Why iteration becomes trivial"
+        },
+        {
+          "type": "paragraph",
+          "content": "Because the array reference is only ever swapped, never mutated in place, an iterator created before a write keeps looking at the old array for as long as it runs. It never sees a partial update and it never throws a concurrent modification exception."
+        },
+        {
+          "type": "heading3",
+          "content": "The cost of that guarantee",
+          "text": "The cost of that guarantee"
+        },
+        {
+          "type": "list",
+          "content": "[\"Every write copies the entire backing array, so writes are O(n) instead of O(1).\",\"Memory churns under frequent writes, since each mutation allocates a whole new array.\",\"It only pays off when reads vastly outnumber writes, think configuration lists or listener registries that change rarely but get iterated constantly.\"]",
+          "items": [
+            "Every write copies the entire backing array, so writes are O(n) instead of O(1).",
+            "Memory churns under frequent writes, since each mutation allocates a whole new array.",
+            "It only pays off when reads vastly outnumber writes, think configuration lists or listener registries that change rarely but get iterated constantly."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "example-box",
+          "title": "A listener registry",
+          "text": "A pub-sub system keeps a list of event listeners. New listeners are added rarely, maybe a few times at startup. But every incoming event iterates the whole list to notify each listener. CopyOnWriteArrayList is a strong fit here: cheap frequent reads, rare and acceptable expensive writes, and no risk of a listener being added mid-iteration crashing the notify loop."
+        },
+        {
+          "type": "heading3",
+          "content": "CopyOnWriteArrayList in practice",
+          "text": "CopyOnWriteArrayList in practice"
+        },
+        {
+          "type": "code",
+          "content": "import java.util.List;\nimport java.util.concurrent.CopyOnWriteArrayList;\n\npublic class ListenerRegistry {\n    private final List<Runnable> listeners = new CopyOnWriteArrayList<>();\n\n    public void subscribe(Runnable listener) {\n        listeners.add(listener); // rare, pays the copy cost\n    }\n\n    public void publish() {\n        // Safe even if subscribe() runs on another thread mid-loop.\n        // This iterator sees a stable snapshot of the list.\n        for (Runnable listener : listeners) {\n            listener.run();\n        }\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "import java.util.List;\nimport java.util.concurrent.CopyOnWriteArrayList;\n\npublic class ListenerRegistry {\n    private final List<Runnable> listeners = new CopyOnWriteArrayList<>();\n\n    public void subscribe(Runnable listener) {\n        listeners.add(listener); // rare, pays the copy cost\n    }\n\n    public void publish() {\n        // Safe even if subscribe() runs on another thread mid-loop.\n        // This iterator sees a stable snapshot of the list.\n        for (Runnable listener : listeners) {\n            listener.run();\n        }\n    }\n}"
+          },
+          "codes": {
+            "java": "import java.util.List;\nimport java.util.concurrent.CopyOnWriteArrayList;\n\npublic class ListenerRegistry {\n    private final List<Runnable> listeners = new CopyOnWriteArrayList<>();\n\n    public void subscribe(Runnable listener) {\n        listeners.add(listener); // rare, pays the copy cost\n    }\n\n    public void publish() {\n        // Safe even if subscribe() runs on another thread mid-loop.\n        // This iterator sees a stable snapshot of the list.\n        for (Runnable listener : listeners) {\n            listener.run();\n        }\n    }\n}",
+            "python": "# Python does not ship a copy-on-write list in the standard\n# library. The closest equivalent pattern is to hold a lock only\n# long enough to snapshot the list, then iterate the snapshot\n# without holding the lock at all.\nimport threading\n\nclass ListenerRegistry:\n    def __init__(self):\n        self._lock = threading.Lock()\n        self._listeners = []\n\n    def subscribe(self, listener):\n        with self._lock:\n            self._listeners = self._listeners + [listener]\n\n    def publish(self):\n        # Read the reference once; a concurrent subscribe() replaces\n        # the whole list rather than mutating this one.\n        snapshot = self._listeners\n        for listener in snapshot:\n            listener()",
+            "cpp": "#include <functional>\n#include <iostream>\n#include <memory>\n#include <mutex>\n#include <vector>\nusing namespace std;\n\n// C++ has no CopyOnWriteArrayList. The closest idiom holds a lock\n// only long enough to swap in a freshly copied vector, then lets\n// readers iterate a snapshot without ever holding the lock.\nclass ListenerRegistry {\npublic:\n    void subscribe(function<void()> listener) {\n        lock_guard<mutex> lock(mtx);\n        auto copy = make_shared<vector<function<void()>>>(*listeners);\n        copy->push_back(listener); // rare, pays the copy cost\n        listeners = copy;\n    }\n\n    void publish() {\n        // Grab the current snapshot; a concurrent subscribe() swaps\n        // in a whole new vector rather than mutating this one.\n        shared_ptr<vector<function<void()>>> snapshot;\n        {\n            lock_guard<mutex> lock(mtx);\n            snapshot = listeners;\n        }\n        for (auto& listener : *snapshot) {\n            listener();\n        }\n    }\n\nprivate:\n    mutex mtx;\n    shared_ptr<vector<function<void()>>> listeners = make_shared<vector<function<void()>>>();\n};"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Choosing a structure for read heavy versus write heavy access",
+          "text": "5. Choosing a structure for read heavy versus write heavy access"
+        },
+        {
+          "type": "paragraph",
+          "content": "The right concurrent collection depends entirely on how the collection actually gets used, not on which one sounds the most advanced."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512255552-952837636.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512255552-952837636.png",
+          "alt": "Access pattern branching into read heavy, balanced or write heavy, and producer consumer handoff, each pointing at the concurrent collection that fits"
+        },
+        {
+          "type": "heading3",
+          "content": "Read heavy, write rare",
+          "text": "Read heavy, write rare"
+        },
+        {
+          "type": "paragraph",
+          "content": "CopyOnWriteArrayList, or an immutable snapshot swapped behind a volatile reference, fits here. Reads are lock free and cheap. Writes are expensive but infrequent enough that the cost barely matters."
+        },
+        {
+          "type": "heading3",
+          "content": "Balanced or write heavy maps",
+          "text": "Balanced or write heavy maps"
+        },
+        {
+          "type": "paragraph",
+          "content": "ConcurrentHashMap fits here. It gives lock free or low contention reads and writes that only block within a small slice of the structure, so throughput keeps scaling as you add threads."
+        },
+        {
+          "type": "heading3",
+          "content": "Producer, consumer handoff",
+          "text": "Producer, consumer handoff"
+        },
+        {
+          "type": "paragraph",
+          "content": "A BlockingQueue in Java, or the queue module in Python, fits here. These are built around threads waiting for work to appear or waiting for space to free up, using condition variables internally instead of spinning or busy waiting."
+        },
+        {
+          "type": "heading3",
+          "content": "Single threaded environments",
+          "text": "Single threaded environments"
+        },
+        {
+          "type": "paragraph",
+          "content": "In JavaScript's typical runtime, the event loop already guarantees that synchronous code never interleaves, so plain objects and arrays are safe without any concurrent collection at all. The concern only returns with worker threads and shared memory, where Atomics and SharedArrayBuffer take over the role locks play elsewhere."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Access pattern\",\"Good fit\",\"Why\"],\"rows\":[[\"Many reads, rare writes\",\"CopyOnWriteArrayList\",\"Reads never lock, writes pay a one time copy cost\"],[\"Frequent reads and writes on a map\",\"ConcurrentHashMap\",\"Fine grained locking lets unrelated keys proceed in parallel\"],[\"Producer and consumer threads\",\"BlockingQueue or queue.Queue\",\"Built in waiting and signaling instead of manual locks\"],[\"Single threaded JavaScript code\",\"Plain Map or Array\",\"Event loop guarantees no interleaving of synchronous code\"],[\"Parallel numeric counters\",\"Atomics on SharedArrayBuffer\",\"Hardware level atomic operations, no lock at all\"]]}"
+        },
+        {
+          "type": "pros-cons",
+          "content": "{\"pros\":[\"Coarse locking is simple to reason about, one lock, one rule.\",\"Coarse locking is easy to verify by inspection, there is only one code path to check.\",\"Purpose built concurrent collections scale with thread count instead of flattening out.\",\"Purpose built concurrent collections often expose atomic compound operations, removing whole classes of bugs.\"],\"cons\":[\"Coarse locking turns every operation into a queue, even unrelated ones.\",\"Coarse locking makes one slow operation stall all other threads.\",\"Concurrent collections have a wider surface area, more to learn per structure.\",\"Concurrent collections can hide subtle differences, like CopyOnWriteArrayList iterators never seeing later writes.\"]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Worked example, an in-memory cache under load",
+          "text": "6. Worked example, an in-memory cache under load"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say you are building a small in-memory cache that many request handling threads read from constantly, and a background refresh thread updates every few seconds."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 1, identify the access pattern",
+          "text": "Step 1, identify the access pattern"
+        },
+        {
+          "type": "paragraph",
+          "content": "Reads vastly outnumber writes. Every incoming request reads the cache. Only the refresh thread writes, and only occasionally."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 2, rule out a plain collection",
+          "text": "Step 2, rule out a plain collection"
+        },
+        {
+          "type": "paragraph",
+          "content": "A plain HashMap would corrupt under concurrent reads and writes the moment refresh overlaps with a request thread's read, exactly the torn read problem from section 1."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 3, rule out one coarse lock",
+          "text": "Step 3, rule out one coarse lock"
+        },
+        {
+          "type": "paragraph",
+          "content": "A single lock around the whole cache would force every request thread to wait in line just to read a value, even though they are not writing anything. That throttles the busiest part of the system to protect the rarest part."
+        },
+        {
+          "type": "heading3",
+          "content": "Step 4, pick ConcurrentHashMap",
+          "text": "Step 4, pick ConcurrentHashMap"
+        },
+        {
+          "type": "paragraph",
+          "content": "ConcurrentHashMap gives lock free reads for the request threads and safe, isolated updates for the refresh thread, which is exactly the shape of this workload."
+        },
+        {
+          "type": "code",
+          "content": "import java.util.concurrent.ConcurrentHashMap;\n\npublic class CacheExample {\n    private final ConcurrentHashMap<String, String> cache = new ConcurrentHashMap<>();\n\n    public String read(String key) {\n        return cache.get(key); // lock free, never blocks writers\n    }\n\n    public void refresh(String key, String newValue) {\n        cache.put(key, newValue); // isolated to this key's bucket\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "import java.util.concurrent.ConcurrentHashMap;\n\npublic class CacheExample {\n    private final ConcurrentHashMap<String, String> cache = new ConcurrentHashMap<>();\n\n    public String read(String key) {\n        return cache.get(key); // lock free, never blocks writers\n    }\n\n    public void refresh(String key, String newValue) {\n        cache.put(key, newValue); // isolated to this key's bucket\n    }\n}"
+          },
+          "codes": {
+            "java": "import java.util.concurrent.ConcurrentHashMap;\n\npublic class CacheExample {\n    private final ConcurrentHashMap<String, String> cache = new ConcurrentHashMap<>();\n\n    public String read(String key) {\n        return cache.get(key); // lock free, never blocks writers\n    }\n\n    public void refresh(String key, String newValue) {\n        cache.put(key, newValue); // isolated to this key's bucket\n    }\n}",
+            "python": "import threading\n\nclass CacheExample:\n    def __init__(self):\n        self._lock = threading.Lock()\n        self._cache = {}\n\n    def read(self, key):\n        # A short critical section keeps contention low even though\n        # Python lacks a built in concurrent map.\n        with self._lock:\n            return self._cache.get(key)\n\n    def refresh(self, key, new_value):\n        with self._lock:\n            self._cache[key] = new_value",
+            "cpp": "#include <iostream>\n#include <mutex>\n#include <string>\n#include <unordered_map>\nusing namespace std;\n\nclass CacheExample {\npublic:\n    string read(const string& key) {\n        // A short critical section keeps contention low even though\n        // C++ has no built in concurrent map either.\n        lock_guard<mutex> lock(mtx);\n        auto it = cache.find(key);\n        return it == cache.end() ? \"\" : it->second;\n    }\n\n    void refresh(const string& key, const string& newValue) {\n        lock_guard<mutex> lock(mtx);\n        cache[key] = newValue; // isolated by the same short lock\n    }\n\nprivate:\n    mutex mtx;\n    unordered_map<string, string> cache;\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice that the Python version still needs a lock, because the standard library has no ConcurrentHashMap equivalent, but the critical section is tiny and fast, which keeps contention low even without fine grained internal striping."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Common pitfalls when switching to concurrent collections",
+          "text": "7. Common pitfalls when switching to concurrent collections"
+        },
+        {
+          "type": "heading3",
+          "content": "Assuming atomic pieces add up to an atomic whole",
+          "text": "Assuming atomic pieces add up to an atomic whole"
+        },
+        {
+          "type": "paragraph",
+          "content": "A get followed by a put on a ConcurrentHashMap is still two separate atomic operations, not one. Another thread can write between them. Use merge, compute, or putIfAbsent instead of hand rolling that sequence."
+        },
+        {
+          "type": "heading3",
+          "content": "Iterating and expecting the latest data",
+          "text": "Iterating and expecting the latest data"
+        },
+        {
+          "type": "paragraph",
+          "content": "Iterators over concurrent collections are typically weakly consistent. They reflect the state at some point during iteration, not necessarily every update made after the iterator was created."
+        },
+        {
+          "type": "heading3",
+          "content": "Mixing a concurrent collection with an external lock",
+          "text": "Mixing a concurrent collection with an external lock"
+        },
+        {
+          "type": "paragraph",
+          "content": "Wrapping a ConcurrentHashMap in your own coarse lock throws away everything it was built to give you. If you need multi step atomicity across several keys, that is a sign you need a different design, not a bigger lock."
+        },
+        {
+          "type": "list",
+          "content": "[\"Prefer atomic compound methods over separate read then write calls.\",\"Do not assume iteration order or freshness guarantees you did not explicitly verify.\",\"Only add external locking for operations that truly span multiple keys or multiple collections.\"]",
+          "items": [
+            "Prefer atomic compound methods over separate read then write calls.",
+            "Do not assume iteration order or freshness guarantees you did not explicitly verify.",
+            "Only add external locking for operations that truly span multiple keys or multiple collections."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Rule of thumb for picking a concurrent collection",
+          "text": "8. Rule of thumb for picking a concurrent collection"
+        },
+        {
+          "type": "paragraph",
+          "content": "Start by counting reads against writes, not by picking the most impressive sounding structure."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512257413-246268742.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512257413-246268742.png",
+          "alt": "Decision flow for the rule of thumb, count reads versus writes, then check whether atomic compound operations or a producer consumer handoff are needed"
+        },
+        {
+          "type": "heading3",
+          "content": "The short version",
+          "text": "The short version"
+        },
+        {
+          "type": "list",
+          "content": "[\"Reads dominate and writes are rare: reach for CopyOnWriteArrayList or an immutable snapshot swap.\",\"Reads and writes are both frequent on a map: reach for ConcurrentHashMap.\",\"Threads hand work to each other: reach for a blocking queue.\",\"You are in a single threaded JavaScript context: plain collections are already safe, save concurrent tools for worker threads.\",\"You only need a single counter or flag: reach for an atomic primitive before reaching for any collection at all.\"]",
+          "items": [
+            "Reads dominate and writes are rare: reach for CopyOnWriteArrayList or an immutable snapshot swap.",
+            "Reads and writes are both frequent on a map: reach for ConcurrentHashMap.",
+            "Threads hand work to each other: reach for a blocking queue.",
+            "You are in a single threaded JavaScript context: plain collections are already safe, save concurrent tools for worker threads.",
+            "You only need a single counter or flag: reach for an atomic primitive before reaching for any collection at all."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "When in doubt, measure",
+          "content": "Contention is easy to guess wrong. If you are unsure whether coarse locking is actually a bottleneck, measure it under realistic load before reaching for a more complex structure you do not yet need."
+        },
+        {
+          "type": "paragraph",
+          "content": "Ordinary collections are not broken, they were simply never asked to be shared. Concurrent collections exist because a single lock treats every operation the same, while real workloads rarely do."
+        },
+        {
+          "type": "paragraph",
+          "content": "Match the collection to the shape of your access pattern, and thread safety stops being something you bolt on and becomes something the structure already gives you."
+        }
+      ]
+    }
+  ]
+}

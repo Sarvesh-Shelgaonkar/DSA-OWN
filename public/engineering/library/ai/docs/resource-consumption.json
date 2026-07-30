@@ -1,0 +1,524 @@
+{
+  "slug": "resource-consumption",
+  "title": "Resource Consumption",
+  "content": [
+    {
+      "id": "resource-consumption",
+      "title": "Resource Consumption",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Discovering a resource and reading its raw bytes is only half the job. A client still has to decide when to fetch it, turn it into something the model can actually read, and do all of that without blowing up the context window or hammering the server with repeat requests."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson looks at resource consumption from the client side, the practical plumbing that sits between resources/read and a message the model can use. It covers picking a resource, formatting its content, handling size, and caching what has already been read."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of this is exotic. It is ordinary client engineering, but getting it wrong quietly wastes tokens, slows every turn down, or overflows a context window at the worst possible moment."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Two Ways a Resource Gets Chosen",
+          "id": "rc-two-ways-chosen"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577623325-15181148.png",
+          "alt": "A user picking a resource is compared against the client auto fetching one",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A client generally learns which resource to read in one of two ways, a person picks one, or the client decides for itself. Both are common, and most real clients support both."
+        },
+        {
+          "type": "paragraph",
+          "text": "Understanding which path is active matters, because it changes when the fetch happens and how much the client should trust its own guess about relevance."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some clients even blend the two, showing an auto suggested resource to the user for a quick confirm before it gets attached."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The User Picks a Resource",
+          "id": "rc-user-picks"
+        },
+        {
+          "type": "paragraph",
+          "text": "In many chat style clients, a user browses a resource list or a file tree and clicks the one they want attached to the conversation, much like attaching a file to an email."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is the simplest and safest path. The user already knows why that resource matters, so the client just needs to fetch it and attach it, with no guessing about relevance involved."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A user opens a resource picker and selects one document from a list",
+            "The client calls resources/read for that exact URI",
+            "The returned content gets attached to the next message the user sends"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. The Client Auto Fetches a Resource",
+          "id": "rc-auto-fetch"
+        },
+        {
+          "type": "paragraph",
+          "text": "The other path is automatic, the client itself decides a resource is relevant and fetches it without the user ever clicking anything. This usually happens because the model asked for it, or because a rule matched the conversation."
+        },
+        {
+          "type": "paragraph",
+          "text": "Auto fetching is powerful but riskier. A wrong guess means wasted tokens on an irrelevant resource, or worse, the model reasoning over content the user never intended to include."
+        },
+        {
+          "type": "note",
+          "title": "Where auto fetch decisions come from",
+          "content": "Common triggers are the model calling a resource explicitly through a tool style request, a keyword match against resource names, or a fixed rule like always attaching the currently open file in an editor."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Reading the Resource",
+          "id": "rc-reading-the-resource"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577625439-289545286.png",
+          "alt": "A client discovers a resource then reads it to get content back",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Whichever path chose the resource, consumption starts the same way, a resources/read call against the URI, returning content plus a mimeType describing its shape."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 7,\n  \"method\": \"resources/read\",\n  \"params\": { \"uri\": \"file:///project/notes/deploy.md\" }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The response carries the actual bytes or text, plus enough metadata for the client to know what it just received."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well behaved client also checks for an error on this call, since a resource can vanish between being listed and being read."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Converting Content Into a Model Ready Format",
+          "id": "rc-converting-content"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577627680-398055455.png",
+          "alt": "Raw content is converted into a format the model is ready to consume",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "An LLM does not understand a raw resources/read response. A client has to reshape that response into whatever its message format expects, usually a plain text block or an image block inside the conversation payload."
+        },
+        {
+          "type": "paragraph",
+          "text": "This conversion step is where mimeType earns its keep, it tells the client whether it is looking at text, an image, or something else that needs different handling entirely."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def resource_to_message_block(resource):\n    if resource[\"mimeType\"].startswith(\"text/\"):\n        return {\"type\": \"text\", \"text\": resource[\"text\"]}\n    if resource[\"mimeType\"].startswith(\"image/\"):\n        return {\"type\": \"image\", \"data\": resource[\"blob\"], \"mimeType\": resource[\"mimeType\"]}\n    # fall back to a labeled text block for anything else\n    return {\"type\": \"text\", \"text\": f\"[unsupported resource type: {resource['mimeType']}]\"}"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Keep the conversion step small",
+          "content": "Conversion should stay a mechanical mapping from mimeType to block shape, not a place to sneak in summarization or other heavier logic that belongs in its own step."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Text Resources Are the Easy Case",
+          "id": "rc-text-easy-case"
+        },
+        {
+          "type": "paragraph",
+          "text": "Plain text and markdown resources need almost no transformation, the client mostly just wraps the text in a message block and labels it clearly so the model knows where it came from."
+        },
+        {
+          "type": "paragraph",
+          "text": "A short header naming the resource, its title or path, helps the model reason about the source instead of treating pasted text as part of the user's own words."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "Resource: notes/deploy.md\n\n# Deployment steps\n1. Build the image\n2. Push to the registry\n3. Run the rollout"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A short header naming the source resource is a small habit that pays off constantly when a conversation has several attachments stacked up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Binary and Image Resources Need Real Handling",
+          "id": "rc-binary-image"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577629662-440242454.png",
+          "alt": "Text resources are the easy case while binary and image resources need real handling",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Images, PDFs, and other binary resources arrive base64 encoded in a blob field rather than a text field, and a client has to route them differently, usually into a dedicated image content block rather than plain text."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some models accept images directly in the conversation, others need a description generated first. A client should know which mode it is running in before deciding how to attach a binary resource."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Content shape\",\"Field on the response\",\"Typical destination\"],\"rows\":[[\"Plain text or markdown\",\"text\",\"A text content block\"],[\"Image\",\"blob, base64 encoded\",\"An image content block, if the model supports it\"],[\"Structured JSON\",\"text, JSON encoded\",\"A text block, often pretty printed for readability\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Attaching Content to a Conversation",
+          "id": "rc-attaching-to-conversation"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once content is in the right shape, the client attaches it to the next outgoing message, alongside whatever the user actually typed."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function attachResource(uri, session) {\n  const resource = await session.readResource(uri);\n  const block = resourceToMessageBlock(resource);\n  return block;\n}\n\nconst attachment = await attachResource(\"file:///project/notes/deploy.md\", session);\nconst message = {\n  role: \"user\",\n  content: [\n    { type: \"text\", text: \"Summarize the deploy steps\" },\n    attachment\n  ]\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The resource content sits alongside the user's own words, giving the model everything it needs in one turn instead of forcing a separate lookup step."
+        },
+        {
+          "type": "paragraph",
+          "text": "Getting binary handling wrong usually shows up as garbled text in the conversation, a wall of base64 characters nobody asked to read."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. When a Resource Is Too Large",
+          "id": "rc-too-large"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577631649-980015151.png",
+          "alt": "A resource over the size limit is truncated or rejected rather than attached whole",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Some resources are simply too big to attach whole, a multi megabyte log file or an entire codebase, and dumping the full text into the conversation would overflow the context window immediately."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well built client checks size before attaching, and falls back to a smaller representation instead of failing outright or silently truncating mid sentence."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Truncate to a byte or token budget, keeping the most relevant part, often the start or the end of a log",
+            "Summarize the content first, using a smaller call, then attach the summary instead of the raw text",
+            "Offer the resource as a reference the model can request more of, rather than attaching it all at once",
+            "Warn the user clearly that a resource was too large and only part of it was included"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Which fallback is right depends on the resource, a log file favors truncation, a long report favors summarization first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. A Size Check Before Fetching",
+          "id": "rc-size-check"
+        },
+        {
+          "type": "paragraph",
+          "text": "Many resources describe their own size in advance through metadata, letting a client decide whether to fetch the whole thing or ask for a bounded portion before it ever pulls the bytes across the wire."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def fetch_with_size_guard(session, uri, max_bytes=200_000):\n    meta = session.get_resource_metadata(uri)\n    if meta.get(\"size\", 0) > max_bytes:\n        return {\"truncated\": True, \"reason\": \"resource exceeds size limit\"}\n    return session.read_resource(uri)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A guard like this keeps one oversized resource from silently derailing an entire conversation turn."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Caching Content the Client Has Already Read",
+          "id": "rc-caching-basics"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577633778-743600154.png",
+          "alt": "A client caches content it has already read to avoid refetching",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A client that reads the same resource repeatedly across a session is wasting both time and money, since the content very often has not changed between one turn and the next."
+        },
+        {
+          "type": "paragraph",
+          "text": "A simple in memory cache, keyed by URI, solves most of this, storing the converted content the first time and returning it directly on later requests instead of hitting the server again."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "class ResourceCache {\n  constructor() {\n    this.store = new Map();\n  }\n\n  async get(uri, session) {\n    if (this.store.has(uri)) {\n      return this.store.get(uri);\n    }\n    const resource = await session.readResource(uri);\n    const block = resourceToMessageBlock(resource);\n    this.store.set(uri, block);\n    return block;\n  }\n}\n\nconst cache = new ResourceCache();\nconst attachment = await cache.get(\"file:///project/notes/deploy.md\", session);"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A cache also saves the model from seeing near duplicate content pasted twice across a long conversation, which quietly wastes tokens even when nobody notices."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Knowing When a Cached Copy Is Stale",
+          "id": "rc-cache-staleness"
+        },
+        {
+          "type": "paragraph",
+          "text": "A cache is only useful if it does not hand back content that has quietly changed underneath it, so a client needs some signal for staleness, not just a fetch once and forget forever rule."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some servers send a resources/updated notification when a resource changes, which is the cleanest signal, invalidate that one cache entry the moment the notification arrives."
+        },
+        {
+          "type": "note",
+          "title": "No update notifications available",
+          "content": "When a server does not support change notifications, a client can fall back to a short time to live on each cache entry, refetching after a few minutes rather than trusting the cache forever."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Cache Scope, Per Session or Shared",
+          "id": "rc-cache-scope"
+        },
+        {
+          "type": "paragraph",
+          "text": "A cache can live for the length of one conversation, or persist across sessions if the client wants to save round trips for resources that rarely change, like a project's README."
+        },
+        {
+          "type": "paragraph",
+          "text": "A per session cache is the safer default, it clears naturally and never leaks stale content into a future conversation the user did not expect it in."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Cache scope\",\"Lifetime\",\"Best fit\"],\"rows\":[[\"Per session\",\"Cleared when the conversation ends\",\"Most resources, safest default\"],[\"Per process\",\"Lives across many conversations\",\"Rarely changing reference material\"],[\"Persisted to disk\",\"Survives a client restart\",\"Large, expensive to refetch resources with clear versioning\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Whatever scope a client picks, clearing the cache on demand is worth building in early, since users occasionally need to force a fresh read."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Avoiding Duplicate Attachments in One Message",
+          "id": "rc-duplicate-attachments"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577635892-854526355.png",
+          "alt": "The same resource attached twice in one message is deduplicated",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A subtle bug shows up when the same resource gets attached twice in one message, once because the user picked it and once because the client also auto fetched it for the same turn."
+        },
+        {
+          "type": "paragraph",
+          "text": "Deduplicating by URI right before sending the message is a cheap, effective fix, and it keeps the model from seeing the same content repeated for no reason."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Collect every resource the user picked and every one the client auto fetched for this turn",
+            "Deduplicate the combined list by URI before building message blocks",
+            "Only then convert and attach each unique resource exactly once"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "This kind of bug is easy to miss in testing since a single manual test rarely triggers both paths at once."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Putting It All Together",
+          "id": "rc-putting-together"
+        },
+        {
+          "type": "paragraph",
+          "text": "A well built consumption pipeline checks the cache first, falls back to a size guarded fetch, converts the result into the right block type, and only then attaches it to the outgoing message."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function getResourceForMessage(uri, session, cache) {\n  if (cache.has(uri)) return cache.get(uri);\n\n  const meta = await session.getResourceMetadata(uri);\n  if (meta.size > MAX_BYTES) {\n    return { type: \"text\", text: \"[resource too large, summary not available]\" };\n  }\n\n  const resource = await session.readResource(uri);\n  const block = resourceToMessageBlock(resource);\n  cache.set(uri, block);\n  return block;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Each step exists to answer one question, do we already have this, is it safe to pull in whole, and what shape does the model actually need it in."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "rc-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a coding assistant client working inside an editor. A user asks it to review a file they currently have open, and the client auto fetches that file as a resource without being asked to attach anything by hand."
+        },
+        {
+          "type": "paragraph",
+          "text": "The client first checks its cache, keyed by the file URI. If the file was read two turns ago and has not changed since, the cached text comes back immediately with no extra network call."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const uri = \"file:///project/src/payments.py\";\nconst cached = cache.get(uri);\n\nlet content;\nif (cached) {\n  content = cached;\n} else {\n  const meta = await session.getResourceMetadata(uri);\n  if (meta.size > 200_000) {\n    content = { type: \"text\", text: \"[file too large, showing first 200KB only]\" };\n  } else {\n    const resource = await session.readResource(uri);\n    content = resourceToMessageBlock(resource);\n    cache.set(uri, content);\n  }\n}\n\nconst message = {\n  role: \"user\",\n  content: [\n    { type: \"text\", text: \"Review this file for bugs\" },\n    content\n  ]\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The file changes a moment later when the user saves an edit, the editor sends a resources/updated notification, and the client drops that one cache entry so the next review picks up the fresh version instead of the stale one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "rc-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Attaching a resource whole without ever checking its size first, and overflowing the context window on one oversized file",
+            "Fetching the same resource on every single turn, even when nothing about it has changed",
+            "Never invalidating a cache entry, so a client keeps showing stale content long after the real resource changed",
+            "Dumping raw base64 image data into a plain text block instead of a proper image content block",
+            "Attaching the same resource twice in one message because both a user pick and an auto fetch rule fired at once",
+            "Silently truncating a large resource with no note to the user that anything was cut"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "rc-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sketch a small function that takes a resource URI, a session, and a cache object, and returns a message ready content block for it."
+        },
+        {
+          "type": "paragraph",
+          "text": "It should check the cache first, guard against an oversized resource using metadata, convert the content based on mimeType, and store the result in the cache before returning it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "rc-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Resource consumption is the practical bridge between a discovered resource and a message the model can actually use, covering how a resource gets chosen, how its content gets converted, how oversized content gets handled, and how repeat reads get avoided through caching."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of these steps are complicated on their own, but skipping any one of them tends to show up later as wasted tokens, a slow client, or a model reasoning over stale or oversized content."
+        }
+      ]
+    }
+  ]
+}

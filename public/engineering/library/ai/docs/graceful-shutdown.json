@@ -1,0 +1,539 @@
+{
+  "slug": "graceful-shutdown",
+  "title": "Graceful Shutdown",
+  "content": [
+    {
+      "id": "graceful-shutdown",
+      "title": "Graceful Shutdown",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "An MCP server that just dies the instant it gets a kill signal feels fine in a demo and causes real pain in production. A tool call can be sitting mid flight, halfway through a database write or a slow network call, and the client on the other end is just waiting for an answer that is never going to arrive."
+        },
+        {
+          "type": "paragraph",
+          "text": "Graceful shutdown is the discipline of treating the end of a process like a real stage of its life, not an afterthought. It means catching the signal that tells you to stop, finishing or safely cancelling whatever is already running, closing anything you opened, and letting the client know you are leaving."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson closes out the Building MCP Servers module by walking through exactly how that looks in code, with signal handlers, drain logic, resource cleanup, and a shutdown notification, so your servers stop as carefully as they start."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of this requires exotic tooling. A few lines of signal handling code and a small amount of bookkeeping around what is currently running are enough to turn an abrupt kill into a clean, predictable exit."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why Just Dying Is a Bad Plan",
+          "id": "shutdown-why-dying-is-bad"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577373757-727194941.png",
+          "alt": "A shutdown signal moves through stopping new requests, draining old ones, and closing cleanly",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The simplest possible way to stop a program is to let the operating system kill it outright, no handler, no cleanup, the process just stops existing. For a script you run once and throw away that is perfectly fine, but an MCP server usually has work in progress the instant it gets told to stop."
+        },
+        {
+          "type": "paragraph",
+          "text": "If a tool call was halfway through reading a large file or waiting on a slow API, an abrupt kill cuts that work off with no warning to anyone. The client sent a request, got silence instead of a response, and has no way to know whether the answer is coming late or never coming at all."
+        },
+        {
+          "type": "note",
+          "title": "Abrupt death is invisible until it is not",
+          "content": "A server that just dies looks fine for months, right up until a deploy happens during a slow tool call and a user is left staring at a request that silently vanished. Graceful shutdown is cheap insurance against that exact moment."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The Two Signals That Matter Most",
+          "id": "shutdown-two-signals"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577376275-174320463.png",
+          "alt": "SIGTERM and SIGINT are the two signals that matter most",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "On any Unix like system, a process mostly hears about being asked to stop through two signals, SIGINT and SIGTERM. SIGINT is what arrives when someone presses control C in the terminal running your server directly."
+        },
+        {
+          "type": "paragraph",
+          "text": "SIGTERM is the polite request sent by process managers, container orchestrators, and deployment tools when they want a process to wind down on its own. Both deserve the exact same graceful handling, only a much harsher signal, SIGKILL, cannot be caught or handled at all."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Signal\",\"Typical source\",\"Can be caught\"],\"rows\":[[\"SIGINT\",\"Control C in a terminal\",\"Yes\"],[\"SIGTERM\",\"Orchestrator or process manager asking to stop\",\"Yes\"],[\"SIGKILL\",\"Forced kill after a grace period expires\",\"No, terminates immediately\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "That last row matters a lot in practice. Whatever cleanup you write only has as much time to run as the grace period your process manager gives you before it gives up and sends SIGKILL instead."
+        },
+        {
+          "type": "paragraph",
+          "text": "Windows does not have the same signal model, but Node and most Python runtimes still translate control C and a process manager stop request into something your handler can catch, so the same code generally works there too."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Registering a Signal Handler in Node.js",
+          "id": "shutdown-node-handler"
+        },
+        {
+          "type": "paragraph",
+          "text": "In Node.js, the process object lets you listen for these signals just like any other event. The handler should not try to exit immediately, its job is to flip a flag and kick off the drain sequence."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "let shuttingDown = false;\nconst inFlight = new Set();\n\nfunction requestShutdown(signal) {\n  if (shuttingDown) return;\n  shuttingDown = true;\n  console.error(\"received \" + signal + \", starting graceful shutdown\");\n  beginDrain();\n}\n\nprocess.on(\"SIGINT\", () => requestShutdown(\"SIGINT\"));\nprocess.on(\"SIGTERM\", () => requestShutdown(\"SIGTERM\"));"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the guard at the top. Some process managers send the same signal twice, and without that check the shutdown logic could end up running more than once, which tends to cause confusing double cleanup bugs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Tracking In-Flight Requests",
+          "id": "shutdown-tracking-inflight"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577378192-658587365.png",
+          "alt": "Active requests are tracked in a counter as they arrive and finish",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "You cannot drain requests you are not tracking, so every tool call handler needs to register itself somewhere the shutdown logic can see. A simple set of pending promises is usually enough."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function handleToolCall(request) {\n  const marker = { name: request.params.name, startedAt: Date.now() };\n  inFlight.add(marker);\n  try {\n    return await runTool(request);\n  } finally {\n    inFlight.delete(marker);\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This pattern costs almost nothing to add and gives the shutdown path exactly what it needs, a live count of work still in progress and a way to wait on it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Refusing New Work Once Shutdown Has Begun",
+          "id": "shutdown-refuse-new-work"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577380083-41086859.png",
+          "alt": "A new request after shutdown begins is refused rather than accepted",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The very first thing that should happen once shuttingDown flips to true is that the server stops accepting brand new tool calls. Draining only makes sense if the amount of in flight work is shrinking, not growing."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function handleToolCall(request) {\n  if (shuttingDown) {\n    throw new McpError(ErrorCode.InvalidRequest, \"server is shutting down, please retry shortly\");\n  }\n  // normal handling continues below\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Returning a clear, typed error here is much kinder to the client than letting the connection just close with no explanation. A client that understands the error can retry against a different server or wait and try again."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Draining Requests With a Timeout",
+          "id": "shutdown-drain-with-timeout"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577381732-971634549.png",
+          "alt": "In flight requests drain until a timeout forces the process to stop waiting",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Requests already running deserve a real chance to finish, but not an unlimited one. A bounded drain window keeps a slow or stuck request from holding the whole process open forever."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "function waitForDrain(timeoutMs) {\n  const deadline = Date.now() + timeoutMs;\n  return new Promise((resolve) => {\n    const check = () => {\n      if (inFlight.size === 0 || Date.now() >= deadline) {\n        resolve(inFlight.size);\n        return;\n      }\n      setTimeout(check, 50);\n    };\n    check();\n  });\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Ten to thirty seconds is a reasonable default for most tool calls, though anything backed by long running work, a big export, a slow model call, might need a longer window agreed on with whoever manages your deployment."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Stop pulling new requests off the transport as soon as shutdown begins.",
+            "Let already running handlers keep going, up to the timeout.",
+            "If the timeout is hit and requests are still pending, log which ones and move on anyway.",
+            "Never block shutdown indefinitely waiting on a single slow request."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Closing Open Resources",
+          "id": "shutdown-closing-resources"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577383519-548302113.png",
+          "alt": "Open connections and file handles are closed during shutdown",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once the in flight work has drained, or the timeout has passed, it is time to close everything the server opened, database connections, open file handles, background timers, and outbound HTTP clients."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function closeResources() {\n  await dbPool.end();\n  clearInterval(cacheRefreshTimer);\n  await logStream.close();\n  console.error(\"all resources closed\");\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A database connection pool left open is one of the more common sources of the dreaded process that never exits, still holding the event loop open long after every request has finished."
+        },
+        {
+          "type": "note",
+          "title": "Order matters here",
+          "content": "Close things in roughly the reverse order you opened them. A cache refresh timer that fires after its database pool has already closed will throw an error on the way out, turning a clean shutdown into a noisy one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Notifying the Connected Client",
+          "id": "shutdown-notify-client"
+        },
+        {
+          "type": "paragraph",
+          "text": "A client sitting on the other end of the connection benefits from knowing a server is about to disappear, rather than discovering it only when the pipe suddenly closes. MCP lets a server send a notification for exactly this kind of situation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"notifications/message\",\n  \"params\": {\n    \"level\": \"warning\",\n    \"data\": \"server is shutting down and will disconnect shortly\"\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Sending this before closing the transport gives a well behaved client the chance to warn a user, stop queuing new work for this server, and prepare to reconnect if one becomes available again."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. A Complete Node.js Shutdown Handler",
+          "id": "shutdown-complete-node-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Putting the pieces together, here is a full drain and exit sequence, from signal to process.exit, in one place."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "let shuttingDown = false;\nconst inFlight = new Set();\nconst DRAIN_TIMEOUT_MS = 15000;\n\nasync function shutdown(signal) {\n  if (shuttingDown) return;\n  shuttingDown = true;\n  console.error(\"received \" + signal + \", draining \" + inFlight.size + \" in-flight requests\");\n\n  await server.notification({\n    method: \"notifications/message\",\n    params: { level: \"warning\", data: \"server is shutting down shortly\" }\n  });\n\n  const remaining = await waitForDrain(DRAIN_TIMEOUT_MS);\n  if (remaining > 0) {\n    console.error(remaining + \" requests did not finish in time, proceeding anyway\");\n  }\n\n  await closeResources();\n  await transport.close();\n  console.error(\"shutdown complete, exiting\");\n  process.exit(0);\n}\n\nprocess.on(\"SIGINT\", () => shutdown(\"SIGINT\"));\nprocess.on(\"SIGTERM\", () => shutdown(\"SIGTERM\"));"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Every step here is deliberate and in order, stop new work, tell the client, drain what is running, close resources, close the transport, then exit with a clean code."
+        },
+        {
+          "type": "paragraph",
+          "text": "Compare that against a naive version that just calls process.exit inside the signal handler, the difference is entirely in how much of a chance in flight work and open resources get before the process disappears."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. The Same Pattern in Python",
+          "id": "shutdown-python-version"
+        },
+        {
+          "type": "paragraph",
+          "text": "The same shape works just as well in Python, using asyncio signal handlers instead of Node event listeners."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport signal\n\nshutting_down = False\nin_flight = set()\nDRAIN_TIMEOUT = 15\n\nasync def wait_for_drain(timeout):\n    deadline = asyncio.get_event_loop().time() + timeout\n    while in_flight and asyncio.get_event_loop().time() < deadline:\n        await asyncio.sleep(0.05)\n    return len(in_flight)\n\nasync def shutdown(sig):\n    global shutting_down\n    if shutting_down:\n        return\n    shutting_down = True\n    print(f\"received {sig.name}, draining {len(in_flight)} requests\")\n    remaining = await wait_for_drain(DRAIN_TIMEOUT)\n    if remaining:\n        print(f\"{remaining} requests did not finish in time\")\n    await close_resources()\n    print(\"shutdown complete\")\n\ndef register_signal_handlers(loop):\n    for sig in (signal.SIGINT, signal.SIGTERM):\n        loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown(s)))"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "asyncio add_signal_handler is the cleaner option here over the plain signal module, since it lets your handler schedule an async task instead of running inside a raw synchronous signal callback."
+        },
+        {
+          "type": "note",
+          "title": "Keep signal handlers small",
+          "content": "A signal handler should do as little as possible itself, set a flag or schedule a task, and let the real drain logic run in the normal event loop where it is much easier to reason about and to test."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. What Happens If You Skip the Timeout",
+          "id": "shutdown-skip-timeout-risk"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577385150-100875905.png",
+          "alt": "Skipping the timeout risks the process hanging indefinitely",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is tempting to just wait for inFlight.size to hit zero with no upper bound at all. That works fine until one request gets stuck, a network call that never times out on its own, and now your whole process refuses to exit."
+        },
+        {
+          "type": "paragraph",
+          "text": "In a container environment this usually ends with the orchestrator giving up and sending SIGKILL after its own grace period expires, which means none of your careful cleanup code even got to run. A bounded drain timeout is what keeps you in control of that ending instead of the orchestrator."
+        },
+        {
+          "type": "note",
+          "title": "A stuck request is not a shutdown bug",
+          "content": "If a single request regularly refuses to finish within your drain window, that is usually a sign the tool itself needs its own timeout, not that the shutdown timeout should simply be made longer and longer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Handling Uncaught Errors During Shutdown",
+          "id": "shutdown-handling-errors"
+        },
+        {
+          "type": "paragraph",
+          "text": "Shutdown code itself can fail, a database might already be unreachable, a file handle might already be closed by something else. Wrap each cleanup step so one failure does not stop the rest from running."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function closeResources() {\n  const steps = [\n    () => dbPool.end(),\n    () => logStream.close(),\n    () => cacheClient.disconnect()\n  ];\n  for (const step of steps) {\n    try {\n      await step();\n    } catch (err) {\n      console.error(\"cleanup step failed:\", err.message);\n    }\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This turns shutdown from an all or nothing sequence into one that always makes forward progress, closing everything it can even if one piece misbehaves."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Testing Graceful Shutdown Locally",
+          "id": "shutdown-testing-locally"
+        },
+        {
+          "type": "paragraph",
+          "text": "You do not need a real orchestrator to test this. Start your server, fire off a slow tool call, then send it a signal from another terminal and watch what happens."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "# terminal one\nnode server.js\n\n# terminal two, find the pid and send SIGTERM\nps aux | grep server.js\nkill -TERM <pid>"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A healthy server should log the shutdown starting, wait for the slow call to finish or hit its timeout, close resources, and exit with code zero, all visible right there in the first terminal."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"What you see in the log\",\"What it means\"],\"rows\":[[\"received SIGTERM, N reads in flight\",\"Signal was caught, drain has started\"],[\"drain finished, 0 still pending\",\"Every in flight request finished cleanly\"],[\"drain finished, 1 still pending\",\"Timeout was hit before that request finished\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Choosing a Sensible Drain Timeout",
+          "id": "shutdown-choosing-timeout"
+        },
+        {
+          "type": "paragraph",
+          "text": "There is no single correct drain timeout for every server, it depends entirely on how long your tool calls normally take to finish."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Tool profile\",\"Suggested drain timeout\",\"Reasoning\"],\"rows\":[[\"Fast lookups, simple reads\",\"3 to 5 seconds\",\"Almost nothing should still be running\"],[\"Typical API backed tools\",\"10 to 20 seconds\",\"Covers normal network latency and retries\"],[\"Long exports or heavy computation\",\"30 to 60 seconds\",\"Needs real room, but still bounded\"],[\"Streaming or long lived subscriptions\",\"Cancel immediately, do not drain\",\"These are not meant to finish on their own\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Whatever number you pick, keep it comfortably shorter than the grace period your process manager gives you before it sends SIGKILL, or your careful drain logic will never get the chance to finish."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. A Shutdown Checklist Before You Ship",
+          "id": "shutdown-checklist"
+        },
+        {
+          "type": "paragraph",
+          "text": "Before considering a server production ready, it helps to run through a short checklist covering everything this lesson has walked through."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Both SIGINT and SIGTERM are caught, not just one of them.",
+            "New requests are rejected with a clear error once shutdown has started.",
+            "In flight requests are tracked somewhere the shutdown logic can see.",
+            "Draining has a real timeout, not an unbounded wait.",
+            "Every opened resource, database pool, file handle, timer, gets closed explicitly.",
+            "The client is notified before the transport actually closes."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Test it, do not just read it",
+          "content": "A checklist you have only read is not the same as a checklist you have watched pass in a real terminal with a slow request running and a signal sent from another window."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: A Server That Shuts Down Cleanly Under Load",
+          "id": "shutdown-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider a server with one tool that reads a large report from disk, something that can take several seconds. Here is the full shape combining tracking, refusal, drain, and cleanup for that one tool."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "let shuttingDown = false;\nconst inFlight = new Set();\n\nasync function handleReadReport(request) {\n  if (shuttingDown) {\n    throw new McpError(ErrorCode.InvalidRequest, \"server is shutting down\");\n  }\n  const marker = { id: request.id };\n  inFlight.add(marker);\n  try {\n    const data = await fs.promises.readFile(request.params.arguments.path, \"utf8\");\n    return { content: [{ type: \"text\", text: data }] };\n  } finally {\n    inFlight.delete(marker);\n  }\n}\n\nasync function shutdown(signal) {\n  if (shuttingDown) return;\n  shuttingDown = true;\n  console.error(signal + \" received, \" + inFlight.size + \" reads in flight\");\n  const start = Date.now();\n  while (inFlight.size > 0 && Date.now() - start < 15000) {\n    await new Promise((r) => setTimeout(r, 50));\n  }\n  console.error(\"drain finished, \" + inFlight.size + \" still pending\");\n  process.exit(0);\n}\n\nprocess.on(\"SIGTERM\", () => shutdown(\"SIGTERM\"));"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Run a slow read, send SIGTERM mid read, and you should see the process wait for that read to finish before it logs drain finished and exits, instead of cutting the read off partway through."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "shutdown-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Calling process.exit immediately inside the signal handler, before any in flight work has had a chance to finish.",
+            "Waiting for in flight requests to drain with no timeout at all, so one stuck request blocks shutdown forever.",
+            "Closing a database pool or file handle before checking that nothing is still using it, causing errors on the way out.",
+            "Never sending any kind of notice to the client, leaving it to discover the disconnect only when the pipe closes.",
+            "Handling SIGTERM but forgetting SIGINT, so control C during local development behaves completely differently from a real deploy.",
+            "Letting one failed cleanup step abort the rest of the cleanup, leaving other resources open even though they could have closed fine."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "shutdown-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take a small MCP server you have already built and add a tool that sleeps for five seconds before responding, to simulate slow work."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Add signal handlers for SIGINT and SIGTERM that flip a shuttingDown flag and log the moment they fire.",
+            "Track in flight calls to the slow tool in a set, and reject any new calls once shuttingDown is true.",
+            "Add a bounded drain loop with a ten second timeout, then close any resources your server opened.",
+            "Start the server, call the slow tool, send it SIGTERM from another terminal, and confirm the call finishes before the process exits."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "As a stretch goal, try sending a second SIGTERM while the first shutdown is still draining, and confirm your guard flag stops it from starting a duplicate shutdown sequence."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "shutdown-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Graceful shutdown means treating the end of a server process with the same care as its start, catching SIGINT and SIGTERM, refusing new work, draining what is already running within a bounded timeout, closing every resource you opened, and letting the client know before you disappear."
+        },
+        {
+          "type": "paragraph",
+          "text": "That completes the Building MCP Servers module. The next module, Building MCP Clients, flips the perspective and covers implementing the client side from scratch, connecting to a server, handling its responses, and managing its lifecycle from the other end of the pipe."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,532 @@
+{
+  "slug": "calendar-server",
+  "title": "Calendar Server",
+  "content": [
+    {
+      "id": "calendar-server",
+      "title": "Calendar Server",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "A calendar MCP server wraps a real calendar service, like Google Calendar, so an AI agent can check schedules and create events on a person's behalf."
+        },
+        {
+          "type": "paragraph",
+          "text": "Instead of a human hunting for a free hour, the agent asks the server directly and gets a real answer back."
+        },
+        {
+          "type": "paragraph",
+          "text": "The tricky part is rarely the calendar logic itself. It is almost always timezones."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What This Server Wraps",
+          "id": "calserver-what-it-wraps"
+        },
+        {
+          "type": "paragraph",
+          "text": "Underneath, this server is a thin layer over a real calendar provider's API, most often Google Calendar or Microsoft Outlook."
+        },
+        {
+          "type": "paragraph",
+          "text": "That underlying API already knows about calendars, events, attendees, and a free busy endpoint for checking open time."
+        },
+        {
+          "type": "paragraph",
+          "text": "The MCP server's job is to expose a small, safe set of tools and resources on top of that existing API."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Calendar, a container that holds a set of events for one person or one team",
+            "Event, a single meeting with a start time, an end time, and a list of attendees",
+            "Attendee, a person invited to an event, each with their own timezone",
+            "Free busy, a lightweight view of when a calendar is open or occupied"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Tools This Server Needs",
+          "id": "calserver-tools-needed"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two tools cover almost every real use case, one to check availability, and one to create an event."
+        },
+        {
+          "type": "paragraph",
+          "text": "A few servers add extras, like updating or canceling an event, but the core pair does most of the work."
+        },
+        {
+          "type": "list",
+          "items": [
+            "check_availability, looks for open time across one or more calendars",
+            "create_event, books a new event with attendees, a time, and a timezone",
+            "update_event and cancel_event, optional tools for changes after the fact"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Tool: check_availability",
+          "id": "calserver-check-availability"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580662289-945232906.png",
+          "alt": "An AI agent talks to a calendar server which calls check_availability and create_event",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "This tool takes a time range and a list of calendars, and returns which parts of that range are free."
+        },
+        {
+          "type": "paragraph",
+          "text": "It should always ask for and return times with an explicit timezone, never a bare local time with no context."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from zoneinfo import ZoneInfo\nfrom datetime import datetime\n\ndef check_availability(calendar_ids, start_time, end_time, timezone):\n    tz = ZoneInfo(timezone)\n    start_utc = datetime.fromisoformat(start_time).replace(tzinfo=tz).astimezone(ZoneInfo(\"UTC\"))\n    end_utc = datetime.fromisoformat(end_time).replace(tzinfo=tz).astimezone(ZoneInfo(\"UTC\"))\n\n    freebusy = calendar_api.query_freebusy(\n        calendar_ids=calendar_ids,\n        time_min=start_utc.isoformat(),\n        time_max=end_utc.isoformat(),\n    )\n\n    busy_blocks = merge_busy_ranges(freebusy)\n    free_slots = subtract_busy_from_range(start_utc, end_utc, busy_blocks)\n    return {\"timezone\": \"UTC\", \"free_slots\": free_slots}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the tool converts to UTC before ever calling the calendar API, so busy blocks from different sources line up correctly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Tool: create_event",
+          "id": "calserver-create-event"
+        },
+        {
+          "type": "paragraph",
+          "text": "This tool books a real event once the agent has picked a time, so it needs a title, a time range, a timezone, and attendees."
+        },
+        {
+          "type": "paragraph",
+          "text": "The safest design stores the event's start and end in UTC internally, while still showing the organizer's local time in the response."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function createEvent({ title, startTime, endTime, timezone, attendees }) {\n  const startUtc = DateTime.fromISO(startTime, { zone: timezone }).toUTC();\n  const endUtc = DateTime.fromISO(endTime, { zone: timezone }).toUTC();\n\n  const event = await calendarApi.events.insert({\n    summary: title,\n    start: { dateTime: startUtc.toISO(), timeZone: \"UTC\" },\n    end: { dateTime: endUtc.toISO(), timeZone: \"UTC\" },\n    attendees: attendees.map((email) => ({ email })),\n  });\n\n  return { eventId: event.id, startLocal: startUtc.setZone(timezone).toISO() };\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The response converts back to the organizer's timezone purely for display, the stored value never changes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Handling Timezones Correctly",
+          "id": "calserver-timezones"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580664715-597622437.png",
+          "alt": "Two attendees in different timezones must resolve to the same moment in time",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Timezones are the single most common source of calendar bugs, and MCP servers are no exception."
+        },
+        {
+          "type": "paragraph",
+          "text": "The safest rule is simple, store and compare everything in UTC, and only convert to a local timezone at the very last step, for display."
+        },
+        {
+          "type": "note",
+          "title": "Never trust a bare timestamp",
+          "content": "A time like 2026-07-09T14:00:00 with no timezone attached is ambiguous and dangerous. Always carry an explicit timezone name or offset alongside it."
+        },
+        {
+          "type": "paragraph",
+          "text": "Daylight saving time makes this worse, since the same local hour can mean a different UTC offset depending on the date."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Always require a timezone name, like America/New_York, alongside any local time the agent supplies",
+            "Convert to UTC immediately, before storing or comparing anything",
+            "Convert back to local time only when showing a result to a person",
+            "Use a real timezone database, like IANA tz data, never a fixed hour offset"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Comparing Times Across Calendars",
+          "id": "calserver-comparing-times"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once every time is in UTC, comparing two people's busy blocks is just simple interval math."
+        },
+        {
+          "type": "paragraph",
+          "text": "Skip that conversion, and two calendars in different timezones will look free or busy at the wrong moments."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def ranges_overlap(a_start, a_end, b_start, b_end):\n    # all four values must already be in UTC before this check runs\n    return a_start < b_end and b_start < a_end"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This overlap check only works because every value entering it was normalized to UTC first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Resources: Exposing Upcoming Events",
+          "id": "calserver-resources-upcoming"
+        },
+        {
+          "type": "paragraph",
+          "text": "Alongside tools, this server can expose a resource that lists a person's upcoming events as read only context."
+        },
+        {
+          "type": "paragraph",
+          "text": "That lets the agent see what is already on the calendar without needing to call a tool just to look."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Resource URIs and Freshness",
+          "id": "calserver-resource-uris"
+        },
+        {
+          "type": "paragraph",
+          "text": "A resource URI like calendar colon slash slash primary slash events slash upcoming should return a snapshot, plus a note on how fresh it is."
+        },
+        {
+          "type": "paragraph",
+          "text": "Calendars change constantly, so the agent should treat a resource read from a minute ago as possibly stale."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Resource\",\"Returns\"],\"rows\":[[\"calendar://primary/events/upcoming\",\"Next N events on the primary calendar\"],[\"calendar://team/freebusy\",\"Merged free busy blocks for a team\"],[\"calendar://primary/events/id\",\"One event by its id\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Finding a Slot for Multiple Attendees",
+          "id": "calserver-multi-attendee"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580666678-30330590.png",
+          "alt": "Free time from attendee A and attendee B overlaps into one open slot",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The real value of this server shows up when an agent needs to schedule a meeting across several people's calendars at once."
+        },
+        {
+          "type": "paragraph",
+          "text": "The approach is to pull free busy data for every attendee, convert it all to UTC, and look for a shared open window."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Free Busy Data From the Provider",
+          "id": "calserver-freebusy-data"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580669303-563365586.png",
+          "alt": "The calendar provider returns free busy data for a given time range",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most calendar providers expose a dedicated free busy endpoint that is cheaper and faster than reading full event details."
+        },
+        {
+          "type": "paragraph",
+          "text": "It returns just busy time ranges per calendar, which is exactly what a slot finding tool needs."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def find_common_slot(attendee_busy_utc, search_start, search_end, duration_minutes):\n    all_busy = sorted(sum(attendee_busy_utc.values(), []), key=lambda b: b[0])\n    merged = merge_busy_ranges(all_busy)\n    candidate = search_start\n    for busy_start, busy_end in merged:\n        free_minutes = (busy_start - candidate).total_seconds() / 60\n        if free_minutes >= duration_minutes:\n            return candidate, candidate + timedelta(minutes=duration_minutes)\n        candidate = max(candidate, busy_end)\n    if (search_end - candidate).total_seconds() / 60 >= duration_minutes:\n        return candidate, candidate + timedelta(minutes=duration_minutes)\n    return None"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This scan always works in UTC, so it does not matter that attendees sit in three different timezones."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Conflict Detection and Double Booking",
+          "id": "calserver-conflict-detection"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580671416-242940386.png",
+          "alt": "A new event overlapping an existing one is flagged as a double booking conflict",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Before create_event actually books anything, a careful server rechecks availability one more time."
+        },
+        {
+          "type": "paragraph",
+          "text": "That guards against a race where someone else grabbed the slot between the check and the booking."
+        },
+        {
+          "type": "note",
+          "title": "Recheck right before booking",
+          "content": "A slot that was free a few seconds ago may not be free anymore. Always run one last availability check inside create_event before writing the event."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Recurring Events and Edge Cases",
+          "id": "calserver-recurring-events"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580673540-938531562.png",
+          "alt": "A recurring event series expands into individual occurrences with edge cases",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Recurring events add real complexity, since a single series can have exceptions, like one instance moved or cancelled."
+        },
+        {
+          "type": "paragraph",
+          "text": "A safe server expands a recurring series into individual occurrences before checking busy time, rather than treating it as one block."
+        },
+        {
+          "type": "paragraph",
+          "text": "It also needs to handle an attendee declining just one instance, not the whole series."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Expand recurring series into individual occurrences before any free busy check",
+            "Treat a modified single instance as its own event, separate from the series",
+            "Watch for a series that crosses a daylight saving time change partway through",
+            "Never assume every occurrence in a series keeps the exact same UTC offset"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Authenticating with the Calendar Provider",
+          "id": "calserver-auth"
+        },
+        {
+          "type": "paragraph",
+          "text": "This server needs an OAuth token scoped to calendar access, issued per user, never one shared account for everyone."
+        },
+        {
+          "type": "paragraph",
+          "text": "Tokens should be stored securely and refreshed automatically before they expire, not discovered as expired mid request."
+        },
+        {
+          "type": "list",
+          "items": [
+            "calendar.readonly, enough for check_availability and reading resources",
+            "calendar.events, needed for create_event and any updates",
+            "Refresh tokens stored encrypted, never logged in plain text"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Error Handling for Calendar Operations",
+          "id": "calserver-error-handling"
+        },
+        {
+          "type": "paragraph",
+          "text": "A declined invite, a deleted event, or a provider outage all need distinct, clear error responses."
+        },
+        {
+          "type": "paragraph",
+          "text": "The agent should be told plainly when a slot it picked got taken, so it can retry with a fresh check rather than guessing."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Slot no longer free, return a clear conflict error, not a generic failure",
+            "Attendee email invalid, fail before booking, not after",
+            "Provider API down, return a retryable error with a suggested wait"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "None of these errors should ever look like a plain success with an empty result."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Rate Limits and Caching",
+          "id": "calserver-rate-limits"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580675519-7196165.png",
+          "alt": "Repeated calendar reads are cached to stay under the provider rate limit",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Free busy lookups are cheap to call often, but calendar providers still enforce their own rate limits."
+        },
+        {
+          "type": "paragraph",
+          "text": "Caching an availability check for a short window, a few seconds, avoids hammering the provider when an agent checks the same range repeatedly."
+        },
+        {
+          "type": "paragraph",
+          "text": "Never cache create_event, booking must always hit the real provider."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "calserver-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "An agent needs to schedule a thirty minute sync between three people in New York, London, and Tokyo."
+        },
+        {
+          "type": "paragraph",
+          "text": "First it calls check_availability for each attendee's calendar, converting every busy block to UTC."
+        },
+        {
+          "type": "paragraph",
+          "text": "Then it scans for a thirty minute UTC window where all three are free, using the same merge and scan logic as find_common_slot."
+        },
+        {
+          "type": "paragraph",
+          "text": "It finds one window at 14:00 UTC, and converts that back to each attendee's local time for display."
+        },
+        {
+          "type": "paragraph",
+          "text": "Finally it calls create_event with the UTC time and the organizer's timezone, and the invite reaches everyone at the correct local hour."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Attendee\",\"Local Time for 14:00 UTC\"],\"rows\":[[\"New York\",\"10:00 AM\"],[\"London\",\"3:00 PM\"],[\"Tokyo\",\"11:00 PM\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "calserver-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Storing or comparing local times without ever converting to UTC first",
+            "Assuming a fixed hour offset instead of using real timezone database rules",
+            "Forgetting that daylight saving time shifts the UTC offset on certain dates",
+            "Booking an event without a final availability recheck right before create_event",
+            "Treating a whole recurring series as one busy block instead of expanding occurrences",
+            "Returning a bare timestamp with no timezone attached in a tool response"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "calserver-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Build a check_availability tool that accepts a timezone name, converts to UTC, and returns free slots for two calendars."
+        },
+        {
+          "type": "paragraph",
+          "text": "Then extend it to find_common_slot across three calendars in three different timezones, and print the result in each attendee's local time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "calserver-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A calendar MCP server is mostly about two tools, check_availability and create_event, wrapped carefully around timezone safe logic."
+        },
+        {
+          "type": "paragraph",
+          "text": "Store and compare everything in UTC, convert to local time only for display, and always recheck availability right before booking."
+        }
+      ]
+    }
+  ]
+}

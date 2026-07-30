@@ -1,0 +1,580 @@
+{
+  "slug": "tool-discovery",
+  "title": "Tool Discovery",
+  "content": [
+    {
+      "id": "tool-discovery",
+      "title": "Tool Discovery",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Before a model can ever call a tool, it has to find out the tool exists in the first place."
+        },
+        {
+          "type": "paragraph",
+          "text": "That sounds obvious, but it is a real protocol step with its own message, its own timing, and its own subtleties, and getting it wrong is a surprisingly common source of confusing bugs where a model insists a capability is not available even though the server clearly implements it."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson walks through discovery end to end: the tools/list method, what a client actually does with the response, and exactly when in a session's life this conversation happens."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Discovery Solves",
+          "id": "td-what-it-solves"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173150361-237180396.png",
+          "alt": "A client listing tools from a server and the model receiving them",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173150361-237180396.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A model does not come pre-loaded with knowledge of every MCP server a user happens to have connected."
+        },
+        {
+          "type": "paragraph",
+          "text": "One user might have a server for their calendar, another for their code editor, another for a home automation system, and the set of servers changes from session to session and from user to user."
+        },
+        {
+          "type": "paragraph",
+          "text": "Discovery is the mechanism that lets a client find out, at runtime, exactly which tools a specific server offers right now, rather than the model having to guess or hardcode assumptions."
+        },
+        {
+          "type": "paragraph",
+          "text": "Think of it like walking into an unfamiliar workshop. You do not assume which tools hang on the wall before you look, you look first, and only then decide what you can build. A model connecting to a fresh server is in exactly that position every single time, and discovery is the look."
+        },
+        {
+          "type": "paragraph",
+          "text": "Without discovery, every tool a model could ever call would need to be baked into the model's training or into some static configuration file shipped alongside it. That approach falls apart the moment servers are added, removed, or updated independently of the model itself, which is the entire point of MCP as a plugin style architecture. Discovery decouples what a model knows how to do in general from what a particular server happens to expose today."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The tools/list Method",
+          "id": "td-tools-list-method"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173152115-587082473.png",
+          "alt": "A tools list request returns a response with the tool array",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173152115-587082473.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The concrete mechanism is a JSON-RPC method called tools/list. The client sends a request with this method name, and the server responds with an array describing every tool it currently exposes. Each entry in that array carries the same three fields you already met in the previous lesson, a name, a description, and an inputSchema, plus an optional outputSchema in newer servers that also describe the shape of their results."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 7,\n  \"method\": \"tools/list\",\n  \"params\": {}\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The params object is usually empty, though servers with very large tool catalogs can support pagination through a cursor field, letting a client request tools in pages rather than all at once. Most servers people build day to day expose a handful to a few dozen tools, so pagination rarely comes up in practice, but it exists for servers backing very large systems."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.1 Paginated Discovery",
+          "id": "td-pagination"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a server does return a cursor, the response includes a nextCursor field alongside the tools array. The client is expected to issue a follow up tools/list call, this time passing that cursor back in params, and keep repeating the exchange until a response arrives with no nextCursor at all, signaling the full catalog has now been delivered."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 8,\n  \"method\": \"tools/list\",\n  \"params\": { \"cursor\": \"eyJvZmZzZXQiOjUwfQ==\" }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Pagination is entirely optional for a server to implement, and a client has to be written so it works correctly whether a server pages results or returns everything in one shot. Assuming every server always returns a complete list in a single response is a reasonable simplification for small personal servers, but it breaks against any server backing a catalog of hundreds of tools."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. The Response Shape",
+          "id": "td-response-shape"
+        },
+        {
+          "type": "paragraph",
+          "text": "The server's reply mirrors the request format and carries a result object with a tools array inside it. Every object in that array is a complete, self-contained description, a client never needs to make a second request to understand what a single tool does or how to call it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 7,\n  \"result\": {\n    \"tools\": [\n      {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather conditions for a named city.\",\n        \"inputSchema\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": { \"type\": \"string\", \"description\": \"City name, for example Paris\" },\n            \"units\": { \"type\": \"string\", \"enum\": [\"celsius\", \"fahrenheit\"] }\n          },\n          \"required\": [\"city\"]\n        }\n      }\n    ]\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice that the response describes the tool completely but says nothing about how it is implemented internally. A client, and by extension the model behind it, only ever sees this external contract. Whether get_weather calls a paid API, reads a cached file, or runs a small simulation is entirely the server's business."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. When Discovery Happens",
+          "id": "td-when-it-happens"
+        },
+        {
+          "type": "paragraph",
+          "text": "Discovery typically happens once, right after a client finishes the initialize handshake with a server and before any real work begins. The client connects, exchanges protocol version and capability information, and then immediately asks tools/list to build its picture of what that server can do. That picture is then handed to the model as part of its available tool set for the rest of the session."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some clients also re-run discovery later in a session, particularly long running ones, in case a server's tool set changes while connected. A server can proactively signal this with a tools/list_changed notification, which tells the client its cached list is stale and it should call tools/list again rather than wait for the client to guess."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "4.1 Ordering Matters",
+          "id": "td-ordering-matters"
+        },
+        {
+          "type": "paragraph",
+          "text": "Discovery has to happen strictly after initialize completes and strictly before the model's first turn that might reference tools. Calling tools/list too early, before a server has finished its own setup, can return an incomplete or empty list, while calling it too late means the model's very first response might be generated without knowing any tools exist at all."
+        },
+        {
+          "type": "note",
+          "title": "A subtle race",
+          "content": "A server that needs a moment to load its own configuration, for example reading a credentials file from disk, should hold its response to initialize until it is truly ready, rather than accepting the initialize handshake and then returning an empty tools/list a moment later because it was not actually finished starting up."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Moment\",\"What Triggers It\",\"Why It Matters\"],\"rows\":[[\"Right after connect\",\"Client finishes initialize handshake\",\"Model needs a starting tool set before any conversation turn\"],[\"Mid session refresh\",\"Server sends tools/list_changed\",\"Tools can be added or removed while a session is open\"],[\"Manual refresh\",\"User or host explicitly reconnects\",\"Recovers from a stale cache or a server restart\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Building the Tool Catalog",
+          "id": "td-building-catalog"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173153775-983718433.png",
+          "alt": "Discovered tools accumulate into a tool catalog",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173153775-983718433.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once the client has the tools array, it does not hand the raw JSON to the model as is. It typically normalizes each entry into whatever internal format the model provider expects for tool definitions, then merges tools from every connected server into one combined catalog. A model talking to three servers at once might see fifteen tools in its context, each one tagged, at least internally, with which server it came from so a call can be routed back correctly."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Simplified client-side catalog build\ncatalog = []\nfor server in connected_servers:\n    response = server.call(\"tools/list\", {})\n    for tool in response[\"result\"][\"tools\"]:\n        catalog.append({**tool, \"_server\": server.name})\n\nmodel_tools = [to_model_format(t) for t in catalog]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Discovery Is Not Negotiation",
+          "id": "td-not-negotiation"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173155309-470004450.png",
+          "alt": "Discovery simply lists tools rather than negotiating which ones to use",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173155309-470004450.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth being precise about what discovery is not. It is not the model asking permission to see a tool, and it is not a request the model can customize, there is no way to ask a server to only describe tools matching some filter."
+        },
+        {
+          "type": "paragraph",
+          "text": "The server decides what it exposes, full stop, and the client receives that full list."
+        },
+        {
+          "type": "paragraph",
+          "text": "Any narrowing of what the model is actually allowed to call happens later, as a separate layer of policy on top of discovery, which is exactly what the permissions lesson later in this module covers."
+        },
+        {
+          "type": "note",
+          "title": "Discovery versus authorization",
+          "content": "Discovery answers what tools exist. A completely different question, whether a specific caller is allowed to invoke a specific tool right now, is answered by permission checks that sit on top of discovery, not inside it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. What the Model Actually Sees",
+          "id": "td-what-model-sees"
+        },
+        {
+          "type": "paragraph",
+          "text": "From the model's point of view, discovery is invisible machinery. The model never issues a tools/list call itself, and it never sees raw JSON-RPC messages. All of that happens in the client, well before the model's turn even starts. What the model receives is a clean, already-translated list of tool definitions sitting alongside the conversation, exactly like a menu handed to it before it starts reasoning about what to order."
+        },
+        {
+          "type": "paragraph",
+          "text": "This separation matters because it means the model can stay completely provider agnostic about how tools arrived. Whether a tool came from a local filesystem server or a remote billing server, by the time the model sees it, it is just another named action with a schema. That uniformity is a big part of why MCP scales to many unrelated servers without the model needing special casing for each one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Discovery Across Multiple Servers",
+          "id": "td-multiple-servers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173156895-280621739.png",
+          "alt": "A client discovers tools from several servers at once",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173156895-280621739.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single client is frequently connected to more than one MCP server at a time, and each one runs its own independent tools/list conversation. There is no shared registry across servers, no central authority a client asks first, each server is discovered on its own connection. This is deliberate: it keeps servers fully decoupled from each other, a server author never needs to coordinate names or behavior with any other server that might happen to be connected alongside theirs."
+        },
+        {
+          "type": "paragraph",
+          "text": "One practical wrinkle this creates is name collisions. If two different servers both expose a tool literally named search, the client has to disambiguate somehow, commonly by prefixing the tool name with the server's own name internally before showing it to the model, for example calendar.search versus docs.search. The wire format from tools/list never carries that prefix itself, it is a client side convention layered on to keep the model's view unambiguous."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Server\",\"Raw Tool Name\",\"Name Shown to Model\"],\"rows\":[[\"calendar-server\",\"search\",\"calendar.search\"],[\"docs-server\",\"search\",\"docs.search\"],[\"calendar-server\",\"create_event\",\"calendar.create_event\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This prefixing is purely a client side convention and different clients are free to solve the collision problem differently, some use a dot separated namespace like the table above, others use an underscore or a short server id."
+        },
+        {
+          "type": "paragraph",
+          "text": "What matters for a server author is understanding that the name field they declare is not guaranteed to reach the model completely unchanged, so names should still be written to be clear and specific on their own, without relying on the raw string being shown verbatim."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Stale Catalogs and Reconnection",
+          "id": "td-stale-catalogs"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173158377-760563968.png",
+          "alt": "A stale catalog is refreshed after a reconnection",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173158377-760563968.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A tool catalog fetched once at the start of a session is a snapshot, not a live feed. If a server restarts, updates its own code, or is reconfigured by whoever runs it, the tools it exposes can change without the client automatically knowing. Well behaved servers send that tools/list_changed notification when this happens, but not every server implementation does, and network issues can cause a notification to be missed even when a server does send one."
+        },
+        {
+          "type": "paragraph",
+          "text": "A robust client treats a long lived tool catalog with a bit of suspicion, periodically re-listing tools on reconnect, or at minimum surfacing a clear error to the user if a tool the model tries to call has quietly disappeared from the server. Silently trusting a very old snapshot is a common source of the frustrating failure mode where a model confidently calls a tool that no longer exists."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Re-run tools/list automatically whenever a dropped connection to a server is reestablished",
+            "Set a reasonable time to live on a cached catalog for servers known to change often, rather than trusting it indefinitely",
+            "Surface a clear, specific error the moment a tools/call targets a tool name missing from the latest catalog, instead of a generic failure",
+            "Log when a tools/list_changed notification arrives, so a developer debugging a stale catalog issue can see whether the server ever actually sent one"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Descriptions Are the Model's Only Signal",
+          "id": "td-descriptions-only-signal"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173160390-162715992.png",
+          "alt": "A tool description is the only signal the model has for choosing a tool",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173160390-162715992.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because discovery happens once and produces a static block of text and schema, the description field inside each tool carries an enormous amount of weight."
+        },
+        {
+          "type": "paragraph",
+          "text": "The model has no other way to learn what a tool does, it cannot read the server's source code, it cannot ask a follow up question about behavior before deciding to call it."
+        },
+        {
+          "type": "paragraph",
+          "text": "Everything the model will ever infer about when to use a tool and what it will do has to be present in that one description string returned during discovery."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A vague description like Manage user leads to a model guessing wildly at what actions are possible underneath it",
+            "A description that omits side effects, for example not mentioning that a call sends a real email, leads to a model treating a destructive action as free to try",
+            "A description written for a human reader rather than a model, full of internal jargon or ticket numbers, gives the model very little useful signal"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Discovery in a Multi Turn Conversation",
+          "id": "td-multi-turn"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once the tool catalog is built at the start of a session, it typically rides along with every single turn of the conversation, not just the first one. Most model providers expect the full list of available tools to be resent as part of the context on each call to the model, since a model has no persistent memory of a prior turn's tool list on its own. The client's job is to keep including the same catalog, unchanged, unless a refresh has actually happened."
+        },
+        {
+          "type": "note",
+          "title": "Tool lists cost tokens too",
+          "content": "Every tool definition resent on every turn consumes context window space, exactly like any other text in the prompt. A catalog with a hundred verbose tool descriptions is not free, and some clients let a host trim which tools are actively offered to the model per turn precisely to keep this cost under control."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Every turn resends the same tool catalog alongside the growing conversation\nresponse = model.create_message(\n    messages=conversation_history,\n    tools=model_tools,   # same catalog built once during discovery\n)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Discovery for Humans, Not Just Models",
+          "id": "td-for-humans-too"
+        },
+        {
+          "type": "paragraph",
+          "text": "Discovery is not purely a model facing mechanism."
+        },
+        {
+          "type": "paragraph",
+          "text": "Many MCP hosts render the tools/list response directly in a settings panel or connection screen so a human user can see exactly which tools a server they just connected offers, sometimes before they have even started a conversation."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is often the first real trust signal a user gets: seeing plainly named, clearly described tools builds confidence, while seeing an opaque or overly broad tool list is a legitimate reason to disconnect a server."
+        },
+        {
+          "type": "paragraph",
+          "text": "This dual audience, model and human, is a good reason on its own to write tool descriptions in plain language rather than in code style shorthand. The exact same string a model reads to decide whether to call a tool is very often the exact same string a person reads while deciding whether to trust the server at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keep that dual audience in mind every time a tool gets renamed or its description gets rewritten, a change made purely to nudge a model toward better behavior can just as easily confuse or reassure the human reading the very same text in a settings screen."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. A Minimal Discovery Exchange",
+          "id": "td-minimal-exchange"
+        },
+        {
+          "type": "paragraph",
+          "text": "Putting the request and response side by side makes the whole exchange concrete. A client sends one small request, and a server can answer with as few or as many tool definitions as it likes, from a single tool to hundreds."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "// Request\n{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/list\", \"params\": {}}\n\n// Response\n{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"result\": {\n    \"tools\": [\n      {\"name\": \"list_files\", \"description\": \"List files in a directory.\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}, \"required\": [\"path\"]}},\n      {\"name\": \"read_file\", \"description\": \"Read the contents of a file.\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}, \"required\": [\"path\"]}}\n    ]\n  }\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Discovery Failures",
+          "id": "td-discovery-failures"
+        },
+        {
+          "type": "paragraph",
+          "text": "Discovery itself can fail like any other request, the server might be unreachable, might time out, or might return a malformed response that does not match the expected shape. A client needs to handle this gracefully rather than crash, typically by treating that server as offering zero tools for the session and surfacing a clear notice rather than silently pretending the server was never configured."
+        },
+        {
+          "type": "note",
+          "title": "Fail closed, not open",
+          "content": "If tools/list fails, the safe default is to expose no tools from that server rather than falling back to some cached or guessed list, since a model acting on stale or invented tool definitions can produce confusing, hard to debug failures later at call time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Why This Step Cannot Be Skipped",
+          "id": "td-cannot-skip"
+        },
+        {
+          "type": "paragraph",
+          "text": "It might be tempting, especially for a server author who only ever built one tool, to imagine a client could just assume a well known tool exists rather than formally discovering it. MCP deliberately does not allow this shortcut."
+        },
+        {
+          "type": "paragraph",
+          "text": "Every tool, no matter how simple or well known its name might seem, has to be declared through tools/list before a model is allowed to see or call it."
+        },
+        {
+          "type": "paragraph",
+          "text": "This uniform rule is what lets any MCP client work with any MCP server without special casing, the exact same discovery step happens whether the server exposes one tool or one hundred."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "15.1 A Quick Sanity Check",
+          "id": "td-sanity-check"
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful habit when debugging a server that seems to be missing tools in a client is to bypass the model entirely and call tools/list directly, by hand, over the same connection the client uses."
+        },
+        {
+          "type": "paragraph",
+          "text": "If the tool you expect is not in that raw response, the problem is on the server side, in how it registers and exposes tools."
+        },
+        {
+          "type": "paragraph",
+          "text": "If the tool is present in the raw response but the model still never calls it, the problem has moved downstream, into how the client translates and forwards that catalog, or into the tool's own description not making a strong enough case for when to use it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Manual sanity check against a server, bypassing any model or host UI\nresponse = connection.call(\"tools/list\", {})\nnames = [t[\"name\"] for t in response[\"result\"][\"tools\"]]\nassert \"expected_tool_name\" in names, \"tool missing from raw discovery response\""
+          }
+        },
+        {
+          "type": "note",
+          "title": "Isolate before you debug",
+          "content": "Separating a discovery problem from a model reasoning problem this way saves a lot of time, since the two failure modes look identical from the outside, a model that simply never uses a tool, but need completely different fixes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "td-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Imagine a client connecting to a small notes taking server for the first time. Right after the initialize handshake completes, the client sends tools/list with empty params."
+        },
+        {
+          "type": "paragraph",
+          "text": "The server responds with two tools, create_note and search_notes, each with its own inputSchema."
+        },
+        {
+          "type": "paragraph",
+          "text": "The client tags both with the server's name internally, merges them into whatever other tools might already be in its catalog from other connected servers, and hands the combined list to the model as part of the very next turn."
+        },
+        {
+          "type": "paragraph",
+          "text": "A few minutes later, the person running that notes server pushes an update that adds a third tool, delete_note. The server, being well implemented, sends a tools/list_changed notification. The client notices, quietly calls tools/list again in the background, and from the next model turn onward, delete_note is available too, without the user having to restart their conversation or reconnect anything by hand."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "td-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Assuming a tool exists because it is common or well known, rather than checking it actually appeared in that server's tools/list response",
+            "Caching a tool catalog forever and never handling tools/list_changed, so newly added or removed tools silently go unnoticed",
+            "Writing tool descriptions with internal jargon aimed at the server's own developers instead of plain language a model or a human user can act on",
+            "Treating a failed tools/list call as an empty but valid response instead of a real error that should be surfaced clearly",
+            "Forgetting that discovery has to happen per server, and building code that assumes a single global tool registry across every connected server",
+            "Not disambiguating identically named tools from two different servers, leading to a model calling the wrong one"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "td-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Write the JSON-RPC request and a plausible response for a tools/list call against an imaginary server that manages a to do list, exposing exactly three tools: add_item, complete_item, and list_items. Give each tool a clear description and a minimal but correct inputSchema."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "# Sketch your response here, following the same shape as:\n{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"result\": {\n    \"tools\": [\n      // add_item, complete_item, list_items go here\n    ]\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Then write one sentence describing a realistic scenario in which this server's tools/list_changed notification would fire, and what the client should do the moment it receives that notification."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "td-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Discovery is the tools/list handshake that lets a client learn, at runtime, exactly which tools a connected server currently exposes, each one fully described by its name, description, and inputSchema. It happens once at connection time and again whenever a server signals its tool set has changed, and it is the sole source of truth a model has for what actions are even possible in a given session."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson picks up right where a model's turn actually begins acting on that catalog: tools/call, the method that turns a chosen tool definition and a set of arguments into a real invocation, and what happens on the wire from the moment a model decides to call a tool to the moment a result comes back."
+        }
+      ]
+    }
+  ]
+}

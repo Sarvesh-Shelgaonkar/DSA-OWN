@@ -1,0 +1,681 @@
+{
+  "slug": "block-storage",
+  "title": "Block Storage",
+  "content": [
+    {
+      "id": "block-storage",
+      "title": "Block Storage",
+      "blocks": [
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every piece of data an application writes eventually has to land on physical media: spinning disks, solid state drives, or some networked equivalent of both. Block storage is the layer that makes that physical media usable by presenting it as a simple, uniform address space of fixed size chunks called blocks."
+        },
+        {
+          "type": "paragraph",
+          "content": "If you have ever attached a virtual disk to a cloud server, formatted it with ext4 or NTFS, and mounted it as a folder, you have used block storage directly, even if the cloud provider never used that phrase in its console."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Block storage exposes raw, fixed size chunks of data addressed by block number, and lets the operating system decide what to do with them."
+        },
+        {
+          "type": "paragraph",
+          "content": "This topic walks through what block storage actually is, how it differs from file storage and object storage, the real systems that implement it in production, the performance metrics that matter when sizing a volume, and a worked example of a database server that depends entirely on a well provisioned block volume for its data directory."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Core Concept",
+          "text": "2. Core Concept"
+        },
+        {
+          "type": "paragraph",
+          "content": "At the lowest level, a storage device is just a very long array of fixed size slots. Each slot is called a block, commonly 512 bytes or 4 kilobytes in size, and each block has a number. To read or write data, you tell the device which block number you want and it returns or accepts exactly that many bytes."
+        },
+        {
+          "type": "paragraph",
+          "content": "Block storage takes that raw array of numbered blocks and presents it to a computer as a virtual disk, sometimes called a volume. The operating system sees this volume the same way it would see a physical hard drive plugged into the machine. It has no concept of files, folders, or object metadata at this layer. It only understands block numbers and byte offsets within a block."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Why this abstraction matters",
+          "text": "2.1 Why this abstraction matters"
+        },
+        {
+          "type": "paragraph",
+          "content": "Because a block device knows nothing about files, it can be extremely fast and predictable. There is no parsing of file names, no metadata lookups, no key indexing. The interface is just: give me block number N, or write these bytes to block number N. Everything else, including the idea of a file system, a database page, or a directory tree, is built on top of this layer by software running on the operating system."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030427-984810315.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030427-984810315.png",
+          "alt": "An application talking to the operating system, which talks to a block device driver, which talks to an attached block volume"
+        },
+        {
+          "type": "note",
+          "title": "Key idea",
+          "content": "Block storage has no idea what a file is. It only knows block numbers. Files, directories, and databases are concepts invented by the layers built on top of it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Key Properties of Block Storage",
+          "text": "3. Key Properties of Block Storage"
+        },
+        {
+          "type": "list",
+          "content": "[\"Fixed size blocks, typically 512 bytes or 4 kilobytes, are the smallest unit of read or write.\",\"Each block is addressed by a numeric offset, not a name or a key.\",\"The volume is presented to the operating system as a raw device, such as slash dev slash xvdf on Linux.\",\"No built in concept of files, directories, or metadata exists at this layer.\",\"Low latency and high IOPS are the primary design goals, since databases and file systems depend on fast random access.\",\"A block volume is usually attached to exactly one compute instance at a time, unlike a shared network file system.\"]",
+          "items": [
+            "Fixed size blocks, typically 512 bytes or 4 kilobytes, are the smallest unit of read or write.",
+            "Each block is addressed by a numeric offset, not a name or a key.",
+            "The volume is presented to the operating system as a raw device, such as slash dev slash xvdf on Linux.",
+            "No built in concept of files, directories, or metadata exists at this layer.",
+            "Low latency and high IOPS are the primary design goals, since databases and file systems depend on fast random access.",
+            "A block volume is usually attached to exactly one compute instance at a time, unlike a shared network file system."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Fixed size blocks",
+          "text": "3.1 Fixed size blocks"
+        },
+        {
+          "type": "paragraph",
+          "content": "Block size is a fundamental tuning parameter. A smaller block size, such as 512 bytes, wastes less space when storing many tiny records but adds overhead when reading large sequential files, because more blocks and more addressing operations are needed. A larger block size, such as 4 kilobytes or even 64 kilobytes for some workloads, is efficient for sequential throughput but can waste space when storing many small files, a phenomenon called internal fragmentation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Single writer model",
+          "text": "3.2 Single writer model"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most block storage systems assume that a volume is attached to one compute instance for read and write access at a time. This keeps the consistency model simple: the operating system on that one instance is the only entity issuing block reads and writes, so there is no need for distributed locking at the block layer itself. Some providers offer multi attach modes for clustered file systems, but that is the exception, not the default."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Block Storage vs File Storage vs Object Storage",
+          "text": "4. Block Storage vs File Storage vs Object Storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "These three storage models are often confused because all three end up storing the same bytes on the same physical disks underneath. What differs is the interface exposed to the application, and that difference determines what each model is good at."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Block storage",
+          "text": "4.1 Block storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "Block storage exposes numbered blocks. The client, usually an operating system kernel, reads and writes fixed size chunks directly. There is no naming scheme built in. A database engine or file system driver is responsible for organizing those blocks into something meaningful."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 File storage",
+          "text": "4.2 File storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "File storage exposes a hierarchy of directories and files, addressed by path, such as slash data slash reports slash 2026 slash june.csv. A network file system like NFS or a managed service like Amazon EFS handles the mapping from file paths to underlying blocks, and multiple clients can typically mount the same file share concurrently."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 Object storage",
+          "text": "4.3 Object storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "Object storage exposes a flat namespace of keys mapped to opaque blobs of data plus metadata, accessed over HTTP style APIs rather than a local device or mount point. Amazon S3 and Google Cloud Storage are the best known examples. There is no notion of in place modification of part of an object. Updating an object usually means replacing the whole object."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285143571-952613985.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285143571-952613985.png",
+          "alt": "Three addressing models side by side: block number, file path, and object key with metadata"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Dimension\",\"Block Storage\",\"File Storage\",\"Object Storage\"],\"rows\":[[\"Addressing unit\",\"Block number\",\"File path in a hierarchy\",\"Flat object key\"],[\"Typical access\",\"Local device, low level reads and writes\",\"Mounted share, POSIX style file operations\",\"HTTP API, GET and PUT\"],[\"Concurrent access\",\"Usually one instance at a time\",\"Many clients concurrently\",\"Many clients concurrently\"],[\"Latency\",\"Lowest, sub millisecond possible\",\"Low, but higher than local block\",\"Higher, tens to hundreds of milliseconds\"],[\"Best fit\",\"Databases, boot volumes, file systems\",\"Shared home directories, content pipelines\",\"Backups, media, logs, static assets\"],[\"Partial update\",\"Yes, any block can be rewritten\",\"Yes, POSIX write at offset\",\"No, typically whole object replace\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Common misconception",
+          "content": "People sometimes say object storage is slower because it is worse engineering. It is not worse, it is optimized for a different problem: massive scale and durability for whole objects, not low latency partial updates."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. How a File System Sits on Top of Raw Blocks",
+          "text": "5. How a File System Sits on Top of Raw Blocks"
+        },
+        {
+          "type": "paragraph",
+          "content": "When you format a block volume with a file system such as ext4, XFS, or NTFS, you are installing a translation layer. The file system driver decides how to lay out directory entries, file metadata called inodes, and the actual file content across the pool of numbered blocks it was given."
+        },
+        {
+          "type": "paragraph",
+          "content": "From the perspective of the raw block device, nothing has changed. It is still just answering read block N and write block N requests. The intelligence about what a directory is, what a file name maps to, and which blocks belong to which file lives entirely in the file system driver running on the operating system."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285145409-801661984.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285145409-801661984.png",
+          "alt": "A file system layer sitting above a raw block device, mapping directories and files onto numbered blocks"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Databases can skip the file system",
+          "text": "5.1 Databases can skip the file system"
+        },
+        {
+          "type": "paragraph",
+          "content": "Some database engines, and certain specialized workloads, open a block device directly, bypassing a general purpose file system entirely. This is called raw device access. It lets the database engine control block layout precisely, avoiding double buffering between the file system cache and the database own cache. Most managed databases do not do this because it sacrifices portability and operational simplicity, but it remains an option for the most latency sensitive systems."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Databases more commonly use a file system",
+          "text": "5.2 Databases more commonly use a file system"
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice, most relational and NoSQL engines, including PostgreSQL, MySQL, and MongoDB, run on top of a conventional file system such as ext4 or XFS, which itself sits on a block volume. The database engine still manages its own internal page layout and write ahead log, but it lets the file system handle block allocation and free space tracking."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Real World Block Storage Systems",
+          "text": "6. Real World Block Storage Systems"
+        },
+        {
+          "type": "paragraph",
+          "content": "Block storage is not a theoretical abstraction. Every major cloud provider offers a managed block storage product, and enterprises have run dedicated block storage hardware for decades before the cloud existed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Amazon Elastic Block Store",
+          "text": "6.1 Amazon Elastic Block Store"
+        },
+        {
+          "type": "paragraph",
+          "content": "Amazon EBS provides network attached block volumes that can be attached to EC2 instances. Volumes come in several types, including general purpose SSD, provisioned IOPS SSD for the most demanding workloads, and cheaper throughput optimized HDD for large sequential access patterns. EBS volumes persist independently of the instance lifecycle and can be detached from one instance and reattached to another."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Google Persistent Disk",
+          "text": "6.2 Google Persistent Disk"
+        },
+        {
+          "type": "paragraph",
+          "content": "Google Persistent Disk offers a similar model for Compute Engine virtual machines, with standard, balanced, SSD, and extreme performance tiers. Persistent Disk also supports regional replication, where the same volume is synchronously replicated across two zones for higher availability."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.3 Azure Managed Disks",
+          "text": "6.3 Azure Managed Disks"
+        },
+        {
+          "type": "paragraph",
+          "content": "Azure Managed Disks provide the equivalent capability for Azure virtual machines, with standard HDD, standard SSD, premium SSD, and ultra disk tiers. Managed Disks integrate with Azure snapshot and disk encryption features directly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.4 SAN systems",
+          "text": "6.4 SAN systems"
+        },
+        {
+          "type": "paragraph",
+          "content": "Long before public clouds existed, enterprises built Storage Area Networks, commonly called SAN systems, using protocols like Fibre Channel or iSCSI to present block devices from a shared storage array to many physical servers over a dedicated network. A SAN is conceptually the on premises ancestor of services like EBS and Persistent Disk: physical disks, virtualized into block volumes, exposed over a network to any host that needs one."
+        },
+        {
+          "type": "note",
+          "title": "Terminology note",
+          "content": "iSCSI is a protocol for carrying block storage commands over ordinary IP networks. It let organizations build SAN like block storage without dedicated Fibre Channel hardware, and it is one of the direct ancestors of how cloud block storage is delivered today."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Performance Metrics: IOPS, Throughput, and Latency",
+          "text": "7. Performance Metrics: IOPS, Throughput, and Latency"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sizing a block volume correctly requires understanding three related but distinct metrics. Getting these wrong is one of the most common causes of a database that mysteriously feels slow despite having plenty of CPU and memory headroom."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 IOPS",
+          "text": "7.1 IOPS"
+        },
+        {
+          "type": "paragraph",
+          "content": "IOPS stands for input output operations per second. It measures how many individual read or write operations a volume can service every second, regardless of how much data each operation touches. Random access workloads, such as an index lookup in a database, are usually IOPS bound rather than throughput bound, because each operation touches a small, scattered block."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Throughput",
+          "text": "7.2 Throughput"
+        },
+        {
+          "type": "paragraph",
+          "content": "Throughput measures the total volume of data moved per second, usually expressed in megabytes per second. Sequential workloads, such as streaming a large log file or performing a full table scan, are usually throughput bound, since each operation reads a large contiguous run of blocks."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.3 Latency",
+          "text": "7.3 Latency"
+        },
+        {
+          "type": "paragraph",
+          "content": "Latency measures how long a single operation takes to complete, from request to response. Even a volume with high IOPS capacity can feel slow if individual operation latency is high, because many real workloads, including transactional databases, are latency sensitive: they cannot issue the next operation until the previous one completes."
+        },
+        {
+          "type": "blockQuote",
+          "content": "IOPS tells you how many operations you can do per second, throughput tells you how much data moves per second, and latency tells you how long you wait for any single one of them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.4 Working through a sizing example",
+          "text": "7.4 Working through a sizing example"
+        },
+        {
+          "type": "paragraph",
+          "content": "Suppose a database needs to support a peak of 2000 queries per second, and each query performs an average of 4 random block reads against a volume using a 16 kilobyte block size. The math below shows how to translate that into an IOPS and throughput requirement."
+        },
+        {
+          "type": "code",
+          "content": "Peak queries per second        = 2000\nAverage random reads per query = 4\nBlock size                     = 16 KB\n\nRequired read IOPS = 2000 x 4\n                    = 8000 IOPS\n\nRequired throughput = Required IOPS x Block size\n                     = 8000 x 16 KB\n                     = 128000 KB per second\n                     = about 125 MB per second\n\nIf the provisioned volume only guarantees 5000 IOPS, this workload\nwill be IOPS bound long before it becomes throughput bound, and\nqueries will queue up waiting for available IOPS capacity.",
+          "code": {
+            "language": "text",
+            "content": "Peak queries per second        = 2000\nAverage random reads per query = 4\nBlock size                     = 16 KB\n\nRequired read IOPS = 2000 x 4\n                    = 8000 IOPS\n\nRequired throughput = Required IOPS x Block size\n                     = 8000 x 16 KB\n                     = 128000 KB per second\n                     = about 125 MB per second\n\nIf the provisioned volume only guarantees 5000 IOPS, this workload\nwill be IOPS bound long before it becomes throughput bound, and\nqueries will queue up waiting for available IOPS capacity."
+          },
+          "codes": {
+            "text": "Peak queries per second        = 2000\nAverage random reads per query = 4\nBlock size                     = 16 KB\n\nRequired read IOPS = 2000 x 4\n                    = 8000 IOPS\n\nRequired throughput = Required IOPS x Block size\n                     = 8000 x 16 KB\n                     = 128000 KB per second\n                     = about 125 MB per second\n\nIf the provisioned volume only guarantees 5000 IOPS, this workload\nwill be IOPS bound long before it becomes throughput bound, and\nqueries will queue up waiting for available IOPS capacity."
+          }
+        },
+        {
+          "type": "note",
+          "title": "Sizing tip",
+          "content": "Always size a volume against both IOPS and throughput ceilings, then check which limit you hit first for your actual access pattern. Random heavy workloads usually hit the IOPS ceiling first, sequential heavy workloads usually hit the throughput ceiling first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Snapshotting and Volume Cloning",
+          "text": "8. Snapshotting and Volume Cloning"
+        },
+        {
+          "type": "paragraph",
+          "content": "A snapshot is a point in time, incremental copy of everything currently stored on a volume. Cloud block storage systems typically implement snapshots as copy on write: the first snapshot captures every used block, and every subsequent snapshot only needs to store the blocks that changed since the previous snapshot."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Why snapshots matter",
+          "text": "8.1 Why snapshots matter"
+        },
+        {
+          "type": "list",
+          "content": "[\"Backups: a scheduled snapshot lets you restore a volume to an earlier state after data corruption or accidental deletion.\",\"Disaster recovery: snapshots can often be copied to another region, so a full outage in one region does not destroy the only copy of the data.\",\"Cloning environments: a snapshot can be used to create a brand new volume with identical contents, useful for spinning up a staging database from production data.\",\"Scaling reads: some teams snapshot a primary database volume and attach the clone to a read replica instance to offload reporting queries.\"]",
+          "items": [
+            "Backups: a scheduled snapshot lets you restore a volume to an earlier state after data corruption or accidental deletion.",
+            "Disaster recovery: snapshots can often be copied to another region, so a full outage in one region does not destroy the only copy of the data.",
+            "Cloning environments: a snapshot can be used to create a brand new volume with identical contents, useful for spinning up a staging database from production data.",
+            "Scaling reads: some teams snapshot a primary database volume and attach the clone to a read replica instance to offload reporting queries."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030198-385537986.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030198-385537986.png",
+          "alt": "A live volume captured as a snapshot at a point in time, stored durably, and later used to create a new cloned volume"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Snapshots are not instant magic",
+          "text": "8.2 Snapshots are not instant magic"
+        },
+        {
+          "type": "paragraph",
+          "content": "Even though the snapshot operation itself usually completes quickly from the API caller point of view, the underlying data transfer to durable snapshot storage can continue in the background. A newly created volume from a snapshot may show slightly higher latency on its first access to each block, because that block might still need to be fetched lazily from snapshot storage before it can be served. Most providers document this as a warm up effect for restored volumes."
+        },
+        {
+          "type": "example-box",
+          "title": "Restoring after a bad deployment",
+          "text": "A team pushes a schema migration that silently corrupts a column across millions of rows. Instead of trying to hand repair the data, they provision a new volume from last night automated snapshot, attach it to a fresh instance, verify the data is intact, and promote it to primary. The whole recovery takes twenty minutes because the snapshot already existed, compared to the hours it would take to restore from a full logical backup."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Attaching and Detaching Volumes to Compute Instances",
+          "text": "9. Attaching and Detaching Volumes to Compute Instances"
+        },
+        {
+          "type": "paragraph",
+          "content": "One of the defining features of cloud block storage, compared to a disk physically screwed into a server, is that a volume can be detached from one compute instance and reattached to another, entirely through an API call, usually within seconds."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 Typical attach and detach flow",
+          "text": "9.1 Typical attach and detach flow"
+        },
+        {
+          "type": "list",
+          "content": "[\"Create a volume of a chosen size and performance tier in the same availability zone as the target compute instance.\",\"Attach the volume to the instance, which exposes it as a new raw device, such as slash dev slash xvdf.\",\"Format the device with a file system if it is new, or simply mount it if it already contains a file system from a previous attachment.\",\"Mount the device at a directory path where the application expects to find its data.\",\"When needed, unmount the file system cleanly, detach the volume through the API, and attach it to a different instance if required.\"]",
+          "items": [
+            "Create a volume of a chosen size and performance tier in the same availability zone as the target compute instance.",
+            "Attach the volume to the instance, which exposes it as a new raw device, such as slash dev slash xvdf.",
+            "Format the device with a file system if it is new, or simply mount it if it already contains a file system from a previous attachment.",
+            "Mount the device at a directory path where the application expects to find its data.",
+            "When needed, unmount the file system cleanly, detach the volume through the API, and attach it to a different instance if required."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030198-611451981.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030198-611451981.png",
+          "alt": "A block volume attached to compute instance A, then detached and reattached to compute instance B"
+        },
+        {
+          "type": "code",
+          "content": "# format a newly attached, empty block volume with a file system\nsudo mkfs -t ext4 /dev/xvdf\n\n# create a mount point and mount the volume\nsudo mkdir -p /data\nsudo mount /dev/xvdf /data\n\n# persist the mount across reboots by adding it to fstab\necho \"/dev/xvdf /data ext4 defaults,nofail 0 2\" | sudo tee -a /etc/fstab\n\n# to move the volume to another instance later, unmount first\nsudo umount /data",
+          "code": {
+            "language": "bash",
+            "content": "# format a newly attached, empty block volume with a file system\nsudo mkfs -t ext4 /dev/xvdf\n\n# create a mount point and mount the volume\nsudo mkdir -p /data\nsudo mount /dev/xvdf /data\n\n# persist the mount across reboots by adding it to fstab\necho \"/dev/xvdf /data ext4 defaults,nofail 0 2\" | sudo tee -a /etc/fstab\n\n# to move the volume to another instance later, unmount first\nsudo umount /data"
+          },
+          "codes": {
+            "bash": "# format a newly attached, empty block volume with a file system\nsudo mkfs -t ext4 /dev/xvdf\n\n# create a mount point and mount the volume\nsudo mkdir -p /data\nsudo mount /dev/xvdf /data\n\n# persist the mount across reboots by adding it to fstab\necho \"/dev/xvdf /data ext4 defaults,nofail 0 2\" | sudo tee -a /etc/fstab\n\n# to move the volume to another instance later, unmount first\nsudo umount /data"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Operational caution",
+          "content": "Detaching a volume while the file system is still mounted and actively being written to can corrupt data. Always stop the application, flush writes, and unmount cleanly before detaching."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 Availability zone constraint",
+          "text": "9.2 Availability zone constraint"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most cloud block volumes can only be attached to a compute instance in the same availability zone where the volume lives. Moving a volume to an instance in a different zone typically requires taking a snapshot and creating a new volume from that snapshot in the target zone, which is why cross zone failover plans for stateful services need to account for this extra step."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Worked Example: A Database Server on an Attached SSD Block Volume",
+          "text": "10. Worked Example: A Database Server on an Attached SSD Block Volume"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consider a mid sized application backed by a PostgreSQL database running on a single cloud virtual machine. The team provisions a dedicated provisioned IOPS SSD block volume, separate from the boot volume, and mounts it at slash var slash lib slash postgresql for the database data directory."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.1 Why a separate volume for data",
+          "text": "10.1 Why a separate volume for data"
+        },
+        {
+          "type": "paragraph",
+          "content": "Keeping the database data directory on its own volume, distinct from the operating system boot volume, means the two workloads do not compete for the same IOPS budget. It also means the data volume can be snapshotted, resized, or migrated to a new instance independently of the operating system image."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030199-814732943.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030199-814732943.png",
+          "alt": "Client requests hitting a database engine that stores data on an attached SSD backed block volume, with nightly snapshots"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.2 Sizing the volume",
+          "text": "10.2 Sizing the volume"
+        },
+        {
+          "type": "paragraph",
+          "content": "The team expects a peak of 3000 write transactions per second, each touching roughly 3 pages of 8 kilobytes in PostgreSQL default page size. That works out to roughly 9000 write IOPS at peak, so they provision a volume rated for at least 10000 IOPS to leave headroom, along with enough throughput capacity to cover checkpoint flushes and vacuum operations that generate large sequential writes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.3 Operational routine",
+          "text": "10.3 Operational routine"
+        },
+        {
+          "type": "list",
+          "content": "[\"A nightly automated snapshot captures the volume for disaster recovery.\",\"Weekly, the team spins up a temporary instance from the latest snapshot to validate that backups are actually restorable, not just present.\",\"Monitoring tracks IOPS utilization and queue depth on the volume, alerting the team before the volume becomes a bottleneck as traffic grows.\",\"When the database outgrows the current volume, the team resizes the volume in place, which most providers support without downtime, followed by a file system level resize.\"]",
+          "items": [
+            "A nightly automated snapshot captures the volume for disaster recovery.",
+            "Weekly, the team spins up a temporary instance from the latest snapshot to validate that backups are actually restorable, not just present.",
+            "Monitoring tracks IOPS utilization and queue depth on the volume, alerting the team before the volume becomes a bottleneck as traffic grows.",
+            "When the database outgrows the current volume, the team resizes the volume in place, which most providers support without downtime, followed by a file system level resize."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "example-box",
+          "title": "When the volume becomes the bottleneck",
+          "text": "Six months later, traffic triples. Query latency climbs even though CPU usage on the database instance stays under thirty percent. Monitoring shows the block volume is pinned at its provisioned IOPS ceiling. The fix is not a bigger instance, it is a bigger or faster volume, since the constraint lives at the storage layer, not the compute layer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Trade-offs Versus Object Storage and File Storage",
+          "text": "11. Trade-offs Versus Object Storage and File Storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "Choosing block storage is a choice about workload shape, not a universal best option. Every workload should be matched to the storage model that fits its access pattern."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Lowest latency and highest IOPS available for a single attached instance, ideal for databases and transactional systems.\",\"Usually attached to only one compute instance at a time, which limits it as a way to share data across many servers.\"],[\"Full control over block layout lets a database or file system optimize its own on disk structures.\",\"Does not scale automatically the way object storage does, a volume has a fixed provisioned size and performance tier that must be planned ahead of time.\"],[\"Snapshotting gives fast, space efficient backup and cloning without exporting and reimporting data.\",\"Costs more per gigabyte than object storage for the same amount of raw capacity, especially at the higher performance tiers.\"],[\"Behaves like a normal local disk, so almost any existing software can use it without modification.\",\"Tied to a specific availability zone, adding operational steps for cross zone or cross region recovery.\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.1 When object storage is the better fit",
+          "text": "11.1 When object storage is the better fit"
+        },
+        {
+          "type": "paragraph",
+          "content": "Large binary assets such as images, videos, and log archives, along with anything accessed by many clients simultaneously without needing partial in place edits, are usually a better fit for object storage. It scales to essentially unlimited capacity without any provisioning step and costs far less per gigabyte."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.2 When file storage is the better fit",
+          "text": "11.2 When file storage is the better fit"
+        },
+        {
+          "type": "paragraph",
+          "content": "Workloads that need a shared, POSIX style file system accessed concurrently by many compute instances, such as a rendering farm or a shared home directory for a team of engineers, are usually better served by a managed file storage product rather than trying to share a single block volume across instances."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.3 When block storage is the better fit",
+          "text": "11.3 When block storage is the better fit"
+        },
+        {
+          "type": "paragraph",
+          "content": "Anything that needs the lowest possible latency, the highest IOPS, and fine grained control over on disk layout, most notably relational and NoSQL database engines, boot volumes for virtual machines, and specialized workloads like in memory databases that persist to disk, belongs on block storage."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Interview Angle",
+          "text": "12. Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "System design interviews frequently probe whether a candidate actually understands the storage layer underneath a database, rather than treating the database as a magic box. Being able to explain block storage clearly is a strong signal."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "12.1 Questions you should be ready to answer",
+          "text": "12.1 Questions you should be ready to answer"
+        },
+        {
+          "type": "list",
+          "content": "[\"Why does a database engine usually run on block storage rather than object storage.\",\"How would you size a block volume for a given queries per second and access pattern target, in terms of IOPS and throughput.\",\"What happens to latency immediately after restoring a volume from a snapshot, and why.\",\"Why can a single block volume typically not be shared across many compute instances the way a file share or an object store can.\",\"How would you migrate a stateful service data volume from one availability zone to another with minimal downtime.\"]",
+          "items": [
+            "Why does a database engine usually run on block storage rather than object storage.",
+            "How would you size a block volume for a given queries per second and access pattern target, in terms of IOPS and throughput.",
+            "What happens to latency immediately after restoring a volume from a snapshot, and why.",
+            "Why can a single block volume typically not be shared across many compute instances the way a file share or an object store can.",
+            "How would you migrate a stateful service data volume from one availability zone to another with minimal downtime."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Interviewer signal",
+          "content": "A strong candidate does not just say attach an SSD. They talk through IOPS versus throughput requirements, single attach limitations, snapshot based recovery, and the trade off against object storage for workloads that do not actually need block level performance."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Summary",
+          "text": "13. Summary"
+        },
+        {
+          "type": "paragraph",
+          "content": "Block storage is the foundation almost every database and file system is quietly built on top of. It exposes raw, fixed size, numbered blocks, and leaves everything above that, files, directories, tables, and indexes, to software running on the compute instance."
+        },
+        {
+          "type": "list",
+          "content": "[\"Block storage addresses data by block number, file storage by path, and object storage by key.\",\"IOPS, throughput, and latency are the three metrics that determine whether a volume can keep up with a workload.\",\"Snapshots provide fast, incremental, point in time backup and cloning of a volume.\",\"Volumes typically attach to one compute instance at a time and live within a single availability zone.\",\"Real systems like Amazon EBS, Google Persistent Disk, Azure Managed Disks, and traditional SAN arrays all implement the same core block model.\"]",
+          "items": [
+            "Block storage addresses data by block number, file storage by path, and object storage by key.",
+            "IOPS, throughput, and latency are the three metrics that determine whether a volume can keep up with a workload.",
+            "Snapshots provide fast, incremental, point in time backup and cloning of a volume.",
+            "Volumes typically attach to one compute instance at a time and live within a single availability zone.",
+            "Real systems like Amazon EBS, Google Persistent Disk, Azure Managed Disks, and traditional SAN arrays all implement the same core block model."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "If a workload needs the lowest latency and highest random access performance a single machine can get from a disk, it almost always belongs on block storage."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": "Understanding block storage well makes every higher layer easier to reason about, since file systems, databases, and even some object storage implementations are themselves built as software running on top of ordinary block devices."
+        }
+      ]
+    }
+  ]
+}

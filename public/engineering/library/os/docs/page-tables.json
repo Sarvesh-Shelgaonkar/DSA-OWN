@@ -1,0 +1,350 @@
+{
+  "title": "Page Tables",
+  "slug": "page-tables",
+  "content": [
+    {
+      "id": "page-tables",
+      "title": "Page Tables",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "A page table is not just a lookup array with one integer per page. This chapter looks at what a real entry actually contains, why a single flat table becomes physically impractical at modern address space sizes, and the real tree and hash based structures operating systems use instead."
+        },
+        {
+          "type": "paragraph",
+          "content": "The Paging chapter already covered how a logical address gets split and translated into a physical one using a page table, and that mechanism will not be repeated here. This chapter goes one level deeper, into what a page table entry actually contains, the size problem a single flat table runs into, multilevel paging as the standard fix, and inverted page tables as an alternative approach, closing with why the TLB matters even more once multilevel paging is involved."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. From Basic Translation to Page Table Structure",
+          "text": "1. From Basic Translation to Page Table Structure"
+        },
+        {
+          "type": "paragraph",
+          "content": "A page table’s basic job was covered in full in the Paging chapter: it maps each of a process’s logical pages to whichever physical frame that page currently occupies, and every memory access gets translated through it. That mechanism, splitting an address into a page number and an offset and looking up a frame number, is not re derived here."
+        },
+        {
+          "type": "paragraph",
+          "content": "What deserves its own chapter is everything that basic description leaves out: what an entry actually contains beyond a bare frame number, why storing one entry per page runs into a real size problem on modern hardware, and the actual data structures, multilevel and inverted page tables, that real operating systems use to keep that structure practical. Those are the questions this chapter answers."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Inside a Page Table Entry, More Than a Frame Number",
+          "text": "2. Inside a Page Table Entry, More Than a Frame Number"
+        },
+        {
+          "type": "paragraph",
+          "content": "Treating a page table entry as nothing but a raw frame number is a common oversimplification. In real hardware, every entry is a small packed record that carries several control bits alongside the frame number, and each of those bits does real work during translation, page replacement, and protection enforcement."
+        },
+        {
+          "type": "paragraph",
+          "content": "The frame number remains the core of the entry, exactly as introduced in Paging: it says which physical frame this page currently lives in. Everything else in the entry exists to answer questions the frame number alone cannot: is this page actually in memory right now, has it been modified since it was loaded, has it been touched recently, and what is this specific process allowed to do with it."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Field\",\"Stores\",\"Why It Matters\"],\"rows\":[[\"Frame Number\",\"Which physical frame this page currently occupies\",\"The core mapping, what makes translation possible at all\"],[\"Valid or Invalid Bit\",\"Whether this page is currently loaded into RAM\",\"Lets hardware detect a page fault instead of trusting a stale frame number, the basis of demand paging\"],[\"Dirty or Modified Bit\",\"Whether this page has been written to since it was loaded\",\"Decides whether a page must be written back to disk before its frame can be reused\"],[\"Reference Bit\",\"Whether this page has been accessed recently\",\"Used by several page replacement algorithms to estimate which pages are safe to evict\"],[\"Protection Bits\",\"What this process may do with this page: read, write, or execute\",\"Enforces memory protection during the same lookup that finds the frame number\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "The valid or invalid bit is what makes demand paging possible at all. When it is clear, the frame number field is meaningless, the page simply is not in RAM, and any attempt to access it triggers a page fault so the operating system can fetch it from disk. When it is set, the frame number can be trusted and translation proceeds normally."
+        },
+        {
+          "type": "paragraph",
+          "content": "The dirty bit, often called the modified bit, tracks whether a page has been written to since it was loaded into its current frame. This matters enormously when a frame needs to be reclaimed: a clean page can simply be discarded, since an identical copy already exists on disk, while a dirty page must be written back first or the changes are lost. The reference bit works alongside this, recording whether a page has been accessed recently, and several page replacement algorithms use it to guess which pages are unlikely to be needed again soon. Protection bits round out the entry, marking whether this process may read, write, or execute code from that specific page, letting the same hardware that translates addresses also enforce memory safety on every access."
+        },
+        {
+          "type": "note",
+          "title": "Bits, not extra tables",
+          "content": "These control bits live directly inside the page table entry itself, packed into the same word as the frame number, not stored anywhere separate. That is what lets the memory management unit check validity, protection, and dirty status in the same single lookup that finds the frame number, without any extra memory access."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066975-862316231.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066975-862316231.png",
+          "alt": "Inside a Page Table Entry, More Than a Frame Number",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066975-862316231.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Real Size Problem With a Single Flat Page Table",
+          "text": "3. The Real Size Problem With a Single Flat Page Table"
+        },
+        {
+          "type": "paragraph",
+          "content": "So far this looks simple: one page table, one entry per page, done. The problem is scale. A single flat, linear page table needs one entry for every page in a process’s entire logical address space, whether that page is ever actually used or not, and modern address spaces are enormous."
+        },
+        {
+          "type": "paragraph",
+          "content": "Take a modern 64 bit CPU. Real hardware does not use the full 64 bit range, but a typical usable virtual address space is 48 bits, which is still 2 to the 48th power bytes, about 256 terabytes. With a typical 4 KB page, that is 2 to the 48th power divided by 2 to the 12th power, which comes out to 2 to the 36th power pages, roughly 68.7 billion individual pages that a single flat table would need one entry for."
+        },
+        {
+          "type": "paragraph",
+          "content": "Each entry needs to be a reasonable size too, commonly 8 bytes on a 64 bit system to hold the frame number plus the control bits from the previous section. Multiply 68.7 billion entries by 8 bytes each and the flat table balloons to 2 to the 39th power bytes, about 512 GB, for a single process. Older 32 bit systems hit the same problem at a smaller scale: a 32 bit address space needs only about 1 million entries, and even at just 4 bytes per entry that is already 4 MB per process, which is exactly why this issue showed up long before 64 bit hardware made it dramatically worse."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Quantity\",\"Value\"],\"rows\":[[\"Usable virtual address space, modern 64 bit\",\"2 to the 48th power bytes, about 256 TB\"],[\"Page size\",\"4096 bytes\"],[\"Total pages in that address space\",\"2 to the 36th power, about 68719476736 pages\"],[\"Typical entry size\",\"8 bytes\"],[\"Total flat table size, one process\",\"2 to the 39th power bytes, about 512 GB\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "The truly wasteful part is not the raw size, it is how little of that space ever gets used. A typical process touches only a small handful of regions of its address space: a bit of code, some global data, a heap that grows slowly, and a stack near the top of the range. Everything in between is untouched, yet a flat table reserves a full entry for every single page in that untouched territory too, whether it will ever be used or not."
+        },
+        {
+          "type": "note",
+          "title": "Wasted by design, not by accident",
+          "content": "A flat table cannot skip unused regions, because it depends on being able to index directly into it using the raw page number. Every possible page number needs a slot, even if that slot sits invalid for the entire life of the process. Fixing this means changing the structure itself, not just shrinking the entries."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066977-800279566.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066977-800279566.png",
+          "alt": "The Real Size Problem With a Single Flat Page Table",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066977-800279566.png"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066978-660623279.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066978-660623279.png",
+          "alt": "The Real Size Problem With a Single Flat Page Table",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066978-660623279.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Multilevel Paging, The Standard Fix",
+          "text": "4. Multilevel Paging, The Standard Fix"
+        },
+        {
+          "type": "paragraph",
+          "content": "The practical fix operating systems settled on decades ago is to stop using one giant flat table and instead build a tree of smaller tables. This is called multilevel or hierarchical paging, and the idea is straightforward: an outer, top level table does not store frame numbers directly, it stores pointers to second level tables, and each second level table only needs to exist if that region of the address space is actually in use."
+        },
+        {
+          "type": "paragraph",
+          "content": "This single change is what saves the space. A region of the address space that a process never touches simply has no second level table allocated for it at all, and the corresponding outer table entry is just marked not present. Instead of reserving an entry for every possible page across the entire address space, the structure only spends real memory on the parts that are actually mapped."
+        },
+        {
+          "type": "paragraph",
+          "content": "For a typical process that only uses a tiny fraction of its theoretical address space, code, a modest heap, a stack, and little else, this means only the outer table plus a handful of second level tables need to exist, often adding up to well under a hundred kilobytes of real table space. Compare that against the hundreds of gigabytes a single flat table would demand for the same process, and the win is enormous."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A flat table pays for the entire address space up front. A multilevel table only pays for the parts a process actually uses."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066978-22257611.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066978-22257611.png",
+          "alt": "Multilevel Paging, The Standard Fix",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066978-22257611.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. A Worked Example, Two Level Translation",
+          "text": "5. A Worked Example, Two Level Translation"
+        },
+        {
+          "type": "paragraph",
+          "content": "Numbers make the tree structure concrete. This example uses the classic two level layout that 32 bit x86 hardware used for many years, since it splits cleanly and is the easiest version of the idea to trace by hand. Modern 64 bit hardware extends the exact same tree idea to four or five levels, but the mechanism at each level is identical to what follows."
+        },
+        {
+          "type": "paragraph",
+          "content": "Assume a page size of 4096 bytes, so the offset needs 12 bits. The remaining bits of a 32 bit logical address are split evenly between the two levels: 10 bits for the outer index, which selects an entry in the outer table, and 10 bits for the inner index, which selects an entry in whichever second level table that outer entry points to."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-908063563.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-908063563.png",
+          "alt": "A Worked Example, Two Level Translation",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-908063563.png"
+        },
+        {
+          "type": "code",
+          "content": "// splitting a 32 bit logical address into outer index, inner index, and offset\n\npage_size = 4096;                 // 4 KB pages, offset needs 12 bits\nlogical_address = 8410288;\n\noffset      = logical_address % page_size;    // 8410288 modulo 4096 is 1200\npage_number = logical_address / page_size;    // integer division gives 2053\n\nouter_index = page_number / 1024;             // top 10 bits of the page number, 2\ninner_index = page_number % 1024;             // bottom 10 bits of the page number, 5",
+          "code": "// splitting a 32 bit logical address into outer index, inner index, and offset\n\npage_size = 4096;                 // 4 KB pages, offset needs 12 bits\nlogical_address = 8410288;\n\noffset      = logical_address % page_size;    // 8410288 modulo 4096 is 1200\npage_number = logical_address / page_size;    // integer division gives 2053\n\nouter_index = page_number / 1024;             // top 10 bits of the page number, 2\ninner_index = page_number % 1024;             // bottom 10 bits of the page number, 5",
+          "codes": {
+            "c": "// splitting a 32 bit logical address into outer index, inner index, and offset\n\npage_size = 4096;                 // 4 KB pages, offset needs 12 bits\nlogical_address = 8410288;\n\noffset      = logical_address % page_size;    // 8410288 modulo 4096 is 1200\npage_number = logical_address / page_size;    // integer division gives 2053\n\nouter_index = page_number / 1024;             // top 10 bits of the page number, 2\ninner_index = page_number % 1024;             // bottom 10 bits of the page number, 5"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Dividing 8410288 by 4096 gives a page number of 2053, with a remainder of 1200 left over as the offset. That page number, 2053, still needs to be split one more time: dividing it by 1024 gives an outer index of 2, with a remainder of 5 as the inner index. Those three numbers, outer index 2, inner index 5, and offset 1200, are all the hardware needs to complete the translation."
+        },
+        {
+          "type": "paragraph",
+          "content": "The outer index is used first, indexing into the outer table to find entry 2. That entry does not hold a frame number, it holds the physical location of a second level table, call it Inner Table B. The inner index is then used to index into Inner Table B itself, and entry 5 of that table is where the actual frame number finally appears, frame 77 in this example."
+        },
+        {
+          "type": "code",
+          "content": "// walking the outer table, then the inner table it points to\n\nouter_table[2] = address_of_inner_table_B;\ninner_table_B[5] = 77;                        // frame number\n\nframe_number = inner_table_B[5];              // 77\n\n// combining the frame number with the offset, same final step as single level paging\n\nphysical_address = (frame_number * page_size) + offset;\n// physical_address = (77 * 4096) + 1200\n// physical_address = 315392 + 1200\n// physical_address = 316592",
+          "code": "// walking the outer table, then the inner table it points to\n\nouter_table[2] = address_of_inner_table_B;\ninner_table_B[5] = 77;                        // frame number\n\nframe_number = inner_table_B[5];              // 77\n\n// combining the frame number with the offset, same final step as single level paging\n\nphysical_address = (frame_number * page_size) + offset;\n// physical_address = (77 * 4096) + 1200\n// physical_address = 315392 + 1200\n// physical_address = 316592",
+          "codes": {
+            "c": "// walking the outer table, then the inner table it points to\n\nouter_table[2] = address_of_inner_table_B;\ninner_table_B[5] = 77;                        // frame number\n\nframe_number = inner_table_B[5];              // 77\n\n// combining the frame number with the offset, same final step as single level paging\n\nphysical_address = (frame_number * page_size) + offset;\n// physical_address = (77 * 4096) + 1200\n// physical_address = 315392 + 1200\n// physical_address = 316592"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The final step is identical to single level translation: multiply the frame number by the page size and add back the offset. 77 times 4096 is 315392, and adding the offset of 1200 gives a final physical address of 316592. Two lookups happened instead of one, but the combining step at the end never changes."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Quantity\",\"Value\"],\"rows\":[[\"Logical address\",\"8410288\"],[\"Page size\",\"4096 bytes\"],[\"Page number\",\"2053\"],[\"Outer index\",\"2\"],[\"Inner index\",\"5\"],[\"Offset\",\"1200\"],[\"Frame number, from Inner Table B\",\"77\"],[\"Physical address\",\"316592\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-747026363.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-747026363.png",
+          "alt": "A Worked Example, Two Level Translation",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-747026363.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Inverted Page Tables, Flipping the Index",
+          "text": "6. Inverted Page Tables, Flipping the Index"
+        },
+        {
+          "type": "paragraph",
+          "content": "Multilevel paging shrinks the table by skipping unused regions, but it still keeps one table structure per process, sized around that process’s own address space. Inverted page tables take a completely different approach: instead of one table per process indexed by page number, there is a single table shared by the entire system, indexed by physical frame number instead."
+        },
+        {
+          "type": "paragraph",
+          "content": "Each entry in this shared table corresponds to one physical frame of RAM, and it records which process currently owns that frame and which of that process’s pages is stored there. Since the table has exactly one entry per physical frame, its total size depends only on how much physical RAM the machine actually has, not on how many processes are running or how large their individual address spaces happen to be."
+        },
+        {
+          "type": "paragraph",
+          "content": "Take a machine with 16 GB of RAM and 4 KB frames. That works out to exactly 4194304 frames, so the inverted table needs exactly 4194304 entries, no more and no fewer, regardless of whether one process or a hundred processes are running. At roughly 8 bytes per entry, that is about 32 MB total for the entire system, compared with the hundreds of gigabytes a single flat table would have needed for just one process under the naive scheme from earlier."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Total table size shrinks from being proportional to the number of processes and their address spaces, to being proportional only to the amount of physical RAM installed."
+        },
+        {
+          "type": "paragraph",
+          "content": "The savings come at a real cost. A normal page table can be indexed directly: given a page number, jump straight to that entry. An inverted table cannot do this, because it is indexed by frame number, not page number, and a lookup starts with a page number, not a frame number. Finding the right entry means searching the table for the one that matches this process and this page, which is far too slow to do with a plain scan on every memory access."
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice, this search is made fast with a hash table built on top of the inverted table: the process identifier and page number are hashed together to jump close to the right entry, then a short chain is walked to confirm the match. It works well, but it is a genuinely harder lookup path than directly indexing an array, which is the real tradeoff inverted page tables make in exchange for their much smaller and more predictable size."
+        },
+        {
+          "type": "note",
+          "title": "The real tradeoff",
+          "content": "Inverted page tables trade lookup simplicity for size predictability. A regular table is indexed directly and is fast to search but grows with address space size. An inverted table is capped by physical RAM size but needs a hash search on every lookup instead of a direct index."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-52860302.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-52860302.png",
+          "alt": "Inverted Page Tables, Flipping the Index",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-52860302.png"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-734862096.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-734862096.png",
+          "alt": "Inverted Page Tables, Flipping the Index",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066979-734862096.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Single Level, Multilevel, and Inverted, Side by Side",
+          "text": "7. Single Level, Multilevel, and Inverted, Side by Side"
+        },
+        {
+          "type": "paragraph",
+          "content": "With all three approaches covered, it is worth lining them up directly against the same three questions: how much memory overhead does the table itself cost, how fast is a single lookup, and where does each approach actually get used in practice."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Memory Overhead\",\"Lookup Speed\",\"Best Use Case\"],\"rows\":[[\"Single Level Flat Table\",\"Grows directly with the size of the address space, hundreds of gigabytes at modern 64 bit sizes\",\"Fastest possible, one direct array index\",\"Small address spaces only, mostly of historical interest today\"],[\"Multilevel or Hierarchical\",\"Grows only with how much of the address space is actually used, typically kilobytes to low megabytes per process\",\"Slightly slower, one lookup per level before the frame number appears\",\"The standard choice on essentially all modern general purpose operating systems\"],[\"Inverted\",\"Fixed by the amount of physical RAM installed, independent of process count or address space size\",\"Slower still, needs a hash search rather than a direct index\",\"Systems where physical RAM is the tight constraint and table size must stay predictable\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Multilevel paging wins as the default because it keeps the fast, direct indexing property of a flat table at each level, while only paying for the parts of the address space actually in use. Inverted tables are the more specialized choice, valuable exactly when keeping total table size proportional to RAM rather than to address space matters more than lookup speed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Why the TLB Matters Even More With Multilevel Page Tables",
+          "text": "8. Why the TLB Matters Even More With Multilevel Page Tables"
+        },
+        {
+          "type": "paragraph",
+          "content": "The dedicated TLB chapter covers the full mechanics of translation caching, and this section only needs to connect one specific fact to what was just covered here. A single level page table already costs one extra memory access on a TLB miss: one read to fetch the page table entry from RAM, then a second read to fetch the actual data. Multilevel paging makes a miss more expensive, not less."
+        },
+        {
+          "type": "paragraph",
+          "content": "With a two level page table, a TLB miss now requires reading the outer table entry from RAM, then reading the inner table entry from RAM, and only then reading the actual data, three real memory accesses total instead of two. A four or five level scheme, which is what real 64 bit hardware actually uses, pushes that even higher, one extra memory access for every additional level in the tree."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A TLB hit still costs exactly one memory access no matter how many levels the page table tree has. A TLB miss costs one access per level, plus one for the data. The deeper the tree, the more a miss hurts, which is exactly why keeping the TLB hit ratio high matters even more once multilevel paging is in the picture."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066980-938039691.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066980-938039691.png",
+          "alt": "Why the TLB Matters Even More With Multilevel Page Tables",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409066980-938039691.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the direct link between the structural choice covered in this chapter and the performance topic covered in the TLB chapter: multilevel paging solves the size problem, but it raises the stakes on caching those translations well, since the penalty for missing the cache grows with every level added to the tree."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Common Mistakes and Interview Angle",
+          "text": "9. Common Mistakes and Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "A handful of mistakes come up constantly once this topic reaches practice, and they are worth naming directly."
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming a page table entry is nothing but a raw frame number. Real entries pack in a valid bit, a dirty bit, a reference bit, and protection bits alongside the frame number, and several of these directly control other parts of memory management like demand paging and page replacement.\",\"Underestimating how large a single flat page table would actually be at real address space sizes. A 48 bit virtual address space with 4 KB pages and 8 byte entries needs about 512 GB per process if implemented as one flat table, not some small manageable number.\",\"Thinking multilevel paging saves time on every lookup. It does not, it saves space. A multilevel lookup on a TLB miss is actually slower than a flat table lookup would be, since it requires one memory access per level. The win is purely in how much smaller the table can be for a sparse address space.\",\"Assuming an inverted page table can be indexed directly like a normal page table. It cannot, since it is indexed by frame number while a lookup starts from a page number, which is exactly why it needs a hash search instead of a direct array index.\"]",
+          "items": [
+            "Assuming a page table entry is nothing but a raw frame number. Real entries pack in a valid bit, a dirty bit, a reference bit, and protection bits alongside the frame number, and several of these directly control other parts of memory management like demand paging and page replacement.",
+            "Underestimating how large a single flat page table would actually be at real address space sizes. A 48 bit virtual address space with 4 KB pages and 8 byte entries needs about 512 GB per process if implemented as one flat table, not some small manageable number.",
+            "Thinking multilevel paging saves time on every lookup. It does not, it saves space. A multilevel lookup on a TLB miss is actually slower than a flat table lookup would be, since it requires one memory access per level. The win is purely in how much smaller the table can be for a sparse address space.",
+            "Assuming an inverted page table can be indexed directly like a normal page table. It cannot, since it is indexed by frame number while a lookup starts from a page number, which is exactly why it needs a hash search instead of a direct array index."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Interview angle",
+          "content": "Be ready to explain, in your own words, why a single flat page table becomes impractical at modern address space sizes, and be ready to sketch a basic two level translation by hand: split a logical address into an outer index, an inner index, and an offset, walk both levels, and combine the resulting frame number with the offset. This is one of the more common follow up questions once basic paging has already been covered."
+        },
+        {
+          "type": "paragraph",
+          "content": "Page tables started this module as a simple mapping from pages to frames. Looked at closely, they turn out to be one of the clearer examples in operating systems of a data structure problem solved with a genuinely different structure, a tree instead of a flat array, or an index flipped entirely, rather than just a bigger version of the same array."
+        }
+      ]
+    }
+  ]
+}

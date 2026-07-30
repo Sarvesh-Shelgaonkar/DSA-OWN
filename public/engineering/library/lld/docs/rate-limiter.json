@@ -1,0 +1,528 @@
+{
+  "slug": "rate-limiter",
+  "title": "Rate Limiter (Token Bucket / Leaky Bucket)",
+  "content": [
+    {
+      "id": "rate-limiter",
+      "title": "Rate Limiter (Token Bucket / Leaky Bucket)",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Almost every service that talks to the outside world eventually needs a way to say slow down. A public API, a login endpoint, a payment gateway, all of them are one aggressive script away from being overwhelmed by a single caller, whether that caller is malicious or just buggy."
+        },
+        {
+          "type": "paragraph",
+          "content": "Rate limiting is the discipline of capping how often something is allowed to happen in a given window of time, and it shows up everywhere in backend design, from protecting your own API from abuse to protecting a fragile downstream service that cannot handle a sudden flood of calls."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson walks through the two classic algorithms behind almost every rate limiter you will ever build or interview about, the token bucket and the leaky bucket, and then digs into the thread safety questions that make rate limiters a genuinely interesting concurrency problem, not just a counter with a timer."
+        },
+        {
+          "type": "paragraph",
+          "content": "By the end you should be able to implement either algorithm from scratch, explain why a naive counter is not enough, and reason clearly about what happens when many threads try to consume the same tokens at the same instant."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Rate limiting is the rule that decides how many times an action may happen in a window of time, and what happens to the requests that do not fit."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Why Rate Limiting Matters",
+          "text": "1. Why Rate Limiting Matters"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every API sits behind finite resources, CPU, database connections, memory, and third party quotas. Without a limit, a single client, whether a runaway retry loop or a deliberate attack, can consume all of it and starve every other user."
+        },
+        {
+          "type": "heading3",
+          "content": "Protecting your own API from abuse",
+          "text": "Protecting your own API from abuse"
+        },
+        {
+          "type": "paragraph",
+          "content": "A public facing endpoint, a login form, a search box, can be hammered thousands of times a second by a script. Rate limiting each client to a sane number of requests per minute turns an unbounded threat into a bounded, tolerable cost."
+        },
+        {
+          "type": "heading3",
+          "content": "Protecting downstream services from overload",
+          "text": "Protecting downstream services from overload"
+        },
+        {
+          "type": "paragraph",
+          "content": "Your service is often a client of something else, a payment processor, an email provider, a partner API with its own quota. If you do not throttle your own outgoing calls, one burst of internal traffic can blow through a third party limit and get your entire integration suspended."
+        },
+        {
+          "type": "heading3",
+          "content": "Fairness between tenants",
+          "text": "Fairness between tenants"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a multi tenant system, one noisy customer should never be able to degrade service for everyone else. Per client rate limits keep one bad actor, or one bad deploy, from becoming everyone's outage."
+        },
+        {
+          "type": "list",
+          "content": "[\"Prevents a single caller from exhausting shared CPU, memory, or connection pools\",\"Keeps third party API quotas from being blown through by internal bursts\",\"Gives every tenant a fair, predictable share of capacity\",\"Turns sudden traffic spikes into smooth, absorbable load\",\"Provides a clear, cheap first line of defense against scraping and credential stuffing\"]",
+          "items": [
+            "Prevents a single caller from exhausting shared CPU, memory, or connection pools",
+            "Keeps third party API quotas from being blown through by internal bursts",
+            "Gives every tenant a fair, predictable share of capacity",
+            "Turns sudden traffic spikes into smooth, absorbable load",
+            "Provides a clear, cheap first line of defense against scraping and credential stuffing"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Rate limiting is not the same as autoscaling",
+          "content": "Autoscaling adds capacity to meet demand. Rate limiting caps demand to fit the capacity you already have. Most real systems need both, autoscaling for organic growth and rate limiting for abuse and bursts that no amount of scaling can absorb fast enough."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Token Bucket Algorithm",
+          "text": "2. The Token Bucket Algorithm"
+        },
+        {
+          "type": "paragraph",
+          "content": "The token bucket is the most widely used rate limiting algorithm, and for good reason, it is simple, it allows short bursts, and it maps directly onto a single number, tokens available right now."
+        },
+        {
+          "type": "heading3",
+          "content": "The mental model",
+          "text": "The mental model"
+        },
+        {
+          "type": "paragraph",
+          "content": "Picture a bucket that holds tokens, up to some maximum capacity. Tokens are added to the bucket at a fixed rate, say ten tokens per second. Every incoming request must take one token out of the bucket before it is allowed to proceed."
+        },
+        {
+          "type": "paragraph",
+          "content": "If the bucket has a token, the request is allowed and the token is removed. If the bucket is empty, the request is rejected, or made to wait until a token becomes available."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783495479941-807270030.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783495479941-807270030.png",
+          "alt": "Token bucket refilling at a fixed rate and being drained by requests, next to a leaky bucket draining a queue at a constant rate"
+        },
+        {
+          "type": "heading3",
+          "content": "Why it allows bursts",
+          "text": "Why it allows bursts"
+        },
+        {
+          "type": "paragraph",
+          "content": "If a client has been idle, tokens accumulate up to the bucket capacity. That means the client can suddenly send a burst of requests, up to the capacity, all at once, and still be allowed through, as long as it then slows back down to the refill rate."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the key behavioral difference from a plain fixed window counter, the token bucket naturally tolerates short bursts while still enforcing a long run average rate."
+        },
+        {
+          "type": "heading3",
+          "content": "The two governing parameters",
+          "text": "The two governing parameters"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Parameter\",\"Meaning\"],\"rows\":[[\"Capacity\",\"The maximum number of tokens the bucket can hold, and therefore the largest burst a client can send instantly\"],[\"Refill rate\",\"How many tokens are added per unit of time, and therefore the long run sustained rate a client is allowed\"]]}"
+        },
+        {
+          "type": "heading3",
+          "content": "Computing refill without a background timer",
+          "text": "Computing refill without a background timer"
+        },
+        {
+          "type": "paragraph",
+          "content": "A naive implementation might use a background thread that wakes up every tick and adds tokens. A cleaner approach computes the refill lazily, on demand, every time a request checks the bucket, by looking at how much time has elapsed since the last check."
+        },
+        {
+          "type": "list",
+          "content": "[\"Record the last refill timestamp and the current token count\",\"On each request, compute elapsed time since the last refill\",\"Add elapsed time times refill rate tokens, capped at the bucket capacity\",\"Update the last refill timestamp to now\",\"Attempt to consume one token for the incoming request\"]",
+          "items": [
+            "Record the last refill timestamp and the current token count",
+            "On each request, compute elapsed time since the last refill",
+            "Add elapsed time times refill rate tokens, capped at the bucket capacity",
+            "Update the last refill timestamp to now",
+            "Attempt to consume one token for the incoming request"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "example-box",
+          "title": "A quick numeric walkthrough",
+          "text": "Capacity 10, refill rate 2 tokens per second, bucket starts full at 10. A burst of 10 requests arrives at time zero, all 10 are allowed and the bucket is now empty. A single request arrives 400 milliseconds later, only 0.8 tokens have refilled, so it is rejected. At the one second mark, 2 tokens have refilled, so 2 more requests are allowed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Implementing a Thread Safe Token Bucket",
+          "text": "3. Implementing a Thread Safe Token Bucket"
+        },
+        {
+          "type": "paragraph",
+          "content": "The logic above is simple in a single threaded script, but production rate limiters sit behind many concurrent request handling threads, all reading and updating the same bucket state at once."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499794798-232020062.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499794798-232020062.png",
+          "alt": "Thread safe token bucket critical section, acquire lock, refill, check and consume a token, then release the lock"
+        },
+        {
+          "type": "heading3",
+          "content": "What needs to be atomic",
+          "text": "What needs to be atomic"
+        },
+        {
+          "type": "paragraph",
+          "content": "Refilling the bucket and consuming a token from it must happen as a single atomic step. If two threads both read the current token count, both see one token available, and both decide to proceed, the bucket has effectively handed out two tokens for one."
+        },
+        {
+          "type": "code",
+          "content": "class TokenBucket {\n  constructor(capacity, refillRatePerSecond) {\n    this.capacity = capacity;\n    this.refillRate = refillRatePerSecond;\n    this.tokens = capacity;\n    this.lastRefill = Date.now();\n    this.lock = Promise.resolve();\n  }\n\n  async tryConsume() {\n    // Serialize access with a simple promise chained lock, so only one\n    // caller at a time can read and mutate tokens and lastRefill.\n    const run = this.lock.then(() => {\n      const now = Date.now();\n      const elapsedSeconds = (now - this.lastRefill) / 1000;\n      const refreshed = Math.min(\n        this.capacity,\n        this.tokens + elapsedSeconds * this.refillRate\n      );\n      this.lastRefill = now;\n\n      if (refreshed >= 1) {\n        this.tokens = refreshed - 1;\n        return true;\n      }\n      this.tokens = refreshed;\n      return false;\n    });\n    this.lock = run.catch(() => {});\n    return run;\n  }\n}\n\nmodule.exports = { TokenBucket };",
+          "code": {
+            "language": "javascript",
+            "content": "class TokenBucket {\n  constructor(capacity, refillRatePerSecond) {\n    this.capacity = capacity;\n    this.refillRate = refillRatePerSecond;\n    this.tokens = capacity;\n    this.lastRefill = Date.now();\n    this.lock = Promise.resolve();\n  }\n\n  async tryConsume() {\n    // Serialize access with a simple promise chained lock, so only one\n    // caller at a time can read and mutate tokens and lastRefill.\n    const run = this.lock.then(() => {\n      const now = Date.now();\n      const elapsedSeconds = (now - this.lastRefill) / 1000;\n      const refreshed = Math.min(\n        this.capacity,\n        this.tokens + elapsedSeconds * this.refillRate\n      );\n      this.lastRefill = now;\n\n      if (refreshed >= 1) {\n        this.tokens = refreshed - 1;\n        return true;\n      }\n      this.tokens = refreshed;\n      return false;\n    });\n    this.lock = run.catch(() => {});\n    return run;\n  }\n}\n\nmodule.exports = { TokenBucket };"
+          },
+          "codes": {
+            "java": "import java.util.concurrent.locks.ReentrantLock;\n\npublic class TokenBucket {\n    private final double capacity;\n    private final double refillRatePerSecond;\n    private double tokens;\n    private long lastRefillNanos;\n    private final ReentrantLock lock = new ReentrantLock();\n\n    public TokenBucket(double capacity, double refillRatePerSecond) {\n        this.capacity = capacity;\n        this.refillRatePerSecond = refillRatePerSecond;\n        this.tokens = capacity;\n        this.lastRefillNanos = System.nanoTime();\n    }\n\n    public boolean tryConsume() {\n        lock.lock();\n        try {\n            long now = System.nanoTime();\n            double elapsedSeconds = (now - lastRefillNanos) / 1_000_000_000.0;\n            double refreshed = Math.min(capacity, tokens + elapsedSeconds * refillRatePerSecond);\n            lastRefillNanos = now;\n\n            if (refreshed >= 1) {\n                tokens = refreshed - 1;\n                return true;\n            }\n            tokens = refreshed;\n            return false;\n        } finally {\n            lock.unlock();\n        }\n    }\n}",
+            "python": "import threading\nimport time\n\nclass TokenBucket:\n    def __init__(self, capacity, refill_rate_per_second):\n        self.capacity = capacity\n        self.refill_rate = refill_rate_per_second\n        self.tokens = float(capacity)\n        self.last_refill = time.monotonic()\n        self.lock = threading.Lock()\n\n    def try_consume(self):\n        # The lock guards the entire read, refill, and consume sequence,\n        # so no two threads can ever observe the same stale token count.\n        with self.lock:\n            now = time.monotonic()\n            elapsed = now - self.last_refill\n            refreshed = min(self.capacity, self.tokens + elapsed * self.refill_rate)\n            self.last_refill = now\n\n            if refreshed >= 1:\n                self.tokens = refreshed - 1\n                return True\n\n            self.tokens = refreshed\n            return False",
+            "cpp": "#include <iostream>\n#include <mutex>\n#include <chrono>\n#include <algorithm>\nusing namespace std;\nusing namespace std::chrono;\n\nclass TokenBucket {\npublic:\n    TokenBucket(double capacity, double refillRatePerSecond)\n        : capacity(capacity),\n          refillRatePerSecond(refillRatePerSecond),\n          tokens(capacity),\n          lastRefill(steady_clock::now()) {}\n\n    bool tryConsume() {\n        lock_guard<mutex> guard(mtx);\n        auto now = steady_clock::now();\n        double elapsedSeconds = duration_cast<duration<double>>(now - lastRefill).count();\n        double refreshed = min(capacity, tokens + elapsedSeconds * refillRatePerSecond);\n        lastRefill = now;\n\n        if (refreshed >= 1) {\n            tokens = refreshed - 1;\n            return true;\n        }\n        tokens = refreshed;\n        return false;\n    }\n\nprivate:\n    double capacity;\n    double refillRatePerSecond;\n    double tokens;\n    steady_clock::time_point lastRefill;\n    mutex mtx;\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice all three versions share the same shape, compute the refill, cap it at capacity, and only then decide whether to spend a token, all inside a single critical section guarded by a lock."
+        },
+        {
+          "type": "note",
+          "title": "Locks per client, not one global lock",
+          "content": "A single lock protecting every client's bucket would serialize all traffic through one point of contention. Real systems keep one bucket, and one lock, per client key, so unrelated clients never block each other."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The Leaky Bucket Algorithm",
+          "text": "4. The Leaky Bucket Algorithm"
+        },
+        {
+          "type": "paragraph",
+          "content": "The leaky bucket takes a different mental model, instead of a pool of tokens that fills up, imagine a bucket with a small hole in the bottom that leaks at a constant rate."
+        },
+        {
+          "type": "heading3",
+          "content": "The mental model",
+          "text": "The mental model"
+        },
+        {
+          "type": "paragraph",
+          "content": "Incoming requests are poured into the bucket, really a queue. The bucket drains, processing one request, at a fixed constant rate, regardless of how fast requests are arriving."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499796639-36576768.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499796639-36576768.png",
+          "alt": "Leaky bucket queue draining requests to the downstream service at a constant rate, rejecting new requests when the queue is full"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the bucket is already full when a new request arrives, that request overflows and is rejected. If it has room, the request waits in line for its turn."
+        },
+        {
+          "type": "heading3",
+          "content": "Why it smooths bursts instead of allowing them",
+          "text": "Why it smooths bursts instead of allowing them"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the core behavioral difference from the token bucket. A leaky bucket never lets a burst of requests through all at once, it always processes at the same steady drain rate, so a sudden spike gets queued and smoothed out over time rather than passed straight through."
+        },
+        {
+          "type": "heading3",
+          "content": "The two governing parameters",
+          "text": "The two governing parameters"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Parameter\",\"Meaning\"],\"rows\":[[\"Queue capacity\",\"The maximum number of requests that can be waiting at once before new arrivals are rejected\"],[\"Leak rate\",\"The fixed rate at which queued requests are processed, this is the smoothed output rate seen by whatever is downstream\"]]}"
+        },
+        {
+          "type": "list",
+          "content": "[\"New request arrives\",\"If the queue is at capacity, reject the request immediately\",\"Otherwise enqueue the request and let the caller wait, or return a queued acknowledgment\",\"A worker dequeues and processes exactly one request every fixed interval\",\"The output rate downstream is always constant, no matter how bursty the input was\"]",
+          "items": [
+            "New request arrives",
+            "If the queue is at capacity, reject the request immediately",
+            "Otherwise enqueue the request and let the caller wait, or return a queued acknowledgment",
+            "A worker dequeues and processes exactly one request every fixed interval",
+            "The output rate downstream is always constant, no matter how bursty the input was"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "example-box",
+          "title": "A quick numeric walkthrough",
+          "text": "Queue capacity 5, leak rate 1 request per 100 milliseconds. Ten requests arrive in the same instant, the first 5 are queued and the remaining 5 overflow and are rejected. The queued 5 are then processed one every 100 milliseconds, so the downstream service sees a smooth, predictable trickle instead of a spike of ten."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Implementing Leaky Bucket",
+          "text": "5. Implementing Leaky Bucket"
+        },
+        {
+          "type": "paragraph",
+          "content": "A leaky bucket needs a bounded queue and something that drains it at a steady pace, either a background worker on a fixed interval, or a lazy computation of how many slots should have drained since the last check, mirroring the lazy refill trick used for the token bucket."
+        },
+        {
+          "type": "heading3",
+          "content": "Lazy draining without a background thread",
+          "text": "Lazy draining without a background thread"
+        },
+        {
+          "type": "paragraph",
+          "content": "Rather than running a timer thread, the implementation below computes, on every incoming request, how much the queue would have drained since the last check, and applies that before deciding whether there is room for the new request."
+        },
+        {
+          "type": "code",
+          "content": "class LeakyBucket {\n  constructor(capacity, leakRatePerSecond) {\n    this.capacity = capacity;\n    this.leakRate = leakRatePerSecond;\n    this.queueSize = 0;\n    this.lastLeak = Date.now();\n    this.lock = Promise.resolve();\n  }\n\n  async tryAdd() {\n    const run = this.lock.then(() => {\n      const now = Date.now();\n      const elapsedSeconds = (now - this.lastLeak) / 1000;\n      const leaked = elapsedSeconds * this.leakRate;\n      this.queueSize = Math.max(0, this.queueSize - leaked);\n      this.lastLeak = now;\n\n      if (this.queueSize < this.capacity) {\n        this.queueSize += 1;\n        return true;\n      }\n      return false;\n    });\n    this.lock = run.catch(() => {});\n    return run;\n  }\n}\n\nmodule.exports = { LeakyBucket };",
+          "code": {
+            "language": "javascript",
+            "content": "class LeakyBucket {\n  constructor(capacity, leakRatePerSecond) {\n    this.capacity = capacity;\n    this.leakRate = leakRatePerSecond;\n    this.queueSize = 0;\n    this.lastLeak = Date.now();\n    this.lock = Promise.resolve();\n  }\n\n  async tryAdd() {\n    const run = this.lock.then(() => {\n      const now = Date.now();\n      const elapsedSeconds = (now - this.lastLeak) / 1000;\n      const leaked = elapsedSeconds * this.leakRate;\n      this.queueSize = Math.max(0, this.queueSize - leaked);\n      this.lastLeak = now;\n\n      if (this.queueSize < this.capacity) {\n        this.queueSize += 1;\n        return true;\n      }\n      return false;\n    });\n    this.lock = run.catch(() => {});\n    return run;\n  }\n}\n\nmodule.exports = { LeakyBucket };"
+          },
+          "codes": {
+            "java": "import java.util.concurrent.locks.ReentrantLock;\n\npublic class LeakyBucket {\n    private final double capacity;\n    private final double leakRatePerSecond;\n    private double queueSize;\n    private long lastLeakNanos;\n    private final ReentrantLock lock = new ReentrantLock();\n\n    public LeakyBucket(double capacity, double leakRatePerSecond) {\n        this.capacity = capacity;\n        this.leakRatePerSecond = leakRatePerSecond;\n        this.queueSize = 0;\n        this.lastLeakNanos = System.nanoTime();\n    }\n\n    public boolean tryAdd() {\n        lock.lock();\n        try {\n            long now = System.nanoTime();\n            double elapsedSeconds = (now - lastLeakNanos) / 1_000_000_000.0;\n            double leaked = elapsedSeconds * leakRatePerSecond;\n            queueSize = Math.max(0, queueSize - leaked);\n            lastLeakNanos = now;\n\n            if (queueSize < capacity) {\n                queueSize += 1;\n                return true;\n            }\n            return false;\n        } finally {\n            lock.unlock();\n        }\n    }\n}",
+            "python": "import threading\nimport time\n\nclass LeakyBucket:\n    def __init__(self, capacity, leak_rate_per_second):\n        self.capacity = capacity\n        self.leak_rate = leak_rate_per_second\n        self.queue_size = 0.0\n        self.last_leak = time.monotonic()\n        self.lock = threading.Lock()\n\n    def try_add(self):\n        with self.lock:\n            now = time.monotonic()\n            elapsed = now - self.last_leak\n            leaked = elapsed * self.leak_rate\n            self.queue_size = max(0.0, self.queue_size - leaked)\n            self.last_leak = now\n\n            if self.queue_size < self.capacity:\n                self.queue_size += 1\n                return True\n            return False",
+            "cpp": "#include <iostream>\n#include <mutex>\n#include <chrono>\n#include <algorithm>\nusing namespace std;\nusing namespace std::chrono;\n\nclass LeakyBucket {\npublic:\n    LeakyBucket(double capacity, double leakRatePerSecond)\n        : capacity(capacity),\n          leakRatePerSecond(leakRatePerSecond),\n          queueSize(0),\n          lastLeak(steady_clock::now()) {}\n\n    bool tryAdd() {\n        lock_guard<mutex> guard(mtx);\n        auto now = steady_clock::now();\n        double elapsedSeconds = duration_cast<duration<double>>(now - lastLeak).count();\n        double leaked = elapsedSeconds * leakRatePerSecond;\n        queueSize = max(0.0, queueSize - leaked);\n        lastLeak = now;\n\n        if (queueSize < capacity) {\n            queueSize += 1;\n            return true;\n        }\n        return false;\n    }\n\nprivate:\n    double capacity;\n    double leakRatePerSecond;\n    double queueSize;\n    steady_clock::time_point lastLeak;\n    mutex mtx;\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This lazy version tracks a fractional queue size rather than literally storing every request object, which is enough when all you need is an admission decision, allow or reject. A real request queue would additionally hold the actual pending requests and a separate worker to process them in order."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Comparing Token Bucket and Leaky Bucket",
+          "text": "6. Comparing Token Bucket and Leaky Bucket"
+        },
+        {
+          "type": "paragraph",
+          "content": "Both algorithms enforce the same long run average rate, the difference is entirely in how they treat bursts and how strictly they smooth output."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499798221-528653825.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499798221-528653825.png",
+          "alt": "Same bursty input traffic split into a token bucket path that allows bursts and a leaky bucket path that smooths output to a constant rate"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Token Bucket\",\"Leaky Bucket\"],\"rows\":[[\"Handles bursts\",\"Yes, up to bucket capacity, instantly\",\"No, bursts are queued and smoothed, or dropped past queue capacity\"],[\"Output shape\",\"Bursty, matches input up to capacity\",\"Smooth, constant rate regardless of input\"],[\"State tracked\",\"Token count\",\"Queue size, or the actual queued requests\"],[\"Good fit for\",\"Public APIs that should tolerate occasional spikes\",\"Protecting a downstream system that truly cannot handle any burst\"],[\"Typical usage\",\"Per client request throttling, API gateways\",\"Traffic shaping before a fixed capacity resource, like a fixed rate worker pool\"]]}"
+        },
+        {
+          "type": "pros-cons",
+          "content": "{\"pros\":[\"Token bucket allows legitimate bursty clients through without penalty\",\"Token bucket is cheap to check, a single number and a timestamp\",\"Leaky bucket guarantees a hard ceiling on the rate seen downstream\",\"Leaky bucket naturally queues and reorders bursts instead of just rejecting them\"],\"cons\":[\"Token bucket can let a burst overwhelm a fragile downstream dependency if capacity is set too high\",\"Leaky bucket adds latency to bursty legitimate traffic, since excess requests wait in the queue\",\"Leaky bucket needs actual queue storage if requests must be processed later rather than just admitted or rejected\",\"Neither algorithm alone tells you why a client is being throttled without additional logging\"]}"
+        },
+        {
+          "type": "heading3",
+          "content": "A rule of thumb",
+          "text": "A rule of thumb"
+        },
+        {
+          "type": "paragraph",
+          "content": "Reach for a token bucket when the goal is protecting your own API from abuse while still being generous to normal bursty usage. Reach for a leaky bucket when the goal is protecting a downstream dependency that genuinely cannot tolerate a burst at any cost."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Handling Concurrent Access Correctly",
+          "text": "7. Handling Concurrent Access Correctly"
+        },
+        {
+          "type": "paragraph",
+          "content": "Rate limiters look deceptively simple until you consider that dozens of request handling threads may check the same client's bucket in the same microsecond window."
+        },
+        {
+          "type": "heading3",
+          "content": "The classic race condition",
+          "text": "The classic race condition"
+        },
+        {
+          "type": "paragraph",
+          "content": "Thread A reads the token count, sees one token available. Before A updates the count, thread B also reads it, and also sees one token available. Both threads now believe they are allowed to proceed, and both consume the same single token, letting two requests through when only one should have been allowed."
+        },
+        {
+          "type": "note",
+          "title": "This is a check then act race",
+          "content": "Reading a value, deciding based on it, and then writing a new value is only safe when the whole sequence is atomic. Any rate limiter that separates the read from the write without a lock, or an atomic compare and swap, has this bug."
+        },
+        {
+          "type": "heading3",
+          "content": "Three ways to make it safe",
+          "text": "Three ways to make it safe"
+        },
+        {
+          "type": "list",
+          "content": "[\"A mutex or lock around the entire read, refill, and consume sequence, simplest and correct, at the cost of some contention\",\"A compare and swap loop on an atomic token count, avoids blocking threads but requires retry logic on conflict\",\"Pushing the whole check into a single atomic operation in a shared store, such as a Redis Lua script, so the read and write happen as one indivisible step even across multiple application servers\"]",
+          "items": [
+            "A mutex or lock around the entire read, refill, and consume sequence, simplest and correct, at the cost of some contention",
+            "A compare and swap loop on an atomic token count, avoids blocking threads but requires retry logic on conflict",
+            "Pushing the whole check into a single atomic operation in a shared store, such as a Redis Lua script, so the read and write happen as one indivisible step even across multiple application servers"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "heading3",
+          "content": "Per key locking, not one global lock",
+          "text": "Per key locking, not one global lock"
+        },
+        {
+          "type": "paragraph",
+          "content": "Locking the entire rate limiter with one mutex would force every client's requests to wait behind every other client's, destroying throughput. Production rate limiters key their lock, and their bucket state, by client identifier, so contention only happens between requests from the same client."
+        },
+        {
+          "type": "heading3",
+          "content": "Distributed rate limiting across many servers",
+          "text": "Distributed rate limiting across many servers"
+        },
+        {
+          "type": "paragraph",
+          "content": "A single process lock is not enough once the API runs on multiple servers behind a load balancer, since each server would keep its own separate bucket and the true limit would be multiplied by the server count."
+        },
+        {
+          "type": "paragraph",
+          "content": "The common fix is to move the bucket state into a shared store like Redis, and perform the entire refill and consume logic inside a single Lua script executed atomically by Redis itself, so no two servers can ever race on the same client's tokens."
+        },
+        {
+          "type": "example-box",
+          "title": "Why an in memory counter without a lock fails under load",
+          "text": "Picture 100 threads all serving requests for the same client, all reading a plain integer counter with no lock. Even though each thread checks if the counter is below the limit before incrementing it, multiple threads can read the same pre increment value, so the final count of allowed requests can end up higher than the configured limit, sometimes by a wide margin under heavy concurrency."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. A Worked Example: Rate Limiting API Calls Per Client",
+          "text": "8. A Worked Example: Rate Limiting API Calls Per Client"
+        },
+        {
+          "type": "paragraph",
+          "content": "Bringing it together, here is a small but complete example of a per client API rate limiter built on the thread safe token bucket, keyed by an API key or client identifier, with buckets created lazily on first use."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499799891-349496465.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499799891-349496465.png",
+          "alt": "Eight concurrent requests against a per client bucket of capacity five, five allowed and three rejected with a 429"
+        },
+        {
+          "type": "code",
+          "content": "class ApiRateLimiter {\n  constructor(capacity, refillRatePerSecond) {\n    this.capacity = capacity;\n    this.refillRate = refillRatePerSecond;\n    this.buckets = new Map(); // clientId -> { tokens, lastRefill, lock }\n  }\n\n  getOrCreateBucket(clientId) {\n    if (!this.buckets.has(clientId)) {\n      this.buckets.set(clientId, {\n        tokens: this.capacity,\n        lastRefill: Date.now(),\n        lock: Promise.resolve(),\n      });\n    }\n    return this.buckets.get(clientId);\n  }\n\n  async allow(clientId) {\n    const bucket = this.getOrCreateBucket(clientId);\n    const run = bucket.lock.then(() => {\n      const now = Date.now();\n      const elapsedSeconds = (now - bucket.lastRefill) / 1000;\n      const refreshed = Math.min(\n        this.capacity,\n        bucket.tokens + elapsedSeconds * this.refillRate\n      );\n      bucket.lastRefill = now;\n\n      if (refreshed >= 1) {\n        bucket.tokens = refreshed - 1;\n        return true;\n      }\n      bucket.tokens = refreshed;\n      return false;\n    });\n    bucket.lock = run.catch(() => {});\n    return run;\n  }\n}\n\nasync function handleRequest(limiter, clientId, requestId) {\n  const allowed = await limiter.allow(clientId);\n  if (!allowed) {\n    console.log(`request ${requestId} for ${clientId}: rejected, too many requests`);\n    return;\n  }\n  console.log(`request ${requestId} for ${clientId}: processed`);\n}\n\nconst limiter = new ApiRateLimiter(5, 1); // burst of 5, refill 1 token per second\nfor (let i = 0; i < 8; i++) {\n  handleRequest(limiter, \"client-42\", i);\n}",
+          "code": {
+            "language": "javascript",
+            "content": "class ApiRateLimiter {\n  constructor(capacity, refillRatePerSecond) {\n    this.capacity = capacity;\n    this.refillRate = refillRatePerSecond;\n    this.buckets = new Map(); // clientId -> { tokens, lastRefill, lock }\n  }\n\n  getOrCreateBucket(clientId) {\n    if (!this.buckets.has(clientId)) {\n      this.buckets.set(clientId, {\n        tokens: this.capacity,\n        lastRefill: Date.now(),\n        lock: Promise.resolve(),\n      });\n    }\n    return this.buckets.get(clientId);\n  }\n\n  async allow(clientId) {\n    const bucket = this.getOrCreateBucket(clientId);\n    const run = bucket.lock.then(() => {\n      const now = Date.now();\n      const elapsedSeconds = (now - bucket.lastRefill) / 1000;\n      const refreshed = Math.min(\n        this.capacity,\n        bucket.tokens + elapsedSeconds * this.refillRate\n      );\n      bucket.lastRefill = now;\n\n      if (refreshed >= 1) {\n        bucket.tokens = refreshed - 1;\n        return true;\n      }\n      bucket.tokens = refreshed;\n      return false;\n    });\n    bucket.lock = run.catch(() => {});\n    return run;\n  }\n}\n\nasync function handleRequest(limiter, clientId, requestId) {\n  const allowed = await limiter.allow(clientId);\n  if (!allowed) {\n    console.log(`request ${requestId} for ${clientId}: rejected, too many requests`);\n    return;\n  }\n  console.log(`request ${requestId} for ${clientId}: processed`);\n}\n\nconst limiter = new ApiRateLimiter(5, 1); // burst of 5, refill 1 token per second\nfor (let i = 0; i < 8; i++) {\n  handleRequest(limiter, \"client-42\", i);\n}"
+          },
+          "codes": {
+            "java": "import java.util.Map;\nimport java.util.concurrent.ConcurrentHashMap;\nimport java.util.concurrent.locks.ReentrantLock;\n\npublic class ApiRateLimiter {\n    private static class Bucket {\n        double tokens;\n        long lastRefillNanos;\n        final ReentrantLock lock = new ReentrantLock();\n    }\n\n    private final double capacity;\n    private final double refillRatePerSecond;\n    private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();\n\n    public ApiRateLimiter(double capacity, double refillRatePerSecond) {\n        this.capacity = capacity;\n        this.refillRatePerSecond = refillRatePerSecond;\n    }\n\n    private Bucket getOrCreateBucket(String clientId) {\n        return buckets.computeIfAbsent(clientId, key -> {\n            Bucket b = new Bucket();\n            b.tokens = capacity;\n            b.lastRefillNanos = System.nanoTime();\n            return b;\n        });\n    }\n\n    public boolean allow(String clientId) {\n        Bucket bucket = getOrCreateBucket(clientId);\n        bucket.lock.lock();\n        try {\n            long now = System.nanoTime();\n            double elapsedSeconds = (now - bucket.lastRefillNanos) / 1_000_000_000.0;\n            double refreshed = Math.min(capacity, bucket.tokens + elapsedSeconds * refillRatePerSecond);\n            bucket.lastRefillNanos = now;\n\n            if (refreshed >= 1) {\n                bucket.tokens = refreshed - 1;\n                return true;\n            }\n            bucket.tokens = refreshed;\n            return false;\n        } finally {\n            bucket.lock.unlock();\n        }\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        ApiRateLimiter limiter = new ApiRateLimiter(5, 1); // burst of 5, refill 1 per second\n        Runnable[] tasks = new Runnable[8];\n        Thread[] threads = new Thread[8];\n        for (int i = 0; i < 8; i++) {\n            final int requestId = i;\n            threads[i] = new Thread(() -> {\n                boolean allowed = limiter.allow(\"client-42\");\n                System.out.println(\"request \" + requestId + \" for client-42: \"\n                        + (allowed ? \"processed\" : \"rejected, too many requests\"));\n            });\n        }\n        for (Thread t : threads) t.start();\n        for (Thread t : threads) t.join();\n    }\n}",
+            "python": "import threading\nimport time\n\nclass ApiRateLimiter:\n    def __init__(self, capacity, refill_rate_per_second):\n        self.capacity = capacity\n        self.refill_rate = refill_rate_per_second\n        self.buckets = {}\n        self.registry_lock = threading.Lock()\n\n    def get_or_create_bucket(self, client_id):\n        with self.registry_lock:\n            if client_id not in self.buckets:\n                self.buckets[client_id] = {\n                    \"tokens\": float(self.capacity),\n                    \"last_refill\": time.monotonic(),\n                    \"lock\": threading.Lock(),\n                }\n            return self.buckets[client_id]\n\n    def allow(self, client_id):\n        bucket = self.get_or_create_bucket(client_id)\n        with bucket[\"lock\"]:\n            now = time.monotonic()\n            elapsed = now - bucket[\"last_refill\"]\n            refreshed = min(self.capacity, bucket[\"tokens\"] + elapsed * self.refill_rate)\n            bucket[\"last_refill\"] = now\n\n            if refreshed >= 1:\n                bucket[\"tokens\"] = refreshed - 1\n                return True\n\n            bucket[\"tokens\"] = refreshed\n            return False\n\n\ndef handle_request(limiter, client_id, request_id):\n    if limiter.allow(client_id):\n        print(f\"request {request_id} for {client_id}: processed\")\n    else:\n        print(f\"request {request_id} for {client_id}: rejected, too many requests\")\n\n\nlimiter = ApiRateLimiter(capacity=5, refill_rate_per_second=1)\nthreads = [\n    threading.Thread(target=handle_request, args=(limiter, \"client-42\", i))\n    for i in range(8)\n]\nfor t in threads:\n    t.start()\nfor t in threads:\n    t.join()",
+            "cpp": "#include <iostream>\n#include <string>\n#include <unordered_map>\n#include <memory>\n#include <mutex>\n#include <chrono>\n#include <thread>\n#include <vector>\n#include <algorithm>\nusing namespace std;\nusing namespace std::chrono;\n\nclass ApiRateLimiter {\npublic:\n    ApiRateLimiter(double capacity, double refillRatePerSecond)\n        : capacity(capacity), refillRatePerSecond(refillRatePerSecond) {}\n\n    bool allow(const string& clientId) {\n        Bucket* bucket = getOrCreateBucket(clientId);\n        lock_guard<mutex> guard(bucket->lock);\n        auto now = steady_clock::now();\n        double elapsedSeconds = duration_cast<duration<double>>(now - bucket->lastRefill).count();\n        double refreshed = min(capacity, bucket->tokens + elapsedSeconds * refillRatePerSecond);\n        bucket->lastRefill = now;\n\n        if (refreshed >= 1) {\n            bucket->tokens = refreshed - 1;\n            return true;\n        }\n        bucket->tokens = refreshed;\n        return false;\n    }\n\nprivate:\n    struct Bucket {\n        double tokens;\n        steady_clock::time_point lastRefill;\n        mutex lock;\n    };\n\n    double capacity;\n    double refillRatePerSecond;\n    unordered_map<string, unique_ptr<Bucket>> buckets;\n    mutex registryLock;\n\n    Bucket* getOrCreateBucket(const string& clientId) {\n        lock_guard<mutex> guard(registryLock);\n        auto it = buckets.find(clientId);\n        if (it == buckets.end()) {\n            auto bucket = make_unique<Bucket>();\n            bucket->tokens = capacity;\n            bucket->lastRefill = steady_clock::now();\n            Bucket* ptr = bucket.get();\n            buckets[clientId] = move(bucket);\n            return ptr;\n        }\n        return it->second.get();\n    }\n};\n\nint main() {\n    ApiRateLimiter limiter(5, 1); // burst of 5, refill 1 per second\n    vector<thread> threads;\n    for (int i = 0; i < 8; i++) {\n        threads.emplace_back([&limiter, i]() {\n            bool allowed = limiter.allow(\"client-42\");\n            cout << \"request \" << i << \" for client-42: \"\n                 << (allowed ? \"processed\" : \"rejected, too many requests\") << endl;\n        });\n    }\n    for (auto& t : threads) t.join();\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Each client identifier gets its own bucket, created on first request, and each bucket has its own lock, so client-42 being throttled never blocks or slows down client-99 sharing the same limiter instance."
+        },
+        {
+          "type": "paragraph",
+          "content": "Running this with a capacity of 5 and 8 concurrent requests for the same client should allow the first 5 through and reject the remaining 3, since no time has passed for any meaningful refill between them."
+        },
+        {
+          "type": "note",
+          "title": "Where the response goes next",
+          "content": "A rejected request typically gets an HTTP 429 Too Many Requests status, often with a Retry After header computed from how long until the next token is available, so well behaved clients know exactly when to try again."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Picking the Right Algorithm for Your Traffic Pattern",
+          "text": "9. Picking the Right Algorithm for Your Traffic Pattern"
+        },
+        {
+          "type": "paragraph",
+          "content": "Neither algorithm is universally better, the right choice comes down to how the traffic actually behaves and what sits behind the limiter."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499801715-666067297.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783499801715-666067297.png",
+          "alt": "Decision flow for choosing token bucket, leaky bucket, or a layered combination of both based on the traffic pattern"
+        },
+        {
+          "type": "heading3",
+          "content": "When bursts are normal and even desirable",
+          "text": "When bursts are normal and even desirable"
+        },
+        {
+          "type": "paragraph",
+          "content": "A mobile app that syncs a batch of changes the moment connectivity returns, or a dashboard that fires several requests on page load, produces legitimate bursts. A token bucket sized to cover a normal burst, with a sensible sustained refill rate, serves these clients well without punishing them for reasonable behavior."
+        },
+        {
+          "type": "heading3",
+          "content": "When the downstream truly cannot absorb a spike",
+          "text": "When the downstream truly cannot absorb a spike"
+        },
+        {
+          "type": "paragraph",
+          "content": "A fixed size worker pool, a legacy system with a hard concurrency ceiling, or a third party API with a strict burst limit of its own, all need traffic arriving at a steady, predictable pace. A leaky bucket in front of that dependency converts any bursty input into the smooth trickle the downstream actually needs."
+        },
+        {
+          "type": "heading3",
+          "content": "A layered approach",
+          "text": "A layered approach"
+        },
+        {
+          "type": "paragraph",
+          "content": "Many real systems use both, a token bucket at the edge, per client, to be generous and fair to normal usage, and a leaky bucket, or an equivalent fixed concurrency queue, in front of the most fragile internal dependency, to guarantee that dependency never sees more than it can handle."
+        },
+        {
+          "type": "paragraph",
+          "content": "The underlying lesson is the same one that runs through all of concurrent system design, decide what invariant must never be violated, here, never hand out more than the allowed rate, and then choose the simplest data structure and locking strategy that makes violating that invariant impossible, not just unlikely."
+        },
+        {
+          "type": "paragraph",
+          "content": "Start with the simplest option that fits, a single token bucket per client is usually enough before reaching for anything more elaborate."
+        },
+        {
+          "type": "paragraph",
+          "content": "Measure actual traffic before tuning refill rates or bucket sizes, guessing at these numbers upfront rarely matches how real clients behave."
+        },
+        {
+          "type": "paragraph",
+          "content": "Whichever algorithm you pick, always give a rejected caller a clear signal, a retry after hint is far more useful than a bare rejection."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,554 @@
+{
+  "slug": "producer-consumer-problem",
+  "title": "Producer Consumer Problem",
+  "content": [
+    {
+      "id": "producer-consumer-problem",
+      "title": "Producer Consumer Problem",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Imagine a busy kitchen where chefs keep placing finished dishes on a small pass through counter, and waiters keep picking dishes up from that same counter to serve them."
+        },
+        {
+          "type": "paragraph",
+          "content": "The counter only holds so many plates. If the chefs get too far ahead, the counter fills up and they have to pause. If the waiters get too far ahead, the counter goes empty and they have to wait for the next dish."
+        },
+        {
+          "type": "paragraph",
+          "content": "This everyday picture is exactly the producer consumer problem in concurrent programming. One or more threads produce items, one or more threads consume them, and they share a common buffer in between."
+        },
+        {
+          "type": "paragraph",
+          "content": "Getting this coordination wrong is one of the most common sources of subtle concurrency bugs, so this lesson walks through the naive broken approach first, then builds up to the correct patterns used in real systems."
+        },
+        {
+          "type": "blockQuote",
+          "content": "The producer consumer problem asks how independent producer and consumer threads can safely share a bounded buffer without racing each other, losing items, or corrupting shared state."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Setting up the problem",
+          "text": "1. Setting up the problem"
+        },
+        {
+          "type": "paragraph",
+          "content": "A producer consumer system has three moving parts. Producer threads generate items and push them somewhere. Consumer threads pull items from that same place and process them."
+        },
+        {
+          "type": "paragraph",
+          "content": "The third part is the shared buffer sitting between them. It is usually a queue with a fixed capacity, which is why this is often called the bounded buffer problem."
+        },
+        {
+          "type": "heading3",
+          "content": "Why a buffer at all",
+          "text": "Why a buffer at all"
+        },
+        {
+          "type": "paragraph",
+          "content": "Without a buffer, a producer would have to hand an item directly to a consumer and wait for it to be accepted, which ties the two together tightly and kills throughput."
+        },
+        {
+          "type": "paragraph",
+          "content": "A buffer decouples the two sides. Producers can run ahead when consumers are briefly slow, and consumers can drain a backlog when producers pause."
+        },
+        {
+          "type": "heading3",
+          "content": "Why bounded and not unlimited",
+          "text": "Why bounded and not unlimited"
+        },
+        {
+          "type": "paragraph",
+          "content": "An unlimited buffer sounds simpler, but it just moves the problem. If producers are consistently faster than consumers, an unbounded queue grows forever and eventually exhausts memory."
+        },
+        {
+          "type": "list",
+          "content": "[\"Producers must pause when the buffer is full, this is called backpressure\",\"Consumers must pause when the buffer is empty, there is nothing to do\",\"The buffer itself must never be corrupted by concurrent access\"]",
+          "items": [
+            "Producers must pause when the buffer is full, this is called backpressure",
+            "Consumers must pause when the buffer is empty, there is nothing to do",
+            "The buffer itself must never be corrupted by concurrent access"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Real world framing",
+          "content": "Message queues, job schedulers, logging pipelines, and thread pools are all producer consumer systems at their core, just with different names for producer, consumer, and buffer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The naive shared list approach",
+          "text": "2. The naive shared list approach"
+        },
+        {
+          "type": "paragraph",
+          "content": "A tempting first attempt is to just use a plain list or array shared between threads, with producers appending and consumers removing."
+        },
+        {
+          "type": "paragraph",
+          "content": "This looks fine in a single threaded mental model, but multiple threads touching the same list at the same time is a recipe for a race condition."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512302536-808502918.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512302536-808502918.png",
+          "alt": "Two producers both reading the same buffer size, both deciding there is room, and both writing to the same slot so one item is silently lost"
+        },
+        {
+          "type": "heading3",
+          "content": "What actually goes wrong",
+          "text": "What actually goes wrong"
+        },
+        {
+          "type": "paragraph",
+          "content": "Operations like checking the size, adding an element, and removing an element are each made of several smaller steps under the hood. When two threads interleave those steps, the list can end up in an inconsistent state."
+        },
+        {
+          "type": "list",
+          "content": "[\"Two producers can both read the same size, both decide there is room, and both write, silently overwriting each other\",\"A consumer can read stale size information and try to remove from an empty list, crashing or returning garbage\",\"Items can be lost entirely because a write from one thread overwrites a write from another before it is read\",\"The same item can be delivered to two different consumers because of a corrupted internal index\"]",
+          "items": [
+            "Two producers can both read the same size, both decide there is room, and both write, silently overwriting each other",
+            "A consumer can read stale size information and try to remove from an empty list, crashing or returning garbage",
+            "Items can be lost entirely because a write from one thread overwrites a write from another before it is read",
+            "The same item can be delivered to two different consumers because of a corrupted internal index"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Why this is hard to catch",
+          "content": "These bugs often do not show up in testing because they depend on precise timing between threads. They tend to appear only under production load, which makes them expensive to diagnose."
+        },
+        {
+          "type": "heading3",
+          "content": "A broken example",
+          "text": "A broken example"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is a minimal version of the naive approach. It compiles and runs, and it often appears to work in casual testing, but it is not safe."
+        },
+        {
+          "type": "code",
+          "content": "// BROKEN: no synchronization, race condition waiting to happen\nclass NaiveBuffer {\n  constructor(capacity) {\n    this.capacity = capacity;\n    this.items = [];\n  }\n\n  produce(item) {\n    // Time-of-check to time-of-use gap: another thread can run here\n    if (this.items.length < this.capacity) {\n      this.items.push(item);\n    }\n  }\n\n  consume() {\n    if (this.items.length > 0) {\n      return this.items.shift();\n    }\n    return null;\n  }\n}\n\n// Two \"producer\" and \"consumer\" callbacks racing on the same buffer\n// with no lock protecting items.length and the push/shift calls.\nconst buffer = new NaiveBuffer(5);\n",
+          "code": {
+            "language": "javascript",
+            "content": "// BROKEN: no synchronization, race condition waiting to happen\nclass NaiveBuffer {\n  constructor(capacity) {\n    this.capacity = capacity;\n    this.items = [];\n  }\n\n  produce(item) {\n    // Time-of-check to time-of-use gap: another thread can run here\n    if (this.items.length < this.capacity) {\n      this.items.push(item);\n    }\n  }\n\n  consume() {\n    if (this.items.length > 0) {\n      return this.items.shift();\n    }\n    return null;\n  }\n}\n\n// Two \"producer\" and \"consumer\" callbacks racing on the same buffer\n// with no lock protecting items.length and the push/shift calls.\nconst buffer = new NaiveBuffer(5);\n"
+          },
+          "codes": {
+            "javascript": "// BROKEN: no synchronization, race condition waiting to happen\nclass NaiveBuffer {\n  constructor(capacity) {\n    this.capacity = capacity;\n    this.items = [];\n  }\n\n  produce(item) {\n    // Time-of-check to time-of-use gap: another thread can run here\n    if (this.items.length < this.capacity) {\n      this.items.push(item);\n    }\n  }\n\n  consume() {\n    if (this.items.length > 0) {\n      return this.items.shift();\n    }\n    return null;\n  }\n}\n\n// Two \"producer\" and \"consumer\" callbacks racing on the same buffer\n// with no lock protecting items.length and the push/shift calls.\nconst buffer = new NaiveBuffer(5);\n",
+            "python": "import threading\n\n# BROKEN: no synchronization, race condition waiting to happen\nclass NaiveBuffer:\n    def __init__(self, capacity):\n        self.capacity = capacity\n        self.items = []\n\n    def produce(self, item):\n        # Gap between check and mutation, another thread can slip in here\n        if len(self.items) < self.capacity:\n            self.items.append(item)\n\n    def consume(self):\n        if len(self.items) > 0:\n            return self.items.pop(0)\n        return None\n\n    def size(self):\n        return len(self.items)\n\n# Multiple producer threads calling produce() on the same\n# NaiveBuffer with zero locking around the list.\n\nif __name__ == \"__main__\":\n    capacity = 100\n    buffer = NaiveBuffer(capacity)\n    producer_count = 5\n    items_per_producer = 50  # 250 attempts total against a capacity of 100\n\n    def produce_many():\n        for i in range(items_per_producer):\n            buffer.produce(i)\n\n    threads = [threading.Thread(target=produce_many) for _ in range(producer_count)]\n    for t in threads:\n        t.start()\n    for t in threads:\n        t.join()\n\n    print(f\"Capacity was: {capacity}\")\n    print(f\"Final size after concurrent producers: {buffer.size()}\")\n    print(\"(With no locking, this can land above capacity, below it, or even \"\n          \"raise an error, depending on timing. That is the bug.)\")",
+            "java": "// BROKEN: no synchronization, race condition waiting to happen\nclass NaiveBuffer {\n    private final int capacity;\n    private final java.util.List<Integer> items = new java.util.ArrayList<>();\n\n    NaiveBuffer(int capacity) {\n        this.capacity = capacity;\n    }\n\n    void produce(int item) {\n        // Check and mutate are two separate steps, not atomic together\n        if (items.size() < capacity) {\n            items.add(item);\n        }\n    }\n\n    Integer consume() {\n        if (items.size() > 0) {\n            return items.remove(0);\n        }\n        return null;\n    }\n\n    int size() {\n        return items.size();\n    }\n}\n\n// Several Thread instances calling produce/consume concurrently\n// on the same NaiveBuffer, with no lock guarding the ArrayList.\n\npublic class Main {\n    public static void main(String[] args) throws InterruptedException {\n        int capacity = 100;\n        NaiveBuffer buffer = new NaiveBuffer(capacity);\n        int producerCount = 5;\n        int itemsPerProducer = 50; // 250 attempts total against a capacity of 100\n\n        Thread[] producers = new Thread[producerCount];\n        for (int p = 0; p < producerCount; p++) {\n            producers[p] = new Thread(() -> {\n                for (int i = 0; i < itemsPerProducer; i++) {\n                    buffer.produce(i);\n                }\n            });\n        }\n        for (Thread t : producers) t.start();\n        for (Thread t : producers) t.join();\n\n        System.out.println(\"Capacity was: \" + capacity);\n        System.out.println(\"Final size after concurrent producers: \" + buffer.size());\n        System.out.println(\"(With no locking, this can land above capacity, \" +\n                \"below it, or even throw, depending on timing. That is the bug.)\");\n    }\n}",
+            "cpp": "#include <iostream>\n#include <vector>\n#include <thread>\n\n// BROKEN: no synchronization, race condition waiting to happen\nclass NaiveBuffer {\nprivate:\n    int capacity;\n    std::vector<int> items;\n\npublic:\n    explicit NaiveBuffer(int capacity) : capacity(capacity) {}\n\n    void produce(int item) {\n        // Check and mutate are two separate steps, not atomic together\n        if (static_cast<int>(items.size()) < capacity) {\n            items.push_back(item);\n        }\n    }\n\n    int size() const {\n        return static_cast<int>(items.size());\n    }\n};\n\n// Several std::thread instances calling produce() concurrently on\n// the same NaiveBuffer, with no lock guarding the vector.\n\nint main() {\n    int capacity = 100;\n    NaiveBuffer buffer(capacity);\n    int producerCount = 5;\n    int itemsPerProducer = 50; // 250 attempts total against a capacity of 100\n\n    std::vector<std::thread> producers;\n    for (int p = 0; p < producerCount; p++) {\n        producers.emplace_back([&buffer, itemsPerProducer]() {\n            for (int i = 0; i < itemsPerProducer; i++) {\n                buffer.produce(i);\n            }\n        });\n    }\n    for (auto& t : producers) t.join();\n\n    std::cout << \"Capacity was: \" << capacity << std::endl;\n    std::cout << \"Final size after concurrent producers: \" << buffer.size() << std::endl;\n    std::cout << \"(With no locking, this can land above capacity, below it, \"\n              << \"or even corrupt memory, depending on timing. That is the bug.)\" << std::endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "example-box",
+          "title": "What breaks in practice",
+          "text": "Run this naive buffer with four producer threads and four consumer threads pushing thousands of items each. The final consumed count will almost never match the produced count, and occasionally the program throws an index out of range error from the shift or remove call."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The bounded buffer idea",
+          "text": "3. The bounded buffer idea"
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix starts with recognizing that every operation on the shared buffer needs to be treated as one indivisible step, not a sequence of separate reads and writes."
+        },
+        {
+          "type": "paragraph",
+          "content": "A mutex or lock around the buffer state ensures only one thread can inspect or modify it at a time. That alone solves the corruption problem, but it does not solve waiting."
+        },
+        {
+          "type": "heading3",
+          "content": "Locking is necessary but not sufficient",
+          "text": "Locking is necessary but not sufficient"
+        },
+        {
+          "type": "paragraph",
+          "content": "If a producer holds the lock and finds the buffer full, it cannot just spin forever holding the lock, because that would block every other thread, including consumers who could free up space."
+        },
+        {
+          "type": "paragraph",
+          "content": "The thread needs to release the lock, sleep until something changes, and reacquire the lock before checking again. This is exactly what condition variables provide."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Requirement\",\"Naive list\",\"Bounded buffer with lock and condition variable\"],\"rows\":[[\"Prevents corrupted state\",\"No\",\"Yes\"],[\"Producer waits when full\",\"No, silently drops or overflows\",\"Yes, blocks until space is free\"],[\"Consumer waits when empty\",\"No, returns null or crashes\",\"Yes, blocks until an item arrives\"],[\"Wakes waiting threads on change\",\"No\",\"Yes, via notify\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Wait and notify coordination",
+          "text": "4. Wait and notify coordination"
+        },
+        {
+          "type": "paragraph",
+          "content": "The classic solution pairs a mutex with a condition variable, sometimes exposed in languages as wait, notify, and notifyAll, or as condition.wait and condition.notify."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512304291-643376554.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512304291-643376554.png",
+          "alt": "A producer acquiring the lock, waiting and releasing it when the buffer is full, then waking and rechecking after a consumer calls notify"
+        },
+        {
+          "type": "heading3",
+          "content": "The core rules",
+          "text": "The core rules"
+        },
+        {
+          "type": "list",
+          "content": "[\"A producer acquires the lock, then checks if the buffer is full\",\"If full, the producer calls wait, which atomically releases the lock and sleeps\",\"When a consumer removes an item, it calls notify to wake a sleeping producer\",\"The woken producer reacquires the lock and rechecks the condition before proceeding\",\"The same pattern applies symmetrically for consumers waiting on an empty buffer\"]",
+          "items": [
+            "A producer acquires the lock, then checks if the buffer is full",
+            "If full, the producer calls wait, which atomically releases the lock and sleeps",
+            "When a consumer removes an item, it calls notify to wake a sleeping producer",
+            "The woken producer reacquires the lock and rechecks the condition before proceeding",
+            "The same pattern applies symmetrically for consumers waiting on an empty buffer"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "heading3",
+          "content": "Why the recheck matters",
+          "text": "Why the recheck matters"
+        },
+        {
+          "type": "paragraph",
+          "content": "A thread that wakes up from wait must always recheck its condition in a loop, not just assume the world is now as it hoped. This protects against spurious wakeups and against another thread sneaking in first and taking the last slot or the last item."
+        },
+        {
+          "type": "note",
+          "title": "Rule of thumb",
+          "content": "Always wrap wait calls in a while loop that rechecks the condition, never in a plain if statement. This single habit prevents a large share of concurrency bugs."
+        },
+        {
+          "type": "heading3",
+          "content": "Correct implementation with explicit wait and notify",
+          "text": "Correct implementation with explicit wait and notify"
+        },
+        {
+          "type": "paragraph",
+          "content": "This version uses a lock plus condition variables directly, so you can see exactly where waiting and waking happen."
+        },
+        {
+          "type": "code",
+          "content": "// CORRECT: explicit wait/notify style using async coordination\n// Node has no native condition variables, so we model wait/notify\n// with promises that resolve when notify is called.\nclass BoundedBuffer {\n  constructor(capacity) {\n    this.capacity = capacity;\n    this.items = [];\n    this.waitingProducers = [];\n    this.waitingConsumers = [];\n  }\n\n  async produce(item) {\n    while (this.items.length >= this.capacity) {\n      await new Promise((resolve) => this.waitingProducers.push(resolve));\n    }\n    this.items.push(item);\n    if (this.waitingConsumers.length > 0) {\n      this.waitingConsumers.shift()(); // notify one waiting consumer\n    }\n  }\n\n  async consume() {\n    while (this.items.length === 0) {\n      await new Promise((resolve) => this.waitingConsumers.push(resolve));\n    }\n    const item = this.items.shift();\n    if (this.waitingProducers.length > 0) {\n      this.waitingProducers.shift()(); // notify one waiting producer\n    }\n    return item;\n  }\n}\n\nconst buffer = new BoundedBuffer(5);\n",
+          "code": {
+            "language": "javascript",
+            "content": "// CORRECT: explicit wait/notify style using async coordination\n// Node has no native condition variables, so we model wait/notify\n// with promises that resolve when notify is called.\nclass BoundedBuffer {\n  constructor(capacity) {\n    this.capacity = capacity;\n    this.items = [];\n    this.waitingProducers = [];\n    this.waitingConsumers = [];\n  }\n\n  async produce(item) {\n    while (this.items.length >= this.capacity) {\n      await new Promise((resolve) => this.waitingProducers.push(resolve));\n    }\n    this.items.push(item);\n    if (this.waitingConsumers.length > 0) {\n      this.waitingConsumers.shift()(); // notify one waiting consumer\n    }\n  }\n\n  async consume() {\n    while (this.items.length === 0) {\n      await new Promise((resolve) => this.waitingConsumers.push(resolve));\n    }\n    const item = this.items.shift();\n    if (this.waitingProducers.length > 0) {\n      this.waitingProducers.shift()(); // notify one waiting producer\n    }\n    return item;\n  }\n}\n\nconst buffer = new BoundedBuffer(5);\n"
+          },
+          "codes": {
+            "javascript": "// CORRECT: explicit wait/notify style using async coordination\n// Node has no native condition variables, so we model wait/notify\n// with promises that resolve when notify is called.\nclass BoundedBuffer {\n  constructor(capacity) {\n    this.capacity = capacity;\n    this.items = [];\n    this.waitingProducers = [];\n    this.waitingConsumers = [];\n  }\n\n  async produce(item) {\n    while (this.items.length >= this.capacity) {\n      await new Promise((resolve) => this.waitingProducers.push(resolve));\n    }\n    this.items.push(item);\n    if (this.waitingConsumers.length > 0) {\n      this.waitingConsumers.shift()(); // notify one waiting consumer\n    }\n  }\n\n  async consume() {\n    while (this.items.length === 0) {\n      await new Promise((resolve) => this.waitingConsumers.push(resolve));\n    }\n    const item = this.items.shift();\n    if (this.waitingProducers.length > 0) {\n      this.waitingProducers.shift()(); // notify one waiting producer\n    }\n    return item;\n  }\n}\n\nconst buffer = new BoundedBuffer(5);\n",
+            "python": "# CORRECT: explicit wait/notify using threading.Condition\nimport threading\n\nclass BoundedBuffer:\n    def __init__(self, capacity):\n        self.capacity = capacity\n        self.items = []\n        self.condition = threading.Condition()\n\n    def produce(self, item):\n        with self.condition:\n            while len(self.items) >= self.capacity:\n                self.condition.wait()  # release lock, sleep, reacquire on wake\n            self.items.append(item)\n            self.condition.notify_all()  # wake any waiting consumer\n\n    def consume(self):\n        with self.condition:\n            while len(self.items) == 0:\n                self.condition.wait()\n            item = self.items.pop(0)\n            self.condition.notify_all()  # wake any waiting producer\n            return item\n\n\nif __name__ == \"__main__\":\n    buffer = BoundedBuffer(3)\n\n    def produce_five():\n        for i in range(1, 6):\n            buffer.produce(i)\n            print(f\"produced {i}\")\n\n    def consume_five():\n        for _ in range(1, 6):\n            item = buffer.consume()\n            print(f\"consumed {item}\")\n\n    producer = threading.Thread(target=produce_five)\n    consumer = threading.Thread(target=consume_five)\n    producer.start()\n    consumer.start()\n    producer.join()\n    consumer.join()",
+            "java": "// CORRECT: explicit wait/notify using synchronized and Object monitor\nclass BoundedBuffer {\n    private final int capacity;\n    private final java.util.LinkedList<Integer> items = new java.util.LinkedList<>();\n    private final Object lock = new Object();\n\n    BoundedBuffer(int capacity) {\n        this.capacity = capacity;\n    }\n\n    void produce(int item) throws InterruptedException {\n        synchronized (lock) {\n            while (items.size() >= capacity) {\n                lock.wait(); // release lock, sleep, reacquire on wake\n            }\n            items.add(item);\n            lock.notifyAll(); // wake any waiting consumer\n        }\n    }\n\n    int consume() throws InterruptedException {\n        synchronized (lock) {\n            while (items.isEmpty()) {\n                lock.wait();\n            }\n            int item = items.removeFirst();\n            lock.notifyAll(); // wake any waiting producer\n            return item;\n        }\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) throws InterruptedException {\n        BoundedBuffer buffer = new BoundedBuffer(3);\n\n        Thread producer = new Thread(() -> {\n            for (int i = 1; i <= 5; i++) {\n                try {\n                    buffer.produce(i);\n                    System.out.println(\"produced \" + i);\n                } catch (InterruptedException e) {\n                    Thread.currentThread().interrupt();\n                }\n            }\n        });\n\n        Thread consumer = new Thread(() -> {\n            for (int i = 1; i <= 5; i++) {\n                try {\n                    int item = buffer.consume();\n                    System.out.println(\"consumed \" + item);\n                } catch (InterruptedException e) {\n                    Thread.currentThread().interrupt();\n                }\n            }\n        });\n\n        producer.start();\n        consumer.start();\n        producer.join();\n        consumer.join();\n    }\n}",
+            "cpp": "// CORRECT: explicit wait/notify using std::mutex and std::condition_variable\n#include <iostream>\n#include <deque>\n#include <mutex>\n#include <condition_variable>\n#include <thread>\n\nclass BoundedBuffer {\nprivate:\n    int capacity;\n    std::deque<int> items;\n    std::mutex mtx;\n    std::condition_variable cv;\n\npublic:\n    explicit BoundedBuffer(int capacity) : capacity(capacity) {}\n\n    void produce(int item) {\n        std::unique_lock<std::mutex> lock(mtx);\n        cv.wait(lock, [this]() { return static_cast<int>(items.size()) < capacity; });\n        items.push_back(item);\n        cv.notify_all(); // wake any waiting consumer\n    }\n\n    int consume() {\n        std::unique_lock<std::mutex> lock(mtx);\n        cv.wait(lock, [this]() { return !items.empty(); });\n        int item = items.front();\n        items.pop_front();\n        cv.notify_all(); // wake any waiting producer\n        return item;\n    }\n};\n\nint main() {\n    BoundedBuffer buffer(3);\n\n    std::thread producer([&buffer]() {\n        for (int i = 1; i <= 5; i++) {\n            buffer.produce(i);\n            std::cout << \"produced \" << i << std::endl;\n        }\n    });\n\n    std::thread consumer([&buffer]() {\n        for (int i = 1; i <= 5; i++) {\n            int item = buffer.consume();\n            std::cout << \"consumed \" << item << std::endl;\n        }\n    });\n\n    producer.join();\n    consumer.join();\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "example-box",
+          "title": "Why notifyAll over notify",
+          "text": "notify wakes exactly one waiting thread, chosen arbitrarily, which can be wrong if some waiters are producers and others are consumers on the same condition. notifyAll wakes everyone, and each rechecks its own while loop condition, so it is safer by default even though it wakes a few extra threads."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Visualizing the bounded buffer",
+          "text": "5. Visualizing the bounded buffer"
+        },
+        {
+          "type": "paragraph",
+          "content": "The diagram below shows two producers pushing into a bounded buffer of capacity five and two consumers draining it, with the wait states triggered at the full and empty edges."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494814049-779024583.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783494814049-779024583.png",
+          "alt": "Producers and consumers around a bounded buffer, with wait states shown when the buffer is full or empty"
+        },
+        {
+          "type": "paragraph",
+          "content": "When the buffer hits capacity, any producer trying to add another item moves into the waiting state instead of overwriting data or spinning uselessly."
+        },
+        {
+          "type": "paragraph",
+          "content": "Symmetrically, when the buffer is empty, consumers wait rather than reading garbage or busy looping on an empty check."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. A full worked example with multiple producers and consumers",
+          "text": "6. A full worked example with multiple producers and consumers"
+        },
+        {
+          "type": "paragraph",
+          "content": "Putting it together, here is a complete runnable style example with more than one producer and more than one consumer sharing a single bounded buffer."
+        },
+        {
+          "type": "heading3",
+          "content": "What to watch for",
+          "text": "What to watch for"
+        },
+        {
+          "type": "list",
+          "content": "[\"Every producer and every consumer shares the exact same buffer instance\",\"The lock is acquired for the whole check-then-act sequence, never just part of it\",\"Waking threads always recheck their condition before touching shared state\"]",
+          "items": [
+            "Every producer and every consumer shares the exact same buffer instance",
+            "The lock is acquired for the whole check-then-act sequence, never just part of it",
+            "Waking threads always recheck their condition before touching shared state"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "code",
+          "content": "// Full example: 2 producers, 2 consumers, one bounded buffer\nasync function producerLoop(buffer, id, count) {\n  for (let i = 0; i < count; i++) {\n    await buffer.produce(`item-${id}-${i}`);\n    console.log(`producer ${id} added item ${i}`);\n  }\n}\n\nasync function consumerLoop(buffer, id, count) {\n  for (let i = 0; i < count; i++) {\n    const item = await buffer.consume();\n    console.log(`consumer ${id} took ${item}`);\n  }\n}\n\nasync function run() {\n  const buffer = new BoundedBuffer(5);\n  await Promise.all([\n    producerLoop(buffer, 1, 10),\n    producerLoop(buffer, 2, 10),\n    consumerLoop(buffer, 1, 10),\n    consumerLoop(buffer, 2, 10),\n  ]);\n}\n",
+          "code": {
+            "language": "javascript",
+            "content": "// Full example: 2 producers, 2 consumers, one bounded buffer\nasync function producerLoop(buffer, id, count) {\n  for (let i = 0; i < count; i++) {\n    await buffer.produce(`item-${id}-${i}`);\n    console.log(`producer ${id} added item ${i}`);\n  }\n}\n\nasync function consumerLoop(buffer, id, count) {\n  for (let i = 0; i < count; i++) {\n    const item = await buffer.consume();\n    console.log(`consumer ${id} took ${item}`);\n  }\n}\n\nasync function run() {\n  const buffer = new BoundedBuffer(5);\n  await Promise.all([\n    producerLoop(buffer, 1, 10),\n    producerLoop(buffer, 2, 10),\n    consumerLoop(buffer, 1, 10),\n    consumerLoop(buffer, 2, 10),\n  ]);\n}\n"
+          },
+          "codes": {
+            "javascript": "// Full example: 2 producers, 2 consumers, one bounded buffer\nasync function producerLoop(buffer, id, count) {\n  for (let i = 0; i < count; i++) {\n    await buffer.produce(`item-${id}-${i}`);\n    console.log(`producer ${id} added item ${i}`);\n  }\n}\n\nasync function consumerLoop(buffer, id, count) {\n  for (let i = 0; i < count; i++) {\n    const item = await buffer.consume();\n    console.log(`consumer ${id} took ${item}`);\n  }\n}\n\nasync function run() {\n  const buffer = new BoundedBuffer(5);\n  await Promise.all([\n    producerLoop(buffer, 1, 10),\n    producerLoop(buffer, 2, 10),\n    consumerLoop(buffer, 1, 10),\n    consumerLoop(buffer, 2, 10),\n  ]);\n}\n",
+            "python": "# Restated from the bounded buffer shown earlier in this topic,\n# included here so this example can run on its own\nimport threading\n\nclass BoundedBuffer:\n    def __init__(self, capacity):\n        self.capacity = capacity\n        self.items = []\n        self.condition = threading.Condition()\n\n    def produce(self, item):\n        with self.condition:\n            while len(self.items) >= self.capacity:\n                self.condition.wait()\n            self.items.append(item)\n            self.condition.notify_all()\n\n    def consume(self):\n        with self.condition:\n            while len(self.items) == 0:\n                self.condition.wait()\n            item = self.items.pop(0)\n            self.condition.notify_all()\n            return item\n\n# Full example: 2 producers, 2 consumers, one bounded buffer\ndef producer_loop(buffer, pid, count):\n    for i in range(count):\n        buffer.produce(f\"item-{pid}-{i}\")\n        print(f\"producer {pid} added item {i}\")\n\ndef consumer_loop(buffer, cid, count):\n    for i in range(count):\n        item = buffer.consume()\n        print(f\"consumer {cid} took {item}\")\n\nif __name__ == \"__main__\":\n    buffer = BoundedBuffer(5)\n    threads = [\n        threading.Thread(target=producer_loop, args=(buffer, 1, 10)),\n        threading.Thread(target=producer_loop, args=(buffer, 2, 10)),\n        threading.Thread(target=consumer_loop, args=(buffer, 1, 10)),\n        threading.Thread(target=consumer_loop, args=(buffer, 2, 10)),\n    ]\n    for t in threads:\n        t.start()\n    for t in threads:\n        t.join()",
+            "java": "// Restated from the bounded buffer shown earlier in this topic,\n// included here so this example can run on its own\nclass BoundedBuffer {\n    private final int capacity;\n    private final java.util.LinkedList<Integer> items = new java.util.LinkedList<>();\n    private final Object lock = new Object();\n\n    BoundedBuffer(int capacity) {\n        this.capacity = capacity;\n    }\n\n    void produce(int item) throws InterruptedException {\n        synchronized (lock) {\n            while (items.size() >= capacity) {\n                lock.wait();\n            }\n            items.add(item);\n            lock.notifyAll();\n        }\n    }\n\n    int consume() throws InterruptedException {\n        synchronized (lock) {\n            while (items.isEmpty()) {\n                lock.wait();\n            }\n            int item = items.removeFirst();\n            lock.notifyAll();\n            return item;\n        }\n    }\n}\n\n// Full example: 2 producers, 2 consumers, one bounded buffer\npublic class Main {\n    public static void main(String[] args) throws InterruptedException {\n        BoundedBuffer buffer = new BoundedBuffer(5);\n\n        Runnable producer = () -> {\n            for (int i = 0; i < 10; i++) {\n                try {\n                    buffer.produce(i);\n                    System.out.println(\"produced \" + i);\n                } catch (InterruptedException e) {\n                    Thread.currentThread().interrupt();\n                }\n            }\n        };\n\n        Runnable consumer = () -> {\n            for (int i = 0; i < 10; i++) {\n                try {\n                    int item = buffer.consume();\n                    System.out.println(\"consumed \" + item);\n                } catch (InterruptedException e) {\n                    Thread.currentThread().interrupt();\n                }\n            }\n        };\n\n        Thread p1 = new Thread(producer);\n        Thread p2 = new Thread(producer);\n        Thread c1 = new Thread(consumer);\n        Thread c2 = new Thread(consumer);\n        p1.start(); p2.start(); c1.start(); c2.start();\n        p1.join(); p2.join(); c1.join(); c2.join();\n    }\n}",
+            "cpp": "// Restated from the bounded buffer shown earlier in this topic,\n// included here so this example can run on its own\n#include <iostream>\n#include <deque>\n#include <mutex>\n#include <condition_variable>\n#include <thread>\n#include <vector>\n#include <string>\n\nclass BoundedBuffer {\nprivate:\n    int capacity;\n    std::deque<std::string> items;\n    std::mutex mtx;\n    std::condition_variable cv;\n\npublic:\n    explicit BoundedBuffer(int capacity) : capacity(capacity) {}\n\n    void produce(const std::string& item) {\n        std::unique_lock<std::mutex> lock(mtx);\n        cv.wait(lock, [this]() { return static_cast<int>(items.size()) < capacity; });\n        items.push_back(item);\n        cv.notify_all();\n    }\n\n    std::string consume() {\n        std::unique_lock<std::mutex> lock(mtx);\n        cv.wait(lock, [this]() { return !items.empty(); });\n        std::string item = items.front();\n        items.pop_front();\n        cv.notify_all();\n        return item;\n    }\n};\n\n// Full example: 2 producers, 2 consumers, one bounded buffer\nvoid producerLoop(BoundedBuffer& buffer, int pid, int count) {\n    for (int i = 0; i < count; i++) {\n        buffer.produce(\"item-\" + std::to_string(pid) + \"-\" + std::to_string(i));\n        std::cout << \"producer \" << pid << \" added item \" << i << std::endl;\n    }\n}\n\nvoid consumerLoop(BoundedBuffer& buffer, int cid, int count) {\n    for (int i = 0; i < count; i++) {\n        std::string item = buffer.consume();\n        std::cout << \"consumer \" << cid << \" took \" << item << std::endl;\n    }\n}\n\nint main() {\n    BoundedBuffer buffer(5);\n    std::vector<std::thread> threads;\n    threads.emplace_back(producerLoop, std::ref(buffer), 1, 10);\n    threads.emplace_back(producerLoop, std::ref(buffer), 2, 10);\n    threads.emplace_back(consumerLoop, std::ref(buffer), 1, 10);\n    threads.emplace_back(consumerLoop, std::ref(buffer), 2, 10);\n    for (auto& t : threads) t.join();\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Using a built in blocking queue instead",
+          "text": "7. Using a built in blocking queue instead"
+        },
+        {
+          "type": "paragraph",
+          "content": "Writing your own lock and condition variable logic is a great learning exercise, but production code almost always reaches for a language provided blocking queue instead."
+        },
+        {
+          "type": "paragraph",
+          "content": "A blocking queue bakes in exactly the same semantics, a bounded capacity, producers blocking when full, consumers blocking when empty, but the implementation is tested, tuned, and far less error prone than a hand rolled version."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512305949-53157855.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512305949-53157855.png",
+          "alt": "Hand rolled mutex and condition variable code compared side by side with a built in blocking queue that provides the same bounded semantics internally"
+        },
+        {
+          "type": "heading3",
+          "content": "Same problem, far less code",
+          "text": "Same problem, far less code"
+        },
+        {
+          "type": "code",
+          "content": "// Using an async queue library concept (Node has no built-in\n// blocking queue, but libraries like p-queue or a simple semaphore\n// wrapped channel provide the same guarantees).\nconst { Channel } = require('some-channel-library'); // conceptual\n\nasync function main() {\n  const channel = new Channel(5); // capacity 5, blocks on full/empty\n\n  async function producer(id) {\n    for (let i = 0; i < 10; i++) {\n      await channel.send(`item-${id}-${i}`); // blocks if full\n    }\n  }\n\n  async function consumer(id) {\n    for (let i = 0; i < 10; i++) {\n      const item = await channel.receive(); // blocks if empty\n      console.log(`consumer ${id} got ${item}`);\n    }\n  }\n\n  await Promise.all([producer(1), producer(2), consumer(1), consumer(2)]);\n}\n",
+          "code": {
+            "language": "javascript",
+            "content": "// Using an async queue library concept (Node has no built-in\n// blocking queue, but libraries like p-queue or a simple semaphore\n// wrapped channel provide the same guarantees).\nconst { Channel } = require('some-channel-library'); // conceptual\n\nasync function main() {\n  const channel = new Channel(5); // capacity 5, blocks on full/empty\n\n  async function producer(id) {\n    for (let i = 0; i < 10; i++) {\n      await channel.send(`item-${id}-${i}`); // blocks if full\n    }\n  }\n\n  async function consumer(id) {\n    for (let i = 0; i < 10; i++) {\n      const item = await channel.receive(); // blocks if empty\n      console.log(`consumer ${id} got ${item}`);\n    }\n  }\n\n  await Promise.all([producer(1), producer(2), consumer(1), consumer(2)]);\n}\n"
+          },
+          "codes": {
+            "javascript": "// Using an async queue library concept (Node has no built-in\n// blocking queue, but libraries like p-queue or a simple semaphore\n// wrapped channel provide the same guarantees).\nconst { Channel } = require('some-channel-library'); // conceptual\n\nasync function main() {\n  const channel = new Channel(5); // capacity 5, blocks on full/empty\n\n  async function producer(id) {\n    for (let i = 0; i < 10; i++) {\n      await channel.send(`item-${id}-${i}`); // blocks if full\n    }\n  }\n\n  async function consumer(id) {\n    for (let i = 0; i < 10; i++) {\n      const item = await channel.receive(); // blocks if empty\n      console.log(`consumer ${id} got ${item}`);\n    }\n  }\n\n  await Promise.all([producer(1), producer(2), consumer(1), consumer(2)]);\n}\n",
+            "python": "# Using Python's built-in queue.Queue, which is already\n# thread-safe and blocking by default.\nimport threading\nimport queue\n\ndef producer(q, pid, count):\n    for i in range(count):\n        q.put(f\"item-{pid}-{i}\")  # blocks here if the queue is full\n\ndef consumer(q, cid, count):\n    for i in range(count):\n        item = q.get()  # blocks here if the queue is empty\n        print(f\"consumer {cid} got {item}\")\n\nif __name__ == \"__main__\":\n    q = queue.Queue(maxsize=5)  # bounded, blocks on put/get automatically\n    threads = [\n        threading.Thread(target=producer, args=(q, 1, 10)),\n        threading.Thread(target=producer, args=(q, 2, 10)),\n        threading.Thread(target=consumer, args=(q, 1, 10)),\n        threading.Thread(target=consumer, args=(q, 2, 10)),\n    ]\n    for t in threads:\n        t.start()\n    for t in threads:\n        t.join()",
+            "java": "// Using Java's built-in BlockingQueue, no manual wait/notify needed\nimport java.util.concurrent.ArrayBlockingQueue;\nimport java.util.concurrent.BlockingQueue;\n\npublic class Main {\n    public static void main(String[] args) throws InterruptedException {\n        BlockingQueue<Integer> queue = new ArrayBlockingQueue<>(5);\n\n        Runnable producer = () -> {\n            for (int i = 0; i < 10; i++) {\n                try {\n                    queue.put(i); // blocks automatically if the queue is full\n                } catch (InterruptedException e) {\n                    Thread.currentThread().interrupt();\n                }\n            }\n        };\n\n        Runnable consumer = () -> {\n            for (int i = 0; i < 10; i++) {\n                try {\n                    int item = queue.take(); // blocks automatically if empty\n                    System.out.println(\"consumed \" + item);\n                } catch (InterruptedException e) {\n                    Thread.currentThread().interrupt();\n                }\n            }\n        };\n\n        Thread p1 = new Thread(producer);\n        Thread p2 = new Thread(producer);\n        Thread c1 = new Thread(consumer);\n        Thread c2 = new Thread(consumer);\n        p1.start(); p2.start(); c1.start(); c2.start();\n        p1.join(); p2.join(); c1.join(); c2.join();\n    }\n}",
+            "cpp": "// C++'s standard library has no built-in blocking queue, so this\n// wraps std::queue with a mutex and condition_variable to get the\n// same \"put blocks when full, get blocks when empty\" behavior\n#include <iostream>\n#include <queue>\n#include <mutex>\n#include <condition_variable>\n#include <thread>\n#include <vector>\n#include <string>\n\nclass BlockingQueue {\nprivate:\n    size_t capacity;\n    std::queue<std::string> items;\n    std::mutex mtx;\n    std::condition_variable cv;\n\npublic:\n    explicit BlockingQueue(size_t capacity) : capacity(capacity) {}\n\n    void put(const std::string& item) {\n        std::unique_lock<std::mutex> lock(mtx);\n        cv.wait(lock, [this]() { return items.size() < capacity; }); // blocks automatically if full\n        items.push(item);\n        cv.notify_all();\n    }\n\n    std::string take() {\n        std::unique_lock<std::mutex> lock(mtx);\n        cv.wait(lock, [this]() { return !items.empty(); }); // blocks automatically if empty\n        std::string item = items.front();\n        items.pop();\n        cv.notify_all();\n        return item;\n    }\n};\n\nvoid producer(BlockingQueue& q, int pid, int count) {\n    for (int i = 0; i < count; i++) {\n        q.put(\"item-\" + std::to_string(pid) + \"-\" + std::to_string(i));\n    }\n}\n\nvoid consumer(BlockingQueue& q, int cid, int count) {\n    for (int i = 0; i < count; i++) {\n        std::string item = q.take();\n        std::cout << \"consumer \" << cid << \" got \" << item << std::endl;\n    }\n}\n\nint main() {\n    BlockingQueue queue(5);\n    std::vector<std::thread> threads;\n    threads.emplace_back(producer, std::ref(queue), 1, 10);\n    threads.emplace_back(producer, std::ref(queue), 2, 10);\n    threads.emplace_back(consumer, std::ref(queue), 1, 10);\n    threads.emplace_back(consumer, std::ref(queue), 2, 10);\n    for (auto& t : threads) t.join();\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "pros-cons",
+          "content": "{\"pros\":[\"No manual lock or condition variable code to get wrong\",\"Battle tested under heavy concurrent load\",\"Comes with extra features like timed offers and polls\",\"Easier to read and review than hand rolled synchronization\"],\"cons\":[\"Less control over exact waking behavior\",\"Harder to customize for unusual fairness requirements\",\"Still need to understand the underlying model to debug it well\"]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Common mistakes and pitfalls",
+          "text": "8. Common mistakes and pitfalls"
+        },
+        {
+          "type": "paragraph",
+          "content": "Even with the right primitives, there are a handful of mistakes that show up again and again in producer consumer code."
+        },
+        {
+          "type": "heading3",
+          "content": "Missed notifications",
+          "text": "Missed notifications"
+        },
+        {
+          "type": "paragraph",
+          "content": "If a producer adds an item but forgets to call notify, a sleeping consumer may never wake up, even though data is sitting right there waiting to be read."
+        },
+        {
+          "type": "heading3",
+          "content": "Using if instead of while",
+          "text": "Using if instead of while"
+        },
+        {
+          "type": "paragraph",
+          "content": "Checking the condition with if instead of a while loop means a thread that wakes up proceeds without rechecking, which can lead to consuming from an empty buffer if another thread grabbed the item first."
+        },
+        {
+          "type": "heading3",
+          "content": "Spurious wakeups",
+          "text": "Spurious wakeups"
+        },
+        {
+          "type": "paragraph",
+          "content": "Some platforms allow a waiting thread to wake up even when nobody called notify, due to implementation details of the underlying operating system. A while loop recheck protects against this for free."
+        },
+        {
+          "type": "heading3",
+          "content": "Notify versus notifyAll confusion",
+          "text": "Notify versus notifyAll confusion"
+        },
+        {
+          "type": "paragraph",
+          "content": "Calling notify when multiple different conditions share one lock can wake the wrong kind of thread, leaving the correct one asleep indefinitely. This is sometimes called a lost wakeup."
+        },
+        {
+          "type": "heading3",
+          "content": "Holding the lock too long",
+          "text": "Holding the lock too long"
+        },
+        {
+          "type": "paragraph",
+          "content": "Doing slow work like network calls or file writes while still holding the buffer lock blocks every other thread unnecessarily. Copy the item out, release the lock, then do the slow work."
+        },
+        {
+          "type": "list",
+          "content": "[\"Forgetting to notify after a state change that another thread is waiting on\",\"Using if instead of while around a wait call\",\"Assuming a woken thread has an up to date view of shared state without rechecking\",\"Doing expensive work inside the critical section instead of just moving data in and out\",\"Choosing notify when notifyAll is needed because multiple wait conditions share one lock\"]",
+          "items": [
+            "Forgetting to notify after a state change that another thread is waiting on",
+            "Using if instead of while around a wait call",
+            "Assuming a woken thread has an up to date view of shared state without rechecking",
+            "Doing expensive work inside the critical section instead of just moving data in and out",
+            "Choosing notify when notifyAll is needed because multiple wait conditions share one lock"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Debugging tip",
+          "content": "If a producer consumer system occasionally hangs under load but never crashes, suspect a missed notification or an if instead of while bug before anything else. These are the two most common causes of that exact symptom."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Multiple producers, multiple consumers, and fairness",
+          "text": "9. Multiple producers, multiple consumers, and fairness"
+        },
+        {
+          "type": "paragraph",
+          "content": "Everything so far generalizes cleanly from one producer and one consumer to many of each, because the buffer, the lock, and the condition variables do not care how many threads are on either side."
+        },
+        {
+          "type": "heading3",
+          "content": "Thundering herd",
+          "text": "Thundering herd"
+        },
+        {
+          "type": "paragraph",
+          "content": "Calling notifyAll wakes every waiting thread, but only one of them can actually proceed, since only one slot or one item became available. The rest recheck their while loop, find nothing changed, and go back to sleep."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is a small amount of wasted wakeup work, but it is usually a fine tradeoff for correctness, and most built in blocking queues handle it more efficiently internally."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512307874-594340705.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512307874-594340705.png",
+          "alt": "notifyAll waking every sleeping consumer when only one item is available, so only one consumer proceeds while the others recheck and sleep again"
+        },
+        {
+          "type": "heading3",
+          "content": "Fairness is not guaranteed by default",
+          "text": "Fairness is not guaranteed by default"
+        },
+        {
+          "type": "paragraph",
+          "content": "Standard condition variables typically do not guarantee that the longest waiting thread wakes first. If strict ordering matters, a fair lock or an explicit ticketing scheme is needed on top."
+        },
+        {
+          "type": "example-box",
+          "title": "Scaling up producers and consumers",
+          "text": "A logging system might have twenty application threads producing log lines and three background threads consuming and flushing them to disk. The same bounded buffer pattern applies unchanged, just with more threads on each side."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Connecting this to real systems",
+          "text": "10. Connecting this to real systems"
+        },
+        {
+          "type": "paragraph",
+          "content": "The producer consumer pattern is not just an interview topic, it is the backbone of a huge amount of real infrastructure."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512309643-543043389.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1783512309643-543043389.png",
+          "alt": "The producer consumer pattern branching out into real systems such as message queues, thread pool task queues, and logging pipelines"
+        },
+        {
+          "type": "heading3",
+          "content": "Message queues",
+          "text": "Message queues"
+        },
+        {
+          "type": "paragraph",
+          "content": "Systems like Kafka, RabbitMQ, and SQS are producer consumer problems at a distributed scale, with the bounded buffer replaced by durable, partitioned storage, but the same full and empty backpressure ideas still apply."
+        },
+        {
+          "type": "heading3",
+          "content": "Thread pools",
+          "text": "Thread pools"
+        },
+        {
+          "type": "paragraph",
+          "content": "A thread pool is a consumer side pattern where worker threads pull tasks from a shared blocking queue, and callers submitting tasks are effectively producers pushing into that same queue."
+        },
+        {
+          "type": "heading3",
+          "content": "Logging and metrics pipelines",
+          "text": "Logging and metrics pipelines"
+        },
+        {
+          "type": "paragraph",
+          "content": "Application threads produce log lines or metric points faster than a disk or network sink can absorb them, so a bounded in memory queue smooths out the difference and applies backpressure when needed."
+        },
+        {
+          "type": "paragraph",
+          "content": "Once this pattern clicks, you start noticing it everywhere, from GPU job scheduling to video frame pipelines to the humble print spooler."
+        },
+        {
+          "type": "paragraph",
+          "content": "The core lesson holds across all of these: never let two threads touch shared mutable state without coordination, and always give both full and empty conditions a proper place to wait."
+        }
+      ]
+    }
+  ]
+}

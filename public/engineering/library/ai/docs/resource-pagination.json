@@ -1,0 +1,513 @@
+{
+  "slug": "resource-pagination",
+  "title": "Resource Pagination",
+  "content": [
+    {
+      "id": "resource-pagination",
+      "title": "Resource Pagination",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Imagine an MCP server that wraps a file system with two hundred thousand files, or a database with millions of rows. Returning every single resource in one resources/list response would be slow, wasteful, and sometimes simply impossible."
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP handles this with cursor based pagination. A server hands back one manageable page of resources at a time, plus a small token telling the client how to ask for the next page."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson walks through that nextCursor field, how a client loops until the list is exhausted, and how page size choices affect the whole experience."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why Pagination Is Needed",
+          "id": "rp-why-needed"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573920729-976412921.png",
+          "alt": "A large resource list is split into smaller pages",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A resources/list call is meant to return a snapshot of what a server has to offer. That snapshot can be large, sometimes far larger than any single response should reasonably hold."
+        },
+        {
+          "type": "paragraph",
+          "text": "Sending ten thousand resource entries in one JSON payload wastes bandwidth, slows down parsing, and delays the client from doing anything useful with even the first few items."
+        },
+        {
+          "type": "paragraph",
+          "text": "Pagination fixes this by splitting one huge answer into a series of small, quick answers, each easy to send, parse, and act on."
+        },
+        {
+          "type": "note",
+          "title": "Not unique to MCP",
+          "content": "Cursor based pagination is a common pattern across many APIs, MCP simply applies the same idea to resources/list, tools/list, and prompts/list."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The nextCursor Field",
+          "id": "rp-nextcursor-field"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573922556-225977677.png",
+          "alt": "A response carries a next cursor pointing to the following page",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a server has more resources left to return than fit in one page, it includes a nextCursor field in its resources/list result."
+        },
+        {
+          "type": "paragraph",
+          "text": "That value is an opaque token, just a string the client should treat as a black box and pass back unchanged on its next request."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"result\": {\n    \"resources\": [\n      { \"uri\": \"file:///docs/page-001.md\", \"name\": \"Page 1\", \"mimeType\": \"text/markdown\" },\n      { \"uri\": \"file:///docs/page-002.md\", \"name\": \"Page 2\", \"mimeType\": \"text/markdown\" }\n    ],\n    \"nextCursor\": \"eyJvZmZzZXQiOjIwMH0\"\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The client should never try to decode, guess, or construct a cursor itself. It only ever echoes back exactly what the server gave it."
+        },
+        {
+          "type": "paragraph",
+          "text": "Think of nextCursor as a bookmark. It marks exactly where the client left off, so the server knows where to resume next time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Requesting the First Page",
+          "id": "rp-first-page"
+        },
+        {
+          "type": "paragraph",
+          "text": "The very first resources/list call a client makes should omit the cursor parameter entirely, since there is nothing to resume from yet."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"resources/list\",\n  \"params\": {}\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "An empty params object, or one with no cursor key at all, tells the server to start from the very beginning of its resource set."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Requesting Subsequent Pages",
+          "id": "rp-subsequent-pages"
+        },
+        {
+          "type": "paragraph",
+          "text": "For every page after the first, the client includes the cursor value it received from the previous response inside the params of its next call."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 2,\n  \"method\": \"resources/list\",\n  \"params\": {\n    \"cursor\": \"eyJvZmZzZXQiOjIwMH0\"\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The server reads that cursor, figures out where the last page left off, and returns the next batch of resources starting right after it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. The Client Loop Pattern",
+          "id": "rp-client-loop"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573924296-900937218.png",
+          "alt": "A client requests a page, gets a cursor, and requests the next page in a loop",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice, a client wraps all of this in a simple loop, call resources/list, collect the resources, check for nextCursor, and repeat if present."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "async function listAllResources(session) {\n  let resources = [];\n  let cursor = undefined;\n\n  while (true) {\n    const params = cursor ? { cursor } : {};\n    const response = await session.request(\"resources/list\", params);\n    resources = resources.concat(response.resources);\n\n    if (!response.nextCursor) break;\n    cursor = response.nextCursor;\n  }\n\n  return resources;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The loop condition is simply the presence of nextCursor. No cursor in the response means there is nothing left to fetch."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. When Pagination Ends",
+          "id": "rp-when-ends"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573925844-576454675.png",
+          "alt": "A null cursor tells the client that pagination has ended",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A server signals the end of the list simply by leaving nextCursor out of its response, or by setting it to null."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 5,\n  \"result\": {\n    \"resources\": [\n      { \"uri\": \"file:///docs/page-999.md\", \"name\": \"Page 999\", \"mimeType\": \"text/markdown\" }\n    ]\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "No nextCursor key here means this is the final page. The client now has the complete resource list and can stop looping."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Page Size Considerations",
+          "id": "rp-page-size"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573927399-393567928.png",
+          "alt": "A small page size is compared against a large page size",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP does not fix a page size in the spec itself. Each server chooses how many resources to return per call, based on its own data and constraints."
+        },
+        {
+          "type": "paragraph",
+          "text": "Too small a page means many extra round trips just to fetch a full list. Too large a page brings back the same slowness pagination was meant to avoid."
+        },
+        {
+          "type": "paragraph",
+          "text": "A good rule of thumb is to start around fifty to a few hundred resources per page, then adjust once you see real usage patterns."
+        },
+        {
+          "type": "list",
+          "items": [
+            "How large each individual resource entry is, a heavier metadata payload favors smaller pages.",
+            "Network latency between client and server, more round trips hurt more on a slow connection.",
+            "How often a client actually needs the full list versus just the first handful of items.",
+            "Server side cost of computing each page, some backends make later pages cheaper or costlier than the first."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Page size\",\"Round trips for 1000 resources\",\"Tradeoff\"],\"rows\":[[\"10\",\"100\",\"Very chatty, many requests, low memory per response\"],[\"100\",\"10\",\"A common practical middle ground\"],[\"1000\",\"1\",\"Fewest requests, but back to one large slow response\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Cursor Opacity and Stability",
+          "id": "rp-cursor-opacity"
+        },
+        {
+          "type": "paragraph",
+          "text": "A cursor is meant to be opaque to the client, it could be an offset, a database key, an encoded timestamp, anything the server finds convenient internally."
+        },
+        {
+          "type": "paragraph",
+          "text": "Because the client never parses it, a server is free to change its internal cursor format later without breaking any client that follows the rules."
+        },
+        {
+          "type": "note",
+          "title": "Do not persist cursors long term",
+          "content": "A cursor is only meant to be used for the lifetime of one listing operation, not saved and replayed days later against a server whose data has since changed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Pagination and Resource Discovery",
+          "id": "rp-and-discovery"
+        },
+        {
+          "type": "paragraph",
+          "text": "Resource discovery, covered in an earlier lesson, is how a client first learns what a server has to offer, typically through resources/list at session start."
+        },
+        {
+          "type": "paragraph",
+          "text": "Pagination simply extends that discovery process across multiple calls instead of assuming everything fits in one answer."
+        },
+        {
+          "type": "paragraph",
+          "text": "A client doing discovery still ends up with the same complete picture of available resources, it just gets there through a short loop rather than a single request."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Pagination for Templates and Dynamic Resources",
+          "id": "rp-templates-dynamic"
+        },
+        {
+          "type": "paragraph",
+          "text": "The same nextCursor mechanism applies to resources/templates/list, since a server can also have more templates than fit comfortably in one page."
+        },
+        {
+          "type": "paragraph",
+          "text": "Dynamic resources, ones computed fresh at call time, can be paginated too, the server just needs to keep its cursor consistent with whatever fresh computation it did for that particular listing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Errors During Pagination",
+          "id": "rp-errors"
+        },
+        {
+          "type": "paragraph",
+          "text": "A cursor can become stale if a client waits too long between page requests and the underlying data or cursor format has since changed on the server."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well behaved server returns a clear JSON-RPC error in that case rather than silently returning wrong or duplicate data."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 3,\n  \"error\": {\n    \"code\": -32602,\n    \"message\": \"Invalid cursor: cursor has expired\"\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A robust client treats a cursor error as a signal to restart the whole listing from the beginning, rather than crashing outright."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Data Changes Mid Pagination",
+          "id": "rp-data-changes"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573928997-477116770.png",
+          "alt": "The underlying list changes while a client is still paging through it",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Resource sets are not always frozen while a client is paginating through them. New files can appear, others can be removed, in the middle of a loop."
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP does not guarantee a perfectly consistent snapshot across pages, so a client should treat the combined result as approximately current, not a frozen point in time."
+        },
+        {
+          "type": "paragraph",
+          "text": "For most use cases this is perfectly fine, a client just wants a reasonably fresh list, not a mathematically perfect one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Combining Pagination with Filtering",
+          "id": "rp-with-filtering"
+        },
+        {
+          "type": "paragraph",
+          "text": "Some servers let a client narrow down resources/list with extra filter parameters, and pagination still works the same way on top of that filtered set."
+        },
+        {
+          "type": "paragraph",
+          "text": "The cursor in that case refers to a position within the filtered results, not the entire unfiltered resource collection."
+        },
+        {
+          "type": "paragraph",
+          "text": "If the filter changes between calls, the client should restart pagination from scratch, since the old cursor no longer refers to a meaningful position."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Performance and UX Considerations",
+          "id": "rp-performance-ux"
+        },
+        {
+          "type": "paragraph",
+          "text": "A client building a user interface can choose to show the first page immediately and fetch further pages in the background, rather than blocking until every page arrives."
+        },
+        {
+          "type": "paragraph",
+          "text": "This keeps an application feeling responsive even against a server with a huge underlying resource set."
+        },
+        {
+          "type": "paragraph",
+          "text": "An agent driven client, by contrast, often just wants the full list before deciding what to do, so it runs the loop to completion before proceeding."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Designing a Paginated Server",
+          "id": "rp-designing-server"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573930525-564897365.png",
+          "alt": "A server chooses a page size and a cursor strategy when designing pagination",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "When building a server, pick a page size that comfortably fits your typical resource entry size, then test it against your largest realistic collection."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keep cursor generation cheap, a client may call resources/list many times in a single session, and slow cursor computation adds up quickly."
+        },
+        {
+          "type": "note",
+          "title": "Simple offsets are fine to start",
+          "content": "An encoded numeric offset is a perfectly reasonable cursor for many servers, you do not need anything fancier unless your data genuinely requires it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "function listResources(cursor, pageSize = 100) {\n  const offset = cursor ? decodeCursor(cursor) : 0;\n  const page = allResources.slice(offset, offset + pageSize);\n  const hasMore = offset + pageSize < allResources.length;\n\n  return {\n    resources: page,\n    nextCursor: hasMore ? encodeCursor(offset + pageSize) : undefined\n  };\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "rp-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a documentation server with 250 markdown files, paginating at 100 resources per page."
+        },
+        {
+          "type": "paragraph",
+          "text": "The client starts with no cursor at all."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "// Call 1: no cursor\nrequest: { \"method\": \"resources/list\", \"params\": {} }\nresponse: { \"resources\": [ /* 100 files */ ], \"nextCursor\": \"off-100\" }\n\n// Call 2: cursor from call 1\nrequest: { \"method\": \"resources/list\", \"params\": { \"cursor\": \"off-100\" } }\nresponse: { \"resources\": [ /* 100 files */ ], \"nextCursor\": \"off-200\" }\n\n// Call 3: cursor from call 2\nrequest: { \"method\": \"resources/list\", \"params\": { \"cursor\": \"off-200\" } }\nresponse: { \"resources\": [ /* 50 files */ ] }\n// no nextCursor here, so the client stops"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Three calls, 250 files collected, and the client knows it is done the moment nextCursor stops showing up."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is exactly the loop from earlier in this lesson, just with concrete numbers plugged in."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "rp-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Trying to parse or construct a cursor value instead of treating it as a plain opaque string.",
+            "Stopping the loop based on an empty resources array instead of checking specifically for nextCursor.",
+            "Saving a cursor and reusing it much later, after the underlying data has likely changed.",
+            "Choosing a page size so small that a simple listing takes dozens of unnecessary round trips.",
+            "Assuming pagination gives a perfectly consistent snapshot when resources are actively changing.",
+            "Forgetting to handle a cursor expired error, and crashing instead of restarting the listing."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "rp-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "A server has 340 resources and returns 150 per page. Write out, call by call, the params sent and whether nextCursor would be present in each response."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "// Try filling this in yourself, then check below\n// Call 1: params = ?          -> resources returned = ?  nextCursor present?\n// Call 2: params = ?          -> resources returned = ?  nextCursor present?\n// Call 3: params = ?          -> resources returned = ?  nextCursor present?\n\n// One reasonable answer\n// Call 1: params = {}                     -> 150 resources, nextCursor present\n// Call 2: params = { cursor: \"off-150\" }  -> 150 resources, nextCursor present\n// Call 3: params = { cursor: \"off-300\" }  -> 40 resources,  no nextCursor"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "rp-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Cursor based pagination lets an MCP server hand out a huge resource list safely, one manageable page at a time, using an opaque nextCursor token."
+        },
+        {
+          "type": "paragraph",
+          "text": "A client just loops, call resources/list, collect the page, follow the cursor if one is present, and stop the moment it disappears."
+        }
+      ]
+    }
+  ]
+}

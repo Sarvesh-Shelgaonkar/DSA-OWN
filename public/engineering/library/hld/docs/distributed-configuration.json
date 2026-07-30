@@ -1,0 +1,481 @@
+{
+  "slug": "distributed-configuration",
+  "title": "Distributed Configuration",
+  "content": [
+    {
+      "id": "distributed-configuration",
+      "title": "Distributed Configuration",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Think about a restaurant chain with a hundred locations, and every single location has printed paper menus sitting on every table."
+        },
+        {
+          "type": "paragraph",
+          "content": "One day headquarters decides the burger goes from twelve rupees to fourteen. Every location now needs new menus printed, boxed, and shipped out. Until that shipment arrives, some tables show the old price and some show the new one, purely by chance."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526931-525300661.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526931-525300661.png",
+          "alt": "Config values baked into a build artifact require a full redeploy to change"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Distributed configuration</strong> is the software version of that same problem. Values like feature flags, rate limits, and endpoint URLs used to get baked straight into the code or the deployment artifact, so changing one meant rebuilding and redeploying every instance of every service that used it."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Distributed configuration is a centralized store that services read their settings from at runtime, instead of having those settings compiled or packaged into each deployed copy of the service."
+        },
+        {
+          "type": "paragraph",
+          "content": "It sounds like a small detail until you have thirty instances spread across six services, and someone needs to change one number before the next deploy window even opens."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every service needs a pile of small values to run. Which port to listen on, how many requests per second a client gets, which URL the payment provider lives at, whether a new checkout flow is turned on. None of that is business logic. All of it is configuration."
+        },
+        {
+          "type": "paragraph",
+          "content": "The obvious first move is to put those values in a config file and ship it inside the deployment artifact, a Docker image, a JAR, a zip file, whatever your pipeline produces. That works fine for a single service running a single instance."
+        },
+        {
+          "type": "list",
+          "content": "[\"Autoscaling means the number of instances of a service is different at 3 a.m. than at 3 p.m., and every one of them needs the same values at the same time.\",\"Multiple services often share the same setting, like a shared downstream endpoint, and all of them need to agree on it at once.\",\"Operators frequently need to change one number, a rate limit or a timeout, without touching a single line of code.\"]",
+          "items": [
+            "Autoscaling means the number of instances of a service is different at 3 a.m. than at 3 p.m., and every one of them needs the same values at the same time.",
+            "Multiple services often share the same setting, like a shared downstream endpoint, and all of them need to agree on it at once.",
+            "Operators frequently need to change one number, a rate limit or a timeout, without touching a single line of code."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Bake configuration into the artifact and every one of those needs turns into a rebuild and a redeploy. Change a single rate limit and you are redeploying dozens of instances just to update one integer."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526932-538676207.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526932-538676207.png",
+          "alt": "A central configuration store serving many running service instances"
+        },
+        {
+          "type": "note",
+          "title": "Why this matters",
+          "content": "The moment you have more than one instance of a service, or more than one service reading the same value, hardcoding configuration into the deployed artifact starts costing you real time on every small change."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The core idea: a centralized configuration store",
+          "text": "2. The core idea: a centralized configuration store"
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix looks a lot like the fix for service discovery: stop hardcoding things per instance and put a shared source of truth somewhere every instance can reach."
+        },
+        {
+          "type": "paragraph",
+          "content": "A <strong>configuration store</strong> holds the current value of every setting your services care about. Instead of packaging config into the artifact, each service instance asks the store for its config, either once at startup or continuously while it runs."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526932-693479507.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526932-693479507.png",
+          "alt": "A service instance fetching its configuration from a central store at startup"
+        },
+        {
+          "type": "paragraph",
+          "content": "Nothing about the code itself changes when a value changes. The service reads a rate limit from the store instead of from a constant in its own source, and updating that rate limit becomes a write to the store, not a deploy."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. How services get config",
+          "text": "3. How services get config"
+        },
+        {
+          "type": "paragraph",
+          "content": "There are two basic ways a service can stay in sync with the store, and most real systems end up using some mix of both."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Pull: fetch on startup and periodically",
+          "text": "3.1 Pull: fetch on startup and periodically"
+        },
+        {
+          "type": "paragraph",
+          "content": "The simplest approach: the service fetches its config when it starts, and again every so often on a timer, say every thirty seconds or every minute."
+        },
+        {
+          "type": "code",
+          "content": "// Pull based config client, poll every 30 seconds\nlet config = await configStore.fetch(\"payment-service\");\n\nsetInterval(async () => {\n  try {\n    config = await configStore.fetch(\"payment-service\");\n  } catch (err) {\n    console.warn(\"config fetch failed, keeping last known values\");\n  }\n}, 30000);\n\nfunction getRateLimit() {\n  return config.rateLimitPerSecond;\n}",
+          "code": {
+            "language": "javascript",
+            "content": "// Pull based config client, poll every 30 seconds\nlet config = await configStore.fetch(\"payment-service\");\n\nsetInterval(async () => {\n  try {\n    config = await configStore.fetch(\"payment-service\");\n  } catch (err) {\n    console.warn(\"config fetch failed, keeping last known values\");\n  }\n}, 30000);\n\nfunction getRateLimit() {\n  return config.rateLimitPerSecond;\n}"
+          },
+          "codes": {
+            "javascript": "// Pull based config client, poll every 30 seconds\nlet config = await configStore.fetch(\"payment-service\");\n\nsetInterval(async () => {\n  try {\n    config = await configStore.fetch(\"payment-service\");\n  } catch (err) {\n    console.warn(\"config fetch failed, keeping last known values\");\n  }\n}, 30000);\n\nfunction getRateLimit() {\n  return config.rateLimitPerSecond;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This is simple to reason about and easy to implement in any language, since it is really just an HTTP call or an SDK call sitting in a loop. The tradeoff is a delay: a change made in the store takes up to one polling interval before it actually shows up in a running instance."
+        },
+        {
+          "type": "note",
+          "title": "Gotcha",
+          "content": "Poll too rarely and a fix takes minutes to reach production. Poll too often and every instance becomes a steady source of load against the config store, just to check values that rarely even change."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Push: watch and subscribe",
+          "text": "3.2 Push: watch and subscribe"
+        },
+        {
+          "type": "paragraph",
+          "content": "The alternative: the service opens a long lived connection to the store and asks to be told the moment a value changes, instead of asking again and again on a timer."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526932-61847355.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526932-61847355.png",
+          "alt": "A service subscribing to a config store and being notified the instant a value changes"
+        },
+        {
+          "type": "paragraph",
+          "content": "etcd, Consul, and Zookeeper all support this natively through watch APIs. The service registers interest in a key, and the store pushes an update the moment that key changes, often within milliseconds."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526933-655821335.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526933-655821335.png",
+          "alt": "A config change propagating to every running instance at the same time without a restart"
+        },
+        {
+          "type": "code",
+          "content": "// Push based config client, watch for changes\nconst watcher = await etcd.watch().key(\"config/payment-service/rateLimit\").create();\n\nlet rateLimit = 100;\n\nwatcher.on(\"put\", (event) => {\n  rateLimit = Number(event.value.toString());\n  console.log(\"rate limit updated live to\", rateLimit);\n});",
+          "code": {
+            "language": "javascript",
+            "content": "// Push based config client, watch for changes\nconst watcher = await etcd.watch().key(\"config/payment-service/rateLimit\").create();\n\nlet rateLimit = 100;\n\nwatcher.on(\"put\", (event) => {\n  rateLimit = Number(event.value.toString());\n  console.log(\"rate limit updated live to\", rateLimit);\n});"
+          },
+          "codes": {
+            "javascript": "// Push based config client, watch for changes\nconst watcher = await etcd.watch().key(\"config/payment-service/rateLimit\").create();\n\nlet rateLimit = 100;\n\nwatcher.on(\"put\", (event) => {\n  rateLimit = Number(event.value.toString());\n  console.log(\"rate limit updated live to\", rateLimit);\n});"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Interview tip",
+          "content": "Saying you would use a watch instead of polling for anything latency sensitive, like a kill switch, shows you have thought about the actual delay a change takes to reach production."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526933-758013059.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526933-758013059.png",
+          "alt": "Pull on an interval compared with push through a watch, both talking to the same config store"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Real systems",
+          "text": "4. Real systems"
+        },
+        {
+          "type": "paragraph",
+          "content": "You rarely build a configuration store from scratch. A handful of systems already do this well, and most companies just pick one and build a thin client around it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526934-491262566.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526934-491262566.png",
+          "alt": "Configuration store landscape covering etcd, Consul, Zookeeper, and Spring Cloud Config"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 etcd",
+          "text": "4.1 etcd"
+        },
+        {
+          "type": "paragraph",
+          "content": "etcd is a distributed key value store built on the Raft consensus algorithm, the same one Kubernetes uses to store its own cluster state. It has a proper watch API and strong consistency, which makes it a common backbone for custom configuration systems."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Consul KV",
+          "text": "4.2 Consul KV"
+        },
+        {
+          "type": "paragraph",
+          "content": "HashiCorp Consul ships a key value store alongside its service registry. Teams that already run Consul for service discovery often reuse the same cluster for configuration, since the operational cost of running it is already paid for."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 Apache Zookeeper",
+          "text": "4.3 Apache Zookeeper"
+        },
+        {
+          "type": "paragraph",
+          "content": "Zookeeper is one of the oldest systems in this space, originally built for Hadoop. It offers strongly consistent reads and watches through its own client protocol, and plenty of older Java heavy systems, including early versions of Kafka, lean on it for configuration and coordination."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.4 Spring Cloud Config",
+          "text": "4.4 Spring Cloud Config"
+        },
+        {
+          "type": "paragraph",
+          "content": "Spring Cloud Config takes a different approach: it serves configuration backed by a Git repository, so every change to a value is a Git commit with a full history and an easy rollback."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.5 AWS AppConfig and Parameter Store",
+          "text": "4.5 AWS AppConfig and Parameter Store"
+        },
+        {
+          "type": "paragraph",
+          "content": "AWS offers two flavors. Parameter Store is a simple key value store, good for secrets and small values. AppConfig adds validation, staged rollouts, and automatic rollback on top of that, which matters a lot once configuration changes start controlling live traffic."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"System\",\"Consistency model\",\"Common use\"],\"rows\":[[\"etcd\",\"Strongly consistent, Raft based\",\"Kubernetes and custom config backends\"],[\"Consul KV\",\"Strongly consistent, Raft based\",\"Teams already running Consul for service discovery\"],[\"Apache Zookeeper\",\"Strongly consistent, ZAB based\",\"Older Java heavy systems, Kafka coordination\"],[\"Spring Cloud Config\",\"Eventually consistent, Git backed\",\"Spring Boot microservices wanting Git history\"],[\"AWS AppConfig / Parameter Store\",\"Managed, region replicated\",\"AWS native services wanting staged rollouts\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Trade offs: a critical dependency",
+          "text": "5. Trade offs: a critical dependency"
+        },
+        {
+          "type": "paragraph",
+          "content": "Centralizing configuration solves the redeploy problem, but it creates a new one: every service now depends on that store to start up and to keep running correctly."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526934-804150396.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526934-804150396.png",
+          "alt": "A config store as a single dependency that many services rely on at once"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 High availability requirement",
+          "text": "5.1 High availability requirement"
+        },
+        {
+          "type": "paragraph",
+          "content": "If the config store goes down, in the worst design every service that depends on it also struggles, or at minimum cannot start a fresh instance. That makes the store one of the most critical pieces of infrastructure in the whole system, right up there with your primary database."
+        },
+        {
+          "type": "note",
+          "title": "Gotcha",
+          "content": "Teams sometimes treat the config store as an afterthought, run a single instance of it, and only discover how critical it is on the day it goes down and takes half the fleet with it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Local caching and sane defaults",
+          "text": "5.2 Local caching and sane defaults"
+        },
+        {
+          "type": "paragraph",
+          "content": "The standard fix: every service keeps a local, in memory copy of the last config it fetched, and falls back to that copy, or to hardcoded sane defaults, if the store is briefly unreachable."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526934-875455655.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396526934-875455655.png",
+          "alt": "A service falling back to a local cache of defaults when the config store is unreachable"
+        },
+        {
+          "type": "list",
+          "content": "[\"Keep the last successfully fetched config in memory and keep serving it if a fetch or a watch connection fails.\",\"Ship a hardcoded default for anything that would break the service outright, like a rate limit of zero or a missing endpoint.\",\"Log loudly whenever a service is running on stale or default config, so nobody discovers it days later during an incident.\"]",
+          "items": [
+            "Keep the last successfully fetched config in memory and keep serving it if a fetch or a watch connection fails.",
+            "Ship a hardcoded default for anything that would break the service outright, like a rate limit of zero or a missing endpoint.",
+            "Log loudly whenever a service is running on stale or default config, so nobody discovers it days later during an incident."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Change a value once and every instance picks it up\",\"The store becomes a dependency every service needs to reach\"],[\"No rebuild or redeploy needed for a config change\",\"A store outage can freeze or break config dependent behavior\"],[\"Central place to audit who changed what and when\",\"Needs its own high availability and monitoring\"],[\"Works the same way across every language and service\",\"Requires every client to handle staleness and caching correctly\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Feature flags: a common use case built on this",
+          "text": "6. Feature flags: a common use case built on this"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most common thing built directly on top of a configuration store is the feature flag. A flag is just a config value, usually a boolean or a percentage, that controls whether a piece of code runs."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396527424-896162365.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396527424-896162365.png",
+          "alt": "A feature flag rolling a new feature out to a percentage of users through a config store"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of a plain boolean, most real flags carry a rollout percentage. Turn a feature on for 5 percent of users, watch the metrics, then dial it up to 50, then 100, all without a single deploy."
+        },
+        {
+          "type": "code",
+          "content": "function isFeatureEnabled(flag, userId) {\n  const bucket = hashToPercentage(userId); // 0 to 99\n  return bucket < flag.rolloutPercentage;\n}\n\n// flag.rolloutPercentage = 20 means roughly one in five\n// users get routed into the new behavior\nif (isFeatureEnabled(newCheckoutFlag, currentUser.id)) {\n  return renderNewCheckout();\n}\nreturn renderOldCheckout();",
+          "code": {
+            "language": "javascript",
+            "content": "function isFeatureEnabled(flag, userId) {\n  const bucket = hashToPercentage(userId); // 0 to 99\n  return bucket < flag.rolloutPercentage;\n}\n\n// flag.rolloutPercentage = 20 means roughly one in five\n// users get routed into the new behavior\nif (isFeatureEnabled(newCheckoutFlag, currentUser.id)) {\n  return renderNewCheckout();\n}\nreturn renderOldCheckout();"
+          },
+          "codes": {
+            "javascript": "function isFeatureEnabled(flag, userId) {\n  const bucket = hashToPercentage(userId); // 0 to 99\n  return bucket < flag.rolloutPercentage;\n}\n\n// flag.rolloutPercentage = 20 means roughly one in five\n// users get routed into the new behavior\nif (isFeatureEnabled(newCheckoutFlag, currentUser.id)) {\n  return renderNewCheckout();\n}\nreturn renderOldCheckout();"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Why this matters",
+          "content": "Feature flags let you decouple deploying code from releasing a feature. The code can sit live in production, fully dark, for days before a single real user ever hits it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Worked example: changing a rate limit live",
+          "text": "7. Worked example: changing a rate limit live"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say your API currently allows 100 requests per second per client, and it is not enough anymore. Traffic is climbing and you want to raise it to 200, right now, across every instance of the service, without a deploy."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396527425-334777989.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396527425-334777989.png",
+          "alt": "An operator changing a rate limit value that propagates live to every service instance"
+        },
+        {
+          "type": "example-box",
+          "title": "Raising a rate limit without a deploy",
+          "text": "An operator opens the config dashboard and changes checkout-service.rateLimitPerSecond from 100 to 200. Every running instance is watching that key. Within a couple of seconds, all of them are enforcing 200 requests per second, and nobody touched a build pipeline."
+        },
+        {
+          "type": "code",
+          "content": "class LiveRateLimiter {\n  constructor(configStore, serviceName) {\n    this.limit = 100; // sane default if the store is unreachable at boot\n    this.serviceName = serviceName;\n    this.configStore = configStore;\n  }\n\n  async start() {\n    try {\n      const initial = await this.configStore.fetch(this.serviceName);\n      this.limit = initial.rateLimitPerSecond;\n    } catch (err) {\n      console.warn(\"using default rate limit, config store unreachable at startup\");\n    }\n\n    this.configStore.watch(this.serviceName, (updated) => {\n      this.limit = updated.rateLimitPerSecond;\n      console.log(`rate limit updated live to ${this.limit} req/sec`);\n    });\n  }\n\n  allow(clientId, currentCount) {\n    return currentCount < this.limit;\n  }\n}\n\nconst limiter = new LiveRateLimiter(configStore, \"checkout-service\");\nawait limiter.start();",
+          "code": {
+            "language": "javascript",
+            "content": "class LiveRateLimiter {\n  constructor(configStore, serviceName) {\n    this.limit = 100; // sane default if the store is unreachable at boot\n    this.serviceName = serviceName;\n    this.configStore = configStore;\n  }\n\n  async start() {\n    try {\n      const initial = await this.configStore.fetch(this.serviceName);\n      this.limit = initial.rateLimitPerSecond;\n    } catch (err) {\n      console.warn(\"using default rate limit, config store unreachable at startup\");\n    }\n\n    this.configStore.watch(this.serviceName, (updated) => {\n      this.limit = updated.rateLimitPerSecond;\n      console.log(`rate limit updated live to ${this.limit} req/sec`);\n    });\n  }\n\n  allow(clientId, currentCount) {\n    return currentCount < this.limit;\n  }\n}\n\nconst limiter = new LiveRateLimiter(configStore, \"checkout-service\");\nawait limiter.start();"
+          },
+          "codes": {
+            "javascript": "class LiveRateLimiter {\n  constructor(configStore, serviceName) {\n    this.limit = 100; // sane default if the store is unreachable at boot\n    this.serviceName = serviceName;\n    this.configStore = configStore;\n  }\n\n  async start() {\n    try {\n      const initial = await this.configStore.fetch(this.serviceName);\n      this.limit = initial.rateLimitPerSecond;\n    } catch (err) {\n      console.warn(\"using default rate limit, config store unreachable at startup\");\n    }\n\n    this.configStore.watch(this.serviceName, (updated) => {\n      this.limit = updated.rateLimitPerSecond;\n      console.log(`rate limit updated live to ${this.limit} req/sec`);\n    });\n  }\n\n  allow(clientId, currentCount) {\n    return currentCount < this.limit;\n  }\n}\n\nconst limiter = new LiveRateLimiter(configStore, \"checkout-service\");\nawait limiter.start();"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The limiter starts with a safe default of 100 in case the store is unreachable at boot. Once it connects, it takes whatever value is currently stored, and from then on the watch callback keeps it current for as long as the process runs."
+        },
+        {
+          "type": "note",
+          "title": "Gotcha",
+          "content": "A config store update is not instant everywhere at once. For a brief window some instances are still enforcing the old limit while others have already picked up the new one. Design for that overlap instead of assuming a clean, all at once cutover."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. The interview angle",
+          "text": "8. The interview angle"
+        },
+        {
+          "type": "list",
+          "content": "[\"Naming distributed configuration at all, even briefly, tells an interviewer you have thought past the happy path of a single deployed service.\",\"Pull versus push is a real tradeoff worth discussing out loud: pull is simpler to build, push propagates a change far faster.\",\"Mentioning that the config store itself needs high availability, plus a caching fallback, shows you understand it becomes critical infrastructure the moment you introduce it.\"]",
+          "items": [
+            "Naming distributed configuration at all, even briefly, tells an interviewer you have thought past the happy path of a single deployed service.",
+            "Pull versus push is a real tradeoff worth discussing out loud: pull is simpler to build, push propagates a change far faster.",
+            "Mentioning that the config store itself needs high availability, plus a caching fallback, shows you understand it becomes critical infrastructure the moment you introduce it."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "How to bring it up",
+          "content": "If your design already mentions feature flags or a live rate limit, just say where the value actually lives: \"that reads from a config store the instances watch, so ops can change it without a deploy.\" That single sentence covers the whole idea."
+        },
+        {
+          "type": "paragraph",
+          "content": "You do not need to design etcd from scratch on a whiteboard. You need to show that config is not baked into the artifact, name a pull or push approach, and mention that the store itself needs to be reliable."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Key takeaways",
+          "text": "9. Key takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"Baking configuration into a deployed artifact means every small change costs a rebuild and a redeploy across every instance.\",\"A centralized configuration store lets services fetch or watch for values at runtime instead of compiling them in.\",\"Pull based config is simple but delayed, push based config is fast but needs a store that supports watches.\",\"etcd, Consul KV, Zookeeper, Spring Cloud Config, and AWS AppConfig cover almost every real setup you will run into.\",\"The store becomes critical infrastructure, so services need local caching and sane defaults for when it is briefly unreachable.\",\"Feature flags are the most common thing built directly on top of this idea.\"]",
+          "items": [
+            "Baking configuration into a deployed artifact means every small change costs a rebuild and a redeploy across every instance.",
+            "A centralized configuration store lets services fetch or watch for values at runtime instead of compiling them in.",
+            "Pull based config is simple but delayed, push based config is fast but needs a store that supports watches.",
+            "etcd, Consul KV, Zookeeper, Spring Cloud Config, and AWS AppConfig cover almost every real setup you will run into.",
+            "The store becomes critical infrastructure, so services need local caching and sane defaults for when it is briefly unreachable.",
+            "Feature flags are the most common thing built directly on top of this idea."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "A rate limit you can change in one place and watch roll out everywhere in seconds, that is distributed configuration doing exactly its job."
+        }
+      ]
+    }
+  ]
+}

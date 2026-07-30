@@ -1,0 +1,507 @@
+{
+  "slug": "resource-security",
+  "title": "Resource Security",
+  "content": [
+    {
+      "id": "resource-security",
+      "title": "Resource Security",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "MCP servers are generous by nature. They exist to hand data over to a client, a file here, a database row there, a config value somewhere else."
+        },
+        {
+          "type": "paragraph",
+          "text": "That generosity is exactly what makes resources a security surface. Every uri a server is willing to answer is a small promise about what it will and will not show."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson looks at how that promise can break, by accident more often than by attack, and what a careful server author does about it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Resources Are a Security Surface",
+          "id": "rs-security-surface"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573981154-385156347.png",
+          "alt": "A client requests a resource, the server resolves and checks it, then rejects or serves it",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A tool call feels dangerous because it can take action. A resource read feels harmless because it only returns data."
+        },
+        {
+          "type": "paragraph",
+          "text": "That feeling is misleading. Reading the wrong data can be just as damaging as running the wrong action, sometimes worse, because leaks are quiet."
+        },
+        {
+          "type": "paragraph",
+          "text": "Every resource a server exposes is a door. The question worth asking for each one is simple, who is this door for, and who might walk through it by mistake."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. What Can Go Wrong When You Expose Resources",
+          "id": "rs-what-can-go-wrong"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most resource security problems are not clever attacks. They are ordinary oversights that nobody noticed until it was too late."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A server meant to expose one report folder accidentally exposes the whole disk because the root was set too broadly.",
+            "A resource template built for convenience lets a client substitute any filename, including files nobody meant to share.",
+            "A resource description mentions internal system details that should never have left the server.",
+            "Error messages returned from a failed resource read reveal folder structure or file existence that helps an attacker map the system.",
+            "A resource meant for one user is readable by any authenticated client because nobody added a per user check."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "None of these require a sophisticated attacker. They just require a server that trusted itself a little too much."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Path Traversal, The Classic Attack",
+          "id": "rs-path-traversal"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573982913-123439818.png",
+          "alt": "A malicious URI with dot dot slash tries to escape the intended sandbox",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Path traversal is the oldest trick in the book, and it still works because it is so easy to get wrong."
+        },
+        {
+          "type": "paragraph",
+          "text": "The idea is simple, a client sends a path like dot dot slash dot dot slash etc slash passwd instead of a normal filename."
+        },
+        {
+          "type": "paragraph",
+          "text": "If the server naively joins that string onto its resource root, the dot dot segments walk the path right back out of the folder it was supposed to stay in."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import os\n\nRESOURCE_ROOT = \"/data/reports\"\n\ndef read_resource(uri_path):\n    # uri_path comes straight from the client, for example \"../../etc/passwd\"\n    full_path = os.path.join(RESOURCE_ROOT, uri_path)\n    with open(full_path, \"r\") as f:\n        return f.read()\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This function looks completely reasonable at a glance, and that is the whole problem with path traversal bugs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Why URI to Filesystem Mapping Is Risky",
+          "id": "rs-uri-to-fs-mapping"
+        },
+        {
+          "type": "paragraph",
+          "text": "Many MCP servers map a resource uri almost directly onto a filesystem path, because it is the fastest way to build something that works."
+        },
+        {
+          "type": "paragraph",
+          "text": "That shortcut quietly hands the client partial control over which file gets opened, which is a much bigger grant of trust than it looks like."
+        },
+        {
+          "type": "paragraph",
+          "text": "The uri is client supplied input, and client supplied input should never be trusted to decide, on its own, which file the server touches."
+        },
+        {
+          "type": "note",
+          "title": "Treat every uri as hostile",
+          "content": "Even a client you built yourself might have a bug that sends a bad uri. Validate as if the input is adversarial, not just as if it might be malformed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Validating Resource Paths",
+          "id": "rs-validating-paths"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573984512-341266771.png",
+          "alt": "A path that passes validation is allowed while one that fails is rejected",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Validation means checking the path before it is used, not after, and rejecting anything that looks even slightly off."
+        },
+        {
+          "type": "paragraph",
+          "text": "A short checklist catches most real problems without needing anything fancy."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Reject any raw path containing dot dot segments outright, before doing any resolution.",
+            "Resolve the path to its fully expanded, absolute, symlink free form.",
+            "Compare that resolved form against the allowed root, not the original unresolved string.",
+            "Reject anything that is a symlink pointing outside the allowed root.",
+            "Normalize encoding tricks too, a url encoded dot dot is still a dot dot."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "text": "The order matters here, resolve first, then compare, because comparing an unresolved string is exactly how traversal bugs slip through."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Sandboxing, Building a Real Boundary",
+          "id": "rs-sandboxing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573986030-285797597.png",
+          "alt": "A sandbox boundary confines every resource access inside it",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Validation catches obviously bad input. Sandboxing is the deeper habit of never trusting validation alone to hold the line."
+        },
+        {
+          "type": "paragraph",
+          "text": "A real sandbox means the server physically cannot read outside its allowed root, even if a validation check somewhere gets skipped."
+        },
+        {
+          "type": "paragraph",
+          "text": "That usually means resolving the real, absolute path first, and only then checking a strict prefix match against the sandbox root."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import os\n\nRESOURCE_ROOT = os.path.realpath(\"/data/reports\")\n\ndef read_resource(uri_path):\n    candidate = os.path.realpath(os.path.join(RESOURCE_ROOT, uri_path))\n    if not (candidate == RESOURCE_ROOT or candidate.startswith(RESOURCE_ROOT + os.sep)):\n        raise PermissionError(\"resource path escapes the sandbox root\")\n    with open(candidate, \"r\") as f:\n        return f.read()\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the sandbox check happens on the resolved candidate, after symlinks and dot dot segments have already been flattened out."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Watching One Request Move Through The Checks",
+          "id": "rs-request-walkthrough"
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to trace a single hostile request end to end, step by step, to see exactly where it gets stopped."
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a client asking for a file it should never see, hidden behind a path that looks almost normal."
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice that the server never opens a file handle until after the resolved path has already passed the boundary check."
+        },
+        {
+          "type": "paragraph",
+          "text": "That ordering is not an accident, checking after opening the file is too late, the damage is already done by then."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Access Control Per Resource",
+          "id": "rs-access-control"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573987544-90027933.png",
+          "alt": "Each resource carries its own access control check",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Staying inside the sandbox root only proves a path is safe from traversal. It says nothing about whether this particular client should see this particular resource."
+        },
+        {
+          "type": "paragraph",
+          "text": "Those are two separate questions, and a server needs an answer for both, every single time."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Resource kind\",\"Who should be able to read it\",\"What a missing check looks like\"],\"rows\":[[\"Public documentation file\",\"Any connected client\",\"Rarely a problem, but still worth declaring explicitly\"],[\"A user own uploaded file\",\"Only that same authenticated user\",\"Any logged in client can read any other user file\"],[\"Internal server configuration\",\"No client, server use only\",\"Config values with secrets end up returned as resource content\"],[\"Shared team workspace file\",\"Only members of that team\",\"A client from a different team reads another team data\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "The right check depends entirely on what the resource is, which is exactly why per resource rules beat one blanket rule for everything."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Avoiding Leaks Through Resource Descriptions",
+          "id": "rs-leaks-descriptions"
+        },
+        {
+          "type": "paragraph",
+          "text": "A resource description is metadata, the text a client sees before it even reads the content, and it is easy to forget it counts as exposure too."
+        },
+        {
+          "type": "paragraph",
+          "text": "Descriptions that mention internal hostnames, real file paths, employee names, or system versions hand out information for free."
+        },
+        {
+          "type": "paragraph",
+          "text": "A client only needs enough description to decide whether to read the resource, nothing more."
+        },
+        {
+          "type": "note",
+          "title": "Metadata is still data",
+          "content": "Before shipping a resource description, read it as if you were an attacker. Would this sentence tell me something useful that the content itself should not have revealed anyway."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Avoiding Leaks Through Resource Content",
+          "id": "rs-leaks-content"
+        },
+        {
+          "type": "paragraph",
+          "text": "Even a resource with correct access control can leak if the content itself contains more than the client actually needs."
+        },
+        {
+          "type": "paragraph",
+          "text": "A common mistake is returning an entire database row when only two fields were ever relevant to the client task."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Strip internal identifiers, database keys, and audit fields that have no meaning to the client.",
+            "Never echo credentials, tokens, or connection strings back inside resource content, even for debugging.",
+            "Redact or omit fields that belong to other users even if they happened to be in the same query result.",
+            "Keep error messages generic, do not reveal internal stack traces or file paths when a read fails."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Think of it as a second, quieter kind of least privilege, applied to the shape of the data rather than to who can request it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. The Principle of Least Privilege",
+          "id": "rs-least-privilege"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573989191-608040782.png",
+          "alt": "Minimum needed access is compared against granting broad access",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Least privilege is an old idea from security engineering, give every actor the smallest amount of access that still lets it do its job."
+        },
+        {
+          "type": "paragraph",
+          "text": "Applied to MCP, the actor is the client, and the access is every resource, every field, every folder the server is willing to hand over."
+        },
+        {
+          "type": "paragraph",
+          "text": "The test is always the same question, does this client need this exact thing to do the task in front of it, right now."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Applying Least Privilege to Resource Exposure",
+          "id": "rs-applying-least-privilege"
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice, least privilege means designing resource exposure narrow first, then widening only when a real need shows up."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Exposure choice\",\"The privileged, risky version\",\"The least privilege version\"],\"rows\":[[\"Root folder for file resources\",\"The whole home directory\",\"One specific reports subfolder, nothing else\"],[\"Fields returned for a user record\",\"The full database row\",\"Only name, plan, and status fields\"],[\"Resource list visible to a client\",\"Every resource on the server\",\"Only resources tied to that client session\"],[\"Config values exposed as a resource\",\"The entire config file, secrets included\",\"A filtered view with secrets removed\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every row in that table is the same lesson, wearing a different costume, start narrow and only grant more once a real need earns it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Logging and Auditing Resource Access",
+          "id": "rs-logging-auditing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784573990877-872705260.png",
+          "alt": "Every resource access is logged for later auditing",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Prevention is not the whole story, a server should also be able to answer, after the fact, who read what and when."
+        },
+        {
+          "type": "paragraph",
+          "text": "Good logs make an attempted traversal attack visible immediately, instead of being discovered weeks later."
+        },
+        {
+          "type": "note",
+          "title": "Log the attempt, not the secret",
+          "content": "Record the uri, the client identity, and the outcome of an access check. Never log the actual sensitive content of a resource just to make debugging easier."
+        },
+        {
+          "type": "paragraph",
+          "text": "An audit trail also helps with a much less dramatic problem, quietly noticing that a resource is being read far more than expected."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Worked Example",
+          "id": "rs-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Let us walk through a small but complete resource handler that combines sandboxing, access control, and safe error handling together."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import os\n\nRESOURCE_ROOT = os.path.realpath(\"/data/reports\")\n\n# maps a resource path to the user id allowed to read it\nOWNERS = {\n    \"alice/summary.csv\": \"user_alice\",\n    \"bob/summary.csv\": \"user_bob\",\n}\n\ndef read_resource(uri_path, requesting_user_id):\n    candidate = os.path.realpath(os.path.join(RESOURCE_ROOT, uri_path))\n    inside_sandbox = candidate == RESOURCE_ROOT or candidate.startswith(RESOURCE_ROOT + os.sep)\n    if not inside_sandbox:\n        raise PermissionError(\"resource not found\")\n\n    owner = OWNERS.get(uri_path)\n    if owner is None or owner != requesting_user_id:\n        raise PermissionError(\"resource not found\")\n\n    with open(candidate, \"r\") as f:\n        return f.read()\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the two failure branches both raise the same generic message, resource not found, instead of separately saying blocked by sandbox or blocked by owner check."
+        },
+        {
+          "type": "paragraph",
+          "text": "That is deliberate, a more specific error would tell a probing client whether a file exists at all, which is itself a small leak."
+        },
+        {
+          "type": "paragraph",
+          "text": "The owner lookup and the sandbox check are two independent gates, and both must pass before a single byte of content is read from disk."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Common Mistakes",
+          "id": "rs-common-mistakes"
+        },
+        {
+          "type": "paragraph",
+          "text": "These are the mistakes that show up again and again in real MCP servers, usually written by people who meant well."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Checking the sandbox boundary against the raw, unresolved path instead of the fully resolved real path.",
+            "Trusting a resource template parameter to be a safe filename just because the client interface only offers a dropdown.",
+            "Returning detailed error messages that reveal whether a file or folder actually exists on disk.",
+            "Writing access control once for the whole server instead of thinking about each resource kind separately.",
+            "Putting real internal paths, hostnames, or secrets into a resource description meant to help clients pick a resource.",
+            "Forgetting that symlinks can point outside the sandbox root even when the visible path looks perfectly contained."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Practice",
+          "id": "rs-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take the vulnerable read_resource function from section three and rewrite it yourself before looking back at section six."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Add a check that resolves the path and rejects anything outside the resource root.",
+            "Add an owner lookup so a resource can only be read by the user id it belongs to.",
+            "Make both failure cases raise the exact same generic error message.",
+            "Write down one resource your own project exposes today, and decide honestly whether it currently follows least privilege."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "text": "If step four is uncomfortable to answer honestly, that discomfort is usually pointing at the resource worth fixing first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Key Takeaway",
+          "id": "rs-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Resources feel passive, but every uri a server answers is a decision about trust, made once at design time and then replayed on every request."
+        },
+        {
+          "type": "paragraph",
+          "text": "Resolve paths before checking them, check access per resource, keep descriptions and content lean, and default every exposure choice to the smallest one that still works."
+        },
+        {
+          "type": "paragraph",
+          "text": "This closes out the MCP Resources module. The next module, MCP Tools, picks up the rest of the story, covering how tools are described, invoked, and secured in depth."
+        }
+      ]
+    }
+  ]
+}

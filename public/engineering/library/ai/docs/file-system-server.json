@@ -1,0 +1,522 @@
+{
+  "slug": "file-system-server",
+  "title": "File System Server",
+  "content": [
+    {
+      "id": "file-system-server",
+      "title": "File System Server",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Every AI assistant eventually needs to touch files on disk, reading a config, summarizing a folder of notes, writing out a generated report."
+        },
+        {
+          "type": "paragraph",
+          "text": "The moment you let a model do that directly, you have handed it a shell into your file system, and that is a genuinely dangerous thing to hand anyone, human or model."
+        },
+        {
+          "type": "paragraph",
+          "text": "A file system MCP server is the disciplined middle layer that makes this safe, it decides exactly which files can be seen, which can be changed, and which parts of the disk simply do not exist as far as the model is concerned."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson walks through building one for real, tool by tool, decision by decision."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why File Access Needs Its Own Server",
+          "id": "fs-why"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580460876-609013721.png",
+          "alt": "An AI assistant calls a file system MCP server which validates the path before acting",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A raw file system is an enormous, largely undifferentiated surface, home directories, credentials, other users' data, system binaries, all reachable through the same open, read, and write calls. Giving a language model unrestricted access to that surface means trusting every future prompt, every injected instruction in a document it reads, every subtly wrong inference it makes, none of which is a safe bet at scale."
+        },
+        {
+          "type": "paragraph",
+          "text": "An MCP file system server exists to narrow that surface down to exactly what a task needs. Instead of exposing the operating system's file API, it exposes a small, deliberate set of tools, each scoped to a specific directory, each validated before it runs. The server becomes the only thing standing between a model's intentions and your actual disk."
+        },
+        {
+          "type": "note",
+          "title": "A useful mental model",
+          "content": "Think of the server as a librarian who fetches books from a specific shelf. You never get the master key to the building, you ask the librarian, and the librarian decides what is fetchable."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Defining the Tool Surface",
+          "id": "fs-tool-surface"
+        },
+        {
+          "type": "paragraph",
+          "text": "The first real design decision is which operations to expose as tools at all. A typical file system server offers something like list_directory, read_file, write_file, and delete_file, and resists the temptation to expose anything closer to a raw shell, no execute_command, no arbitrary path globs that reach outside the intended scope."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "TOOLS = [\n    {\n        \"name\": \"list_directory\",\n        \"description\": \"List files and folders inside a scoped directory\",\n        \"input_schema\": {\n            \"type\": \"object\",\n            \"properties\": {\"path\": {\"type\": \"string\"}},\n            \"required\": [\"path\"],\n        },\n    },\n    {\n        \"name\": \"read_file\",\n        \"description\": \"Read the text contents of a single file\",\n        \"input_schema\": {\n            \"type\": \"object\",\n            \"properties\": {\"path\": {\"type\": \"string\"}},\n            \"required\": [\"path\"],\n        },\n    },\n    {\n        \"name\": \"write_file\",\n        \"description\": \"Create or overwrite a file with given text content\",\n        \"input_schema\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"path\": {\"type\": \"string\"},\n                \"content\": {\"type\": \"string\"},\n            },\n            \"required\": [\"path\", \"content\"],\n        },\n    },\n]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Each tool name and description matters more than it looks, the model chooses which tool to call based on that description, so vague names like manage_files invite the model to guess at capabilities that were never intended to exist."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Resources vs Tools for File Access",
+          "id": "fs-resources-vs-tools"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP gives you two different ways to expose file contents, a tool the model actively calls with arguments, or a resource the host can list and attach to context automatically. A read only reference document, a style guide, a project readme, often fits more naturally as a resource, the host can surface it without the model needing to guess a path."
+        },
+        {
+          "type": "paragraph",
+          "text": "Anything that requires a decision, which file, what content, whether to overwrite, belongs as a tool, because tools carry explicit arguments and an explicit return value the model can reason about turn by turn. A good server usually offers both, a handful of well known resources for stable reference material, and tools for anything dynamic."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Use case\",\"Resource\",\"Tool\"],\"rows\":[[\"Fixed reference doc known in advance\",\"Yes\",\"No\"],[\"Model picks an arbitrary file to read\",\"No\",\"Yes\"],[\"Writing or deleting content\",\"No\",\"Yes\"],[\"Directory listing that changes often\",\"No\",\"Yes\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Path Scoping and the Root Jail",
+          "id": "fs-root-jail"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580462766-476652771.png",
+          "alt": "A path is scoped inside a root jail so it cannot escape the allowed directory",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every request the server receives should be resolved against one, and only one, allowed root directory, sometimes called a jail or a sandbox root. The server should refuse, unconditionally, any resolved path that falls outside that root, no matter how the path was phrased in the request."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import os\n\nALLOWED_ROOT = os.path.realpath(\"/srv/workspace/project-42\")\n\ndef resolve_scoped_path(user_path: str) -> str:\n    candidate = os.path.realpath(os.path.join(ALLOWED_ROOT, user_path))\n    if not candidate.startswith(ALLOWED_ROOT + os.sep) and candidate != ALLOWED_ROOT:\n        raise PermissionError(\"path escapes the allowed root\")\n    return candidate"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The check has to happen after resolving the path to its real, absolute form, not before, otherwise a relative path with enough parent directory segments can walk straight out of the sandbox before your string comparison ever runs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Canonicalizing Paths and Preventing Traversal",
+          "id": "fs-traversal"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580464482-6485924.png",
+          "alt": "A raw path is canonicalized before it is checked to prevent traversal",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Path traversal is the classic attack here, a request for reports/../../../../etc/passwd looks harmless as a string but resolves to something well outside the intended folder. The fix is canonicalization, resolving every symbolic reference and every parent directory segment down to one absolute, unambiguous path before any comparison or file operation happens."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth testing this deliberately rather than trusting it works, feed the resolver deliberately hostile inputs, encoded slashes, mixed separators, unicode lookalike characters, and confirm every single one gets rejected or safely contained rather than silently normalized into something dangerous."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Reject any path containing a literal .. segment before resolution as a first cheap filter",
+            "Always call the real path resolution function, never string concatenation alone",
+            "Compare the resolved path against the resolved root, not the original strings",
+            "Test with URL encoded and double encoded traversal sequences"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Symlink Attacks and How to Block Them",
+          "id": "fs-symlinks"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580466297-294816755.png",
+          "alt": "A symlink pointing outside the root is blocked before it is followed",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A symbolic link inside the scoped root can point anywhere on disk, including well outside the sandbox, so a naive server that checks the link's location but then follows the link to read its target has effectively defeated its own root jail. The realpath resolution shown earlier helps here too, because it follows symlinks to their final destination before the boundary check runs."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some servers go further and simply refuse to follow symlinks at all inside the scoped root, treating a symlink as an error rather than a valid target. That is a defensible, conservative default for a file system server that was not specifically asked to support linked content."
+        },
+        {
+          "type": "note",
+          "title": "Test this explicitly",
+          "content": "Create a symlink inside your sandbox that points to a sensitive file outside it, then confirm your read_file tool refuses it. If it does not, your root jail has a hole."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Read Only vs Read Write Modes",
+          "id": "fs-read-write-modes"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580468170-428007144.png",
+          "alt": "Read only mode is compared against read write mode",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Not every deployment of this server needs write access at all, a documentation assistant that only summarizes files never needs write_file or delete_file registered as tools in the first place. The safest way to disable a capability is to never expose the tool, rather than exposing it and relying on a runtime check to reject the call."
+        },
+        {
+          "type": "paragraph",
+          "text": "When write access genuinely is needed, consider running two separate tool registrations, a small read only set enabled by default, and a write enabled set that requires an explicit configuration flag at server startup. That makes the blast radius of a misconfiguration visible in the deployment config rather than buried in application logic."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def build_tool_list(allow_write: bool):\n    tools = [LIST_DIRECTORY, READ_FILE]\n    if allow_write:\n        tools += [WRITE_FILE, DELETE_FILE]\n    return tools"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. File Size and Content Type Limits",
+          "id": "fs-limits"
+        },
+        {
+          "type": "paragraph",
+          "text": "A model asked to read a file has no innate sense of how large that file is until it is already loaded into context, so the server should enforce a hard size ceiling before returning content, not after. Returning a truncated ten megabyte log file blows the token budget for the whole conversation and rarely gives the model anything useful."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "MAX_READ_BYTES = 200_000\n\ndef read_file_safely(path: str) -> str:\n    size = os.path.getsize(path)\n    if size > MAX_READ_BYTES:\n        raise ValueError(f\"file too large to read ({size} bytes), use a narrower query\")\n    with open(path, \"r\", encoding=\"utf-8\", errors=\"strict\") as f:\n        return f.read()"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "It also helps to reject content types the model cannot usefully consume as raw text, compiled binaries, archives, images without an accompanying description, rather than dumping bytes into a text response and letting the model hallucinate meaning from them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Handling Binary vs Text Files",
+          "id": "fs-binary-text"
+        },
+        {
+          "type": "paragraph",
+          "text": "Text files can go straight into a tool result as a string, but binary files, images, PDFs, zip archives, need a different path entirely. A server that detects a binary file should either refuse the read with a clear error, or route it through a dedicated extraction step, an OCR pass for a scanned PDF, a thumbnail description for an image, rather than trying to hand raw bytes back as if they were text."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Sniff the file's content type before reading, do not trust the extension alone",
+            "For text, decode strictly and reject files that fail clean UTF-8 decoding",
+            "For binary, either refuse or pipe through a purpose built extractor tool",
+            "Always report the detected type back in the error so the caller can adjust"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Write Safety, Atomic Writes and Backups",
+          "id": "fs-write-safety"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580469828-792313686.png",
+          "alt": "A write goes through an atomic step with a backup kept before it commits",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A write_file call that partially fails midway, disk full, process killed, can leave a file half overwritten and corrupted, which is worse than the write never happening at all. Writing to a temporary file in the same directory and then atomically renaming it over the original avoids that failure mode almost entirely, because rename on the same filesystem is a single atomic operation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import os, tempfile\n\ndef atomic_write(path: str, content: str):\n    directory = os.path.dirname(path)\n    fd, tmp_path = tempfile.mkstemp(dir=directory)\n    try:\n        with os.fdopen(fd, \"w\") as f:\n            f.write(content)\n        os.replace(tmp_path, path)\n    except Exception:\n        os.unlink(tmp_path)\n        raise"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "For anything the model might overwrite based on a misunderstanding, keeping a rolling backup of the previous version before each write gives a human an easy undo path, which matters far more here than it would for a purely human operated tool, since the model's judgment about when a write is safe is not perfect."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Delete Safety, Soft Delete and Confirmation",
+          "id": "fs-delete-safety"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580472686-487757308.png",
+          "alt": "A delete request is soft deleted with confirmation rather than removed immediately",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Deletion is the one operation where getting it wrong is often unrecoverable, so it deserves the most conservative default of any tool in the server. A common and effective pattern is soft delete, moving the file into a hidden trash folder inside the scoped root rather than calling the operating system's delete directly, with a separate cleanup job purging trash after some retention window."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Recoverable\",\"Complexity\"],\"rows\":[[\"Hard delete immediately\",\"No\",\"Low\"],[\"Soft delete to trash folder\",\"Yes, until purge\",\"Medium\"],[\"Require explicit confirm argument plus soft delete\",\"Yes\",\"Medium\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Requiring the caller to pass an explicit confirm true argument on the delete_file tool, separate from just naming the path, also creates a small but meaningful speed bump against an accidental or manipulated deletion slipping through unnoticed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Listing Directories Without Leaking Structure",
+          "id": "fs-listing"
+        },
+        {
+          "type": "paragraph",
+          "text": "A directory listing tool feels harmless, but it can leak more than intended if it silently follows a path outside the scoped root, or if it returns absolute paths that reveal the server's real disk layout to the model. Listings should always be relative to the scoped root, and should never resolve upward past it, exactly like read and write."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def list_directory(rel_path: str):\n    target = resolve_scoped_path(rel_path)\n    entries = []\n    for name in sorted(os.listdir(target)):\n        full = os.path.join(target, name)\n        entries.append({\n            \"name\": name,\n            \"type\": \"directory\" if os.path.isdir(full) else \"file\",\n            \"size\": None if os.path.isdir(full) else os.path.getsize(full),\n        })\n    return entries"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Search Within Scoped Roots",
+          "id": "fs-search"
+        },
+        {
+          "type": "paragraph",
+          "text": "A search_files tool that grep style scans content across the scoped root is often more useful to a model than repeated manual list and read calls, since it lets the model ask a direct question, which file mentions the refund policy, instead of exploring blindly. The same root jail and size limits from earlier apply here too, search results should be capped in count and in the length of each matched snippet."
+        },
+        {
+          "type": "paragraph",
+          "text": "Building this well means indexing sensibly rather than re-scanning the whole tree on every call, for a small scoped project a simple recursive walk is fine, but for a large workspace a lightweight index refreshed on file change avoids painfully slow tool calls that make the assistant feel sluggish."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Auditing and Logging Every Operation",
+          "id": "fs-audit"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every read, write, and delete that passes through the server is worth logging, who made the request, which identity or session it came from, the resolved path, and the outcome. This is not optional polish, it is often the only record you have of what an autonomous agent actually did to your files after the fact."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def audit_log(session_id, tool_name, resolved_path, outcome):\n    logger.info(\"fs_operation\", extra={\n        \"session_id\": session_id,\n        \"tool\": tool_name,\n        \"path\": resolved_path,\n        \"outcome\": outcome,\n        \"timestamp\": time.time(),\n    })"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Good logs also make debugging a confused agent much easier, if a task fails you can look at the exact sequence of file operations it attempted rather than guessing from the model's final natural language explanation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Rate Limiting and Resource Exhaustion",
+          "id": "fs-rate-limiting"
+        },
+        {
+          "type": "paragraph",
+          "text": "An agent stuck in a reasoning loop can call list_directory or read_file hundreds of times in a few seconds, which is rarely malicious but can still hammer disk I/O or a network filesystem hard enough to degrade other users. A simple per session rate limit on tool calls protects against this without needing to distinguish intent."
+        },
+        {
+          "type": "note",
+          "title": "A cheap safeguard",
+          "content": "Cap total bytes read per session, not just call count, since a handful of very large reads can exhaust resources just as fast as many small ones."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Multi User File Servers and Per User Roots",
+          "id": "fs-multi-user"
+        },
+        {
+          "type": "paragraph",
+          "text": "If the same server instance serves many users, each user needs their own scoped root, never a shared root distinguished only by a filename prefix or a database flag that the model could get wrong. The safest pattern derives the root path directly from the authenticated identity on the connection, so there is no argument the model can pass that changes which user's files it reaches."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def root_for_session(identity) -> str:\n    return os.path.realpath(f\"/srv/workspace/users/{identity.user_id}\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This also simplifies auditing enormously, since every log line is already scoped to exactly one user's directory tree, there is no cross referencing needed to know whose data was touched."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Deploying the Server, Local vs Remote",
+          "id": "fs-deployment"
+        },
+        {
+          "type": "paragraph",
+          "text": "A file system server run locally over stdio, sitting right next to the files it serves, is the simplest and often safest deployment, since there is no network hop and no remote credential to steal. A remote deployment, serving files over a network transport, needs everything above plus transport level authentication and encryption, because now the path between model and disk crosses a network boundary an attacker could sit on."
+        },
+        {
+          "type": "paragraph",
+          "text": "For most personal or single machine use cases, stdio and a tightly scoped local root is the right default, reaching for a remote deployment only when the files genuinely live on a different machine than the model is running near."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "fs-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Say we are building an assistant that helps a small team summarize meeting notes stored as markdown files inside a shared project folder. We scope the server to /srv/workspace/meeting-notes, expose only list_directory and read_file, no writes at all, and cap reads at fifty thousand bytes since these are short markdown files, not logs."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "ALLOWED_ROOT = os.path.realpath(\"/srv/workspace/meeting-notes\")\nMAX_READ_BYTES = 50_000\n\ndef read_file(path: str) -> str:\n    target = resolve_scoped_path(path)\n    if not target.endswith(\".md\"):\n        raise ValueError(\"only markdown files are readable through this server\")\n    if os.path.getsize(target) > MAX_READ_BYTES:\n        raise ValueError(\"file exceeds the read size limit\")\n    with open(target, \"r\", encoding=\"utf-8\") as f:\n        content = f.read()\n    audit_log(session.id, \"read_file\", target, \"ok\")\n    return content"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the extension check on top of the root jail, since the folder happens to also contain a stray .env file left by a developer, restricting the tool to .md files means that file is simply never reachable, regardless of what the model asks for."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "fs-common-mistakes"
+        },
+        {
+          "type": "paragraph",
+          "text": "A few mistakes show up again and again in file system MCP servers, most of them from treating the model's requests as inherently well intentioned rather than validating them the way you would validate any untrusted input."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Checking the path string for traversal before resolving symlinks and relative segments, instead of after",
+            "Exposing write_file or delete_file by default when the use case only ever needed reads",
+            "Returning raw binary bytes from read_file and letting the model guess what they mean",
+            "Building the root jail check once and forgetting to apply it to list_directory and search tools too",
+            "Skipping audit logging because the server felt too simple to need it",
+            "Trusting a filename extension without checking actual file content type"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "fs-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take the resolve_scoped_path function from earlier and try to break it. Write a small test file with a handful of inputs, a normal relative path, a path with a single ../ segment, a path with several chained ../../../ segments, and a path that points through a symlink you create pointing outside the root."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "test_cases = [\n    \"notes/today.md\",\n    \"../secrets.txt\",\n    \"../../../../etc/passwd\",\n    \"linked_out.md\",  # this is a symlink you create pointing outside ALLOWED_ROOT\n]\n\nfor case in test_cases:\n    try:\n        print(case, \"->\", resolve_scoped_path(case))\n    except PermissionError as e:\n        print(case, \"-> blocked:\", e)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A correct implementation should block every case except the first. If any of the traversal or symlink cases resolves successfully, you have found exactly the kind of gap a real attacker would look for first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "fs-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A file system MCP server is really a small, carefully guarded gate between a model's intentions and a real disk, and almost every design decision in this lesson comes back to the same instinct, resolve paths fully before trusting them, expose the smallest tool surface the task actually needs, and log everything so a mistake is at least visible after the fact."
+        },
+        {
+          "type": "paragraph",
+          "text": "The same instinct, narrow the surface and validate everything before it touches something real, applies just as directly to the next kind of server we will build, one that lets a model query and write to a live database instead of a file system."
+        }
+      ]
+    }
+  ]
+}

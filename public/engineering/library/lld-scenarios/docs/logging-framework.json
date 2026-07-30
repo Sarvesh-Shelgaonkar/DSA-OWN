@@ -1,0 +1,774 @@
+{
+  "problemId": "p-logging-framework",
+  "title": "Logging Framework",
+  "slug": "logging-framework",
+  "sections": [
+    {
+      "id": "content",
+      "title": "Content"
+    }
+  ],
+  "content": [
+    {
+      "id": "content",
+      "title": "Content",
+      "blocks": [
+        {
+          "type": "heading1",
+          "text": "1. Problem Statement",
+          "content": "1. Problem Statement"
+        },
+        {
+          "type": "paragraph",
+          "text": "<div style=\"border:2px solid #5b5fc7;border-radius:14px;padding:18px 22px;background:rgba(91,95,199,0.07);margin:4px 0 8px 0;\"><p style=\"margin:0 0 12px 0;\">Design the core engine behind a <strong>logging framework</strong> (the kind that powers Log4j or SLF4J style logging). The distinguishing challenge is <strong>two-tier, independent level filtering</strong>: a logger has its own overall threshold that can drop a message before anyone else even sees it, and every destination the message could go to, an appender, has its own separate threshold on top of that, letting one appender capture everything while another shows only the important parts.</p><img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926002057-494367105.png\" alt=\"A log call first checks the logger's own threshold; only if it passes does every registered appender get notified, and each appender independently re-checks the message against its own threshold before writing anything\" style=\"width:100%;border-radius:8px;margin:4px 0 14px 0;\" /><ul style=\"margin:0 0 12px 1.25em;padding:0;list-style:disc;\"><li style=\"margin:4px 0;\"><strong>Actors:</strong> Application code (calls the logger), LoggerFactory (creates and caches named loggers).</li><li style=\"margin:4px 0;\"><strong>Scope:</strong> log levels, two-tier threshold filtering, pluggable formatting and output destinations, and name-based logger caching.</li></ul><p style=\"border-left:3px solid #5b5fc7;padding-left:12px;font-style:italic;margin:0 0 12px 0;\">The distinguishing mechanic is a real two-gate filtering pipeline: the logger's own threshold decides whether a message is even worth producing at all, and each appender's own threshold independently decides whether that specific destination cares about it, combined with a factory that always returns the identical logger instance for a given name.</p></div>"
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "2. Functional Requirements",
+          "content": "2. Functional Requirements"
+        },
+        {
+          "type": "paragraph",
+          "text": "The system must support the following <strong>core capabilities</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Get a named logger:</strong> repeated lookups for the same name must return the identical logger instance.",
+            "<strong>Log a message at a level:</strong> DEBUG, INFO, WARN, or ERROR, filtered first by the logger's own threshold.",
+            "<strong>Register multiple appenders:</strong> each with its own independent minimum level and its own output format.",
+            "<strong>Format log output:</strong> support at least plain text and JSON formatting, chosen per appender.",
+            "<strong>Reject invalid configuration:</strong> a blank logger name, a duplicate appender registration, or removing an appender that was never added."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "3. Non-Functional Requirements",
+          "content": "3. Non-Functional Requirements"
+        },
+        {
+          "type": "paragraph",
+          "text": "Beyond correctness, the design should hold up along five <strong>quality pillars</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926004194-893268415.png",
+          "metadata": {
+            "alt": "Five non-functional pillars: scalability, extensibility, maintainability, performance, thread safety"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Scalability:</strong> a large codebase with many named loggers must not require touching existing logging logic.",
+            "<strong>Extensibility:</strong> a new appender destination or a new output format should plug in without rewriting the logger.",
+            "<strong>Maintainability:</strong> formatting, output, and instance lookup are isolated in their own classes.",
+            "<strong>Performance:</strong> a message dropped below the logger's own threshold costs a single comparison, never touching any appender.",
+            "<strong>Thread safety:</strong> concurrent logging from many threads, and concurrent lookups of the same new logger name, must both behave correctly."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "4. Clarifying Questions",
+          "content": "4. Clarifying Questions"
+        },
+        {
+          "type": "paragraph",
+          "text": "Questions worth asking the interviewer <strong>before designing</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Should a logger's threshold be configurable at runtime, or fixed at creation time?",
+            "Should child loggers inherit configuration from a parent logger by name hierarchy, as many real frameworks do?",
+            "Is asynchronous, buffered writing required, or is synchronous, immediate writing acceptable?",
+            "Should log records include structured contextual fields beyond the message string?",
+            "Is log rotation or retention in scope, or purely the logging call path itself?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "5. Assumptions & Constraints",
+          "content": "5. Assumptions & Constraints"
+        },
+        {
+          "type": "paragraph",
+          "text": "To keep the design focused, we make these <strong>explicit assumptions</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Logger thresholds are set at creation time and can be reconfigured directly on the instance, but there is no parent-child hierarchy in this design.",
+            "Logging is synchronous, a log call blocks until every registered appender has processed the message.",
+            "The file appender simulates file output by accumulating formatted lines in memory, representing what would otherwise be written to disk.",
+            "A log record carries only a sequence number, logger name, level, and message, no structured contextual fields.",
+            "Log rotation and retention policies are out of scope, noted as a follow-up."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "6. Core Entities",
+          "content": "6. Core Entities"
+        },
+        {
+          "type": "paragraph",
+          "text": "The design centers on <strong>four core entities</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926005763-153470962.png",
+          "metadata": {
+            "alt": "Core entities: Logger, LogAppender, LogFormatter, and LogRecord"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Logger:</strong> a named source of log events with its own threshold and a set of registered appenders.",
+            "<strong>LogAppender:</strong> one output destination, with its own threshold and its own formatter.",
+            "<strong>LogFormatter:</strong> converts a log record into an output string.",
+            "<strong>LogRecord:</strong> one logged event, capturing its level, source logger, and message."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "7. Relationships Between Entities",
+          "content": "7. Relationships Between Entities"
+        },
+        {
+          "type": "paragraph",
+          "text": "These entities connect through a small set of <strong>well-defined relationships</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926007359-479360309.png",
+          "metadata": {
+            "alt": "A logger has many appenders; each appender formats through one formatter; a logger produces log records that are delivered to every appender"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Logger to LogAppender</strong> is one-to-many.",
+            "<strong>LogAppender to LogFormatter</strong> is one-to-one, each appender owns its own formatting strategy.",
+            "<strong>Logger to LogRecord</strong> is a production relationship: every log call that passes the logger's threshold produces one record."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "8. UML Class Diagram",
+          "content": "8. UML Class Diagram"
+        },
+        {
+          "type": "paragraph",
+          "text": "The class diagram below shows the <strong>full static structure</strong>, including the Strategy and Observer interfaces:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926020598-584161492.png",
+          "metadata": {
+            "alt": "UML class diagram for the Logging Framework"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "9. Design Patterns Used",
+          "content": "9. Design Patterns Used"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three patterns keep formatting, output, and instance lookup <strong>decoupled from the core logger</strong>."
+        },
+        {
+          "type": "heading2",
+          "text": "9.1 Strategy Pattern (Formatting)",
+          "content": "9.1 Strategy Pattern (Formatting)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> plain text and JSON formatting fundamentally disagree on how a log record becomes a string, and different appenders legitimately want different formats for the same underlying record."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926008795-650319813.png",
+          "metadata": {
+            "alt": "LogFormatter interface with PlainTextLogFormatter and JsonLogFormatter implementations"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> a new output format (XML, a custom structured format) is a new strategy implementation, with zero changes to Logger or any appender's filtering logic. <strong>What it solves:</strong> it isolates formatting rules from the shared, stable filtering and delivery algorithm."
+        },
+        {
+          "type": "heading2",
+          "text": "9.2 Observer Pattern (Appenders)",
+          "content": "9.2 Observer Pattern (Appenders)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> a single log event often needs to reach several independent destinations at once, each deciding for itself whether the event matters to it."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926010445-634386002.png",
+          "metadata": {
+            "alt": "LogAppender interface notified by Logger, each appender carrying its own threshold and formatter"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> Logger does not need to know what an appender does with a record, only that it should be notified. <strong>What it solves:</strong> it decouples the core filtering workflow from output side effects."
+        },
+        {
+          "type": "heading2",
+          "text": "9.3 Factory Pattern (Named Instance Caching)",
+          "content": "9.3 Factory Pattern (Named Instance Caching)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> every part of a codebase that logs under the same name should share configuration and behavior, which only works if they all share the exact same Logger instance."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926012051-459860735.png",
+          "metadata": {
+            "alt": "LoggerFactory caching Logger instances by name, returning the same instance on repeated lookups"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> callers never construct a Logger directly, so the factory is the single place identity and configuration are controlled. <strong>What it solves:</strong> this is a common real-world variant of the Factory pattern, one that additionally caches and returns existing instances rather than always constructing a fresh one."
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "10. Class Design",
+          "content": "10. Class Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "Each class has a single, clear <strong>responsibility</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Logger:</strong> attributes name, minLevel, appenders; responsibility: gate log calls against its own threshold and notify appenders.",
+            "<strong>LogAppender implementations:</strong> attributes minLevel, formatter; responsibility: independently gate and write a record to one destination.",
+            "<strong>LogFormatter implementations:</strong> responsibility: render one record into an output string.",
+            "<strong>LoggerFactory:</strong> attributes a name-to-instance cache; responsibility: create and reuse named logger instances."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "11. Interface Design",
+          "content": "11. Interface Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two interfaces keep the design <strong>open for extension</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926013833-735501578.png",
+          "metadata": {
+            "alt": "LogFormatter and LogAppender interfaces with their key methods"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>LogFormatter:</strong> format(record): abstracts away exactly how a record becomes an output string.",
+            "<strong>LogAppender:</strong> onLog(record): abstracts away which destinations exist and how each independently decides to act."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "12. Sequence Diagrams",
+          "content": "12. Sequence Diagrams"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three flows below cover <strong>named logger caching</strong>, the <strong>two-tier filtering pipeline</strong>, and a <strong>rejected duplicate appender registration</strong>."
+        },
+        {
+          "type": "heading2",
+          "text": "12.1 Named Logger Caching",
+          "content": "12.1 Named Logger Caching"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926026493-204053934.png",
+          "metadata": {
+            "alt": "Two lookups for the same logger name return the exact same cached instance"
+          }
+        },
+        {
+          "type": "heading2",
+          "text": "12.2 Two-Tier Filtering",
+          "content": "12.2 Two-Tier Filtering"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926029124-386986108.png",
+          "metadata": {
+            "alt": "A DEBUG message is dropped by the logger's own threshold before any appender is notified; an INFO message passes the logger but is then independently accepted or ignored by each appender"
+          }
+        },
+        {
+          "type": "heading2",
+          "text": "12.3 Duplicate Appender Rejected",
+          "content": "12.3 Duplicate Appender Rejected"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926030814-80736788.png",
+          "metadata": {
+            "alt": "Registering the same appender instance a second time on the same logger is rejected"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "13. Important Workflows",
+          "content": "13. Important Workflows"
+        },
+        {
+          "type": "paragraph",
+          "text": "The <strong>two-tier filtering workflow</strong>, alongside its rejection branch, looks like this:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926015546-923488277.png",
+          "metadata": {
+            "alt": "The logger's own threshold gates first; only messages that pass are offered to every appender, each of which applies its own independent threshold"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Happy path, dropped early:</strong> log a message below the logger's own threshold → dropped immediately, no appender is ever notified.",
+            "<strong>Happy path, delivered selectively:</strong> log a message that passes the logger's threshold → every appender is notified → each writes it only if it also passes that appender's own, independent threshold.",
+            "<strong>Rejection path:</strong> register the same appender instance twice on one logger → rejected, since duplicate registration would produce duplicate output lines for every future message."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "14. Public APIs / Methods",
+          "content": "14. Public APIs / Methods"
+        },
+        {
+          "type": "paragraph",
+          "text": "The service exposes a <strong>small, intention-revealing API</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>LoggerFactory.getLogger(name):</strong> returns the cached logger for this name, creating one on first use.",
+            "<strong>Logger.log(level, message):</strong> gates against the logger's own threshold, then notifies every registered appender.",
+            "<strong>Logger.addAppender(appender):</strong> registers a new output destination, rejecting an already-registered instance.",
+            "<strong>Logger.removeAppender(appender):</strong> unregisters a destination, rejecting one that was never added."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "15. Exception Handling",
+          "content": "15. Exception Handling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three custom exceptions cover the <strong>realistic failure modes</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926017176-508552053.png",
+          "metadata": {
+            "alt": "InvalidLoggerNameException, DuplicateAppenderException, AppenderNotRegisteredException"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>InvalidLoggerNameException:</strong> getLogger is called with a blank or empty name.",
+            "<strong>DuplicateAppenderException:</strong> the same appender instance is registered on a logger a second time.",
+            "<strong>AppenderNotRegisteredException:</strong> removeAppender is called with an appender that was never added to that logger."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "16. Concurrency Considerations",
+          "content": "16. Concurrency Considerations"
+        },
+        {
+          "type": "paragraph",
+          "text": "The <strong>critical race</strong> is two threads requesting the same brand-new logger name at nearly the same moment."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926018797-829190818.png",
+          "metadata": {
+            "alt": "Two threads racing to create a logger for the same new name; synchronization ensures one thread creates and caches it before the other reads the cache"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Synchronizing the check-then-create step in the factory's cache ensures two concurrent lookups for a brand-new name can never both construct and cache a separate Logger, which would silently break the identity guarantee the whole design depends on."
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "17. Extensibility Discussion",
+          "content": "17. Extensibility Discussion"
+        },
+        {
+          "type": "paragraph",
+          "text": "The pattern choices make several <strong>future features</strong> low-friction to add:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A new output format (XML, a custom structured format) is a new LogFormatter implementation.",
+            "A new destination (a network log shipper, a database sink) is a new LogAppender implementation.",
+            "Parent-child logger hierarchies can be layered on by having a logger consult a parent's appenders when its own threshold passes.",
+            "Asynchronous, buffered writing can be added by wrapping any LogAppender in a queue-backed decorator without changing Logger at all."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "18. SOLID Principles Applied",
+          "content": "18. SOLID Principles Applied"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Single Responsibility:</strong> Logger gates and delivers, LogFormatter renders, LogAppender writes, each for one reason to change.",
+            "<strong>Open/Closed:</strong> new formats or destinations extend via new classes, not edits to Logger.",
+            "<strong>Liskov Substitution:</strong> any LogFormatter or LogAppender implementation can replace another without breaking the logger.",
+            "<strong>Interface Segregation:</strong> LogAppender exposes only the single callback a destination actually needs.",
+            "<strong>Dependency Inversion:</strong> Logger depends on the LogAppender interface, and each appender depends on the LogFormatter interface, never on concrete classes."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "19. Edge Cases",
+          "content": "19. Edge Cases"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A message exactly at the logger's threshold level is accepted, using an inclusive comparison, not just messages strictly above it.",
+            "An appender configured with a stricter threshold than the logger it is attached to simply never sees the messages the logger already lets through below that stricter line.",
+            "A logger with zero registered appenders still accepts and processes log calls that pass its own threshold, it simply has nobody to notify.",
+            "Two different logger names that happen to share a prefix are still entirely independent instances with independent thresholds and appenders."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "20. Complexity Analysis",
+          "content": "20. Complexity Analysis"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>log:</strong> O(1) if dropped by the logger's own threshold, otherwise O(a) where a is the number of registered appenders.",
+            "<strong>getLogger:</strong> O(1) amortized, a single cache lookup and, on a cache miss, a single insertion.",
+            "<strong>Space:</strong> O(loggers + appenders) held in memory."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "21. Database Design",
+          "content": "21. Database Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "A relational schema shows how logs and appender configuration <strong>could be persisted</strong> for a database-backed log store:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926032457-855347476.png",
+          "metadata": {
+            "alt": "ER diagram: Logger, LogRecord, and AppenderConfig"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "LOG_RECORD stores every accepted record, keyed by a monotonically increasing sequence number for stable ordering.",
+            "APPENDER_CONFIG lets a deployment's appender wiring be reconstructed from configuration rather than hardcoded at startup."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "22. Improvements & Follow-Up Questions",
+          "content": "22. Improvements & Follow-Up Questions"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Add parent-child logger hierarchies with configuration inheritance.",
+            "Support asynchronous, buffered appenders for high-throughput logging.",
+            "Add structured contextual fields to LogRecord beyond a single message string.",
+            "In a distributed deployment, ship log records to a centralized aggregation service instead of, or alongside, local appenders."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Complete Code Implementation",
+          "content": "Complete Code Implementation"
+        },
+        {
+          "type": "paragraph",
+          "text": "LogLevel, LogRecord, and the exceptions:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Severity of a single log record, ordered from least to most severe.\nenum LogLevel {\n    DEBUG(0), INFO(1), WARN(2), ERROR(3); // each level carries a numeric rank for comparison\n\n    private final int rank; // numeric severity rank\n\n    LogLevel(int rank) {\n        this.rank = rank; // store the rank\n    }\n\n    public int getRank() { return rank; } // rank getter, used to compare two levels\n}\n\n// One logged event, capturing its origin, level, and message.\nclass LogRecord {\n    private final int sequenceNumber;   // monotonically increasing order marker\n    private final String loggerName;      // which logger produced this record\n    private final LogLevel level;           // severity of this record\n    private final String message;             // the logged text\n\n    public LogRecord(int sequenceNumber, String loggerName, LogLevel level, String message) {\n        this.sequenceNumber = sequenceNumber; // store sequence number\n        this.loggerName = loggerName;           // store logger name\n        this.level = level;                       // store level\n        this.message = message;                     // store message\n    }\n\n    public String getLoggerName() { return loggerName; } // logger name getter\n    public LogLevel getLevel() { return level; }             // level getter\n    public String getMessage() { return message; }             // message getter\n}\n\n// Custom exceptions for the realistic failure modes.\nclass InvalidLoggerNameException extends RuntimeException {\n    public InvalidLoggerNameException(String msg) { super(msg); }\n}\nclass DuplicateAppenderException extends RuntimeException {\n    public DuplicateAppenderException(String msg) { super(msg); }\n}\nclass AppenderNotRegisteredException extends RuntimeException {\n    public AppenderNotRegisteredException(String msg) { super(msg); }\n}",
+            "python": "from enum import Enum\n\n# Severity of a single log record, ordered from least to most severe.\nclass LogLevel(Enum):\n    DEBUG = 0\n    INFO = 1\n    WARN = 2\n    ERROR = 3\n\n# One logged event, capturing its origin, level, and message.\nclass LogRecord:\n    def __init__(self, sequence_number, logger_name, level, message):\n        self.sequence_number = sequence_number  # monotonically increasing order marker\n        self.logger_name = logger_name            # which logger produced this record\n        self.level = level                          # severity of this record\n        self.message = message                        # the logged text\n\n# Custom exceptions for the realistic failure modes.\nclass InvalidLoggerNameException(Exception): pass\nclass DuplicateAppenderException(Exception): pass\nclass AppenderNotRegisteredException(Exception): pass",
+            "cpp": "#include <string>\n#include <stdexcept>\nusing namespace std;\n\n// Severity of a single log record, ordered from least to most severe.\nenum class LogLevel { DEBUG = 0, INFO = 1, WARN = 2, ERROR = 3 };\n\n// One logged event, capturing its origin, level, and message.\nclass LogRecord {\npublic:\n    int sequenceNumber;       // monotonically increasing order marker\n    string loggerName;           // which logger produced this record\n    LogLevel level;                 // severity of this record\n    string message;                    // the logged text\n\n    LogRecord() : sequenceNumber(0), level(LogLevel::DEBUG) {}\n    LogRecord(int seq, string logger, LogLevel lvl, string msg)\n        : sequenceNumber(seq), loggerName(logger), level(lvl), message(msg) {}\n    // constructor stores sequence number, logger name, level, and message\n};\n\n// Custom exceptions for the realistic failure modes.\nclass InvalidLoggerNameException : public runtime_error {\npublic: InvalidLoggerNameException(const string& msg) : runtime_error(msg) {}\n};\nclass DuplicateAppenderException : public runtime_error {\npublic: DuplicateAppenderException(const string& msg) : runtime_error(msg) {}\n};\nclass AppenderNotRegisteredException : public runtime_error {\npublic: AppenderNotRegisteredException(const string& msg) : runtime_error(msg) {}\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "LogFormatter, PlainTextLogFormatter, JsonLogFormatter, LogAppender, ConsoleLogAppender and FileLogAppender:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Strategy interface: how a log record becomes an output string.\ninterface LogFormatter {\n    String format(LogRecord record); // renders the record into a single output string\n}\n\n// Renders a record as a bracketed level, logger name, and message.\nclass PlainTextLogFormatter implements LogFormatter {\n    @Override\n    public String format(LogRecord record) {\n        return \"[\" + record.getLevel() + \"] \" + record.getLoggerName() + \": \" + record.getMessage(); // simple readable line\n    }\n}\n\n// Renders a record as a single line JSON object.\nclass JsonLogFormatter implements LogFormatter {\n    @Override\n    public String format(LogRecord record) {\n        return \"{\\\"level\\\":\\\"\" + record.getLevel() + \"\\\",\\\"logger\\\":\\\"\" + record.getLoggerName() + \"\\\",\\\"message\\\":\\\"\" + record.getMessage() + \"\\\"}\"; // machine readable line\n    }\n}\n\n// Observer interface: one output destination for log records.\ninterface LogAppender {\n    void onLog(LogRecord record); // decides independently whether and how to write this record\n}\n\n// Writes matching records to the console, using its own threshold and formatter.\nclass ConsoleLogAppender implements LogAppender {\n    private final LogLevel minLevel;      // this appender's own threshold\n    private final LogFormatter formatter;   // this appender's own formatting strategy\n\n    public ConsoleLogAppender(LogLevel minLevel, LogFormatter formatter) {\n        this.minLevel = minLevel;     // store threshold\n        this.formatter = formatter;     // store formatter\n    }\n\n    @Override\n    public void onLog(LogRecord record) {\n        if (record.getLevel().getRank() < minLevel.getRank()) return; // below this appender's own threshold, ignore\n        System.out.println(formatter.format(record)); // format and print\n    }\n}\n\n// Simulates writing matching records to a file by accumulating formatted lines in memory.\nclass FileLogAppender implements LogAppender {\n    private final LogLevel minLevel;                                     // this appender's own threshold\n    private final LogFormatter formatter;                                  // this appender's own formatting strategy\n    private final java.util.List<String> capturedLines = new java.util.ArrayList<>(); // simulated file contents\n\n    public FileLogAppender(LogLevel minLevel, LogFormatter formatter) {\n        this.minLevel = minLevel;     // store threshold\n        this.formatter = formatter;     // store formatter\n    }\n\n    @Override\n    public void onLog(LogRecord record) {\n        if (record.getLevel().getRank() < minLevel.getRank()) return; // below this appender's own threshold, ignore\n        capturedLines.add(formatter.format(record)); // format and append to the simulated file\n    }\n\n    public java.util.List<String> getCapturedLines() { return capturedLines; } // exposes the simulated file's final contents\n}",
+            "python": "# Strategy interface: how a log record becomes an output string.\nclass LogFormatter:\n    def format(self, record): raise NotImplementedError\n\n# Renders a record as a bracketed level, logger name, and message.\nclass PlainTextLogFormatter(LogFormatter):\n    def format(self, record):\n        return f\"[{record.level.name}] {record.logger_name}: {record.message}\"  # simple readable line\n\n# Renders a record as a single line JSON object.\nclass JsonLogFormatter(LogFormatter):\n    def format(self, record):\n        return f'{{\"level\":\"{record.level.name}\",\"logger\":\"{record.logger_name}\",\"message\":\"{record.message}\"}}'  # machine readable line\n\n# Observer interface: one output destination for log records.\nclass LogAppender:\n    def on_log(self, record): raise NotImplementedError\n\n# Writes matching records to the console, using its own threshold and formatter.\nclass ConsoleLogAppender(LogAppender):\n    def __init__(self, min_level, formatter):\n        self.min_level = min_level      # this appender's own threshold\n        self.formatter = formatter        # this appender's own formatting strategy\n\n    def on_log(self, record):\n        if record.level.value < self.min_level.value:\n            return  # below this appender's own threshold, ignore\n        print(self.formatter.format(record))  # format and print\n\n# Simulates writing matching records to a file by accumulating formatted lines in memory.\nclass FileLogAppender(LogAppender):\n    def __init__(self, min_level, formatter):\n        self.min_level = min_level      # this appender's own threshold\n        self.formatter = formatter        # this appender's own formatting strategy\n        self.captured_lines = []            # simulated file contents\n\n    def on_log(self, record):\n        if record.level.value < self.min_level.value:\n            return  # below this appender's own threshold, ignore\n        self.captured_lines.append(self.formatter.format(record))  # format and append to the simulated file",
+            "cpp": "#include <string>\n#include <vector>\n#include <memory>\n#include <iostream>\nusing namespace std;\n\n// Reusable level name lookup, since C++ enum class has no built in name() like Java or Python.\nstring levelName(LogLevel level) {\n    if (level == LogLevel::DEBUG) return \"DEBUG\";     // DEBUG name\n    if (level == LogLevel::INFO) return \"INFO\";          // INFO name\n    if (level == LogLevel::WARN) return \"WARN\";             // WARN name\n    return \"ERROR\";                                            // ERROR name\n}\n\n// Strategy interface: how a log record becomes an output string.\nclass LogFormatter {\npublic:\n    virtual string format(const LogRecord& record) = 0;\n    virtual ~LogFormatter() {}\n};\n\n// Renders a record as a bracketed level, logger name, and message.\nclass PlainTextLogFormatter : public LogFormatter {\npublic:\n    string format(const LogRecord& record) override {\n        return \"[\" + levelName(record.level) + \"] \" + record.loggerName + \": \" + record.message; // simple readable line\n    }\n};\n\n// Renders a record as a single line JSON object.\nclass JsonLogFormatter : public LogFormatter {\npublic:\n    string format(const LogRecord& record) override {\n        return \"{\\\"level\\\":\\\"\" + levelName(record.level) + \"\\\",\\\"logger\\\":\\\"\" + record.loggerName + \"\\\",\\\"message\\\":\\\"\" + record.message + \"\\\"}\"; // machine readable line\n    }\n};\n\n// Observer interface: one output destination for log records.\nclass LogAppender {\npublic:\n    virtual void onLog(const LogRecord& record) = 0;\n    virtual ~LogAppender() {}\n};\n\n// Writes matching records to the console, using its own threshold and formatter.\nclass ConsoleLogAppender : public LogAppender {\n    LogLevel minLevel;                    // this appender's own threshold\n    shared_ptr<LogFormatter> formatter;      // this appender's own formatting strategy\n\npublic:\n    ConsoleLogAppender(LogLevel level, shared_ptr<LogFormatter> fmt) : minLevel(level), formatter(fmt) {} // store threshold and formatter\n\n    void onLog(const LogRecord& record) override {\n        if ((int)record.level < (int)minLevel) return; // below this appender's own threshold, ignore\n        cout << formatter->format(record) << endl;         // format and print\n    }\n};\n\n// Simulates writing matching records to a file by accumulating formatted lines in memory.\nclass FileLogAppender : public LogAppender {\n    LogLevel minLevel;                    // this appender's own threshold\n    shared_ptr<LogFormatter> formatter;      // this appender's own formatting strategy\n    vector<string> capturedLines;               // simulated file contents\n\npublic:\n    FileLogAppender(LogLevel level, shared_ptr<LogFormatter> fmt) : minLevel(level), formatter(fmt) {} // store threshold and formatter\n\n    void onLog(const LogRecord& record) override {\n        if ((int)record.level < (int)minLevel) return;      // below this appender's own threshold, ignore\n        capturedLines.push_back(formatter->format(record));    // format and append to the simulated file\n    }\n\n    vector<string> getCapturedLines() { return capturedLines; } // exposes the simulated file's final contents\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Logger and LoggerFactory, including the two-tier filtering and name-based caching logic:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// A named source of log events, gating calls against its own threshold before notifying appenders.\nclass Logger {\n    private final String name;                                              // this logger's name\n    private LogLevel minLevel;                                                 // this logger's own threshold\n    private final java.util.List<LogAppender> appenders = new java.util.ArrayList<>(); // registered destinations\n    private int sequenceCounter = 0;                                                // running sequence number\n\n    public Logger(String name, LogLevel minLevel) {\n        this.name = name;         // store name\n        this.minLevel = minLevel;   // store threshold\n    }\n\n    public String getName() { return name; } // name getter\n\n    // Registers a new appender, rejecting an already-registered instance.\n    public void addAppender(LogAppender appender) {\n        if (appenders.contains(appender)) { // this exact instance is already registered\n            throw new DuplicateAppenderException(\"Appender is already registered on logger \" + name);\n        }\n        appenders.add(appender); // register it\n    }\n\n    // Unregisters an appender, rejecting one that was never added.\n    public void removeAppender(LogAppender appender) {\n        if (!appenders.remove(appender)) { // remove returns false if it was never present\n            throw new AppenderNotRegisteredException(\"Appender is not registered on logger \" + name);\n        }\n    }\n\n    // Gates the call against this logger's own threshold, then notifies every appender.\n    public void log(LogLevel level, String message) {\n        if (level.getRank() < minLevel.getRank()) return; // below this logger's own threshold, drop entirely\n        sequenceCounter++;                                    // bump the sequence counter\n        LogRecord record = new LogRecord(sequenceCounter, name, level, message); // build the record\n        for (LogAppender appender : appenders) appender.onLog(record);             // notify every registered appender\n    }\n}\n\n// Creates and caches Logger instances by name, guaranteeing the same name always returns the same instance.\nclass LoggerFactory {\n    private final java.util.Map<String, Logger> cache = new java.util.HashMap<>(); // name -> Logger\n\n    // Returns the cached logger for this name, creating and caching one on first use.\n    public synchronized Logger getLogger(String name) {\n        if (name == null || name.trim().isEmpty()) { // blank names are not allowed\n            throw new InvalidLoggerNameException(\"Logger name must not be blank\");\n        }\n        if (cache.containsKey(name)) return cache.get(name); // already cached, return the same instance\n        Logger logger = new Logger(name, LogLevel.INFO);        // default threshold is INFO\n        cache.put(name, logger);                                  // cache it for future lookups\n        return logger; // hand back the newly created logger\n    }\n}",
+            "python": "# A named source of log events, gating calls against its own threshold before notifying appenders.\nclass Logger:\n    def __init__(self, name, min_level):\n        self.name = name              # this logger's name\n        self.min_level = min_level      # this logger's own threshold\n        self.appenders = []                # registered destinations\n        self.sequence_counter = 0             # running sequence number\n\n    def add_appender(self, appender):\n        if appender in self.appenders:  # this exact instance is already registered\n            raise DuplicateAppenderException(f\"Appender is already registered on logger {self.name}\")\n        self.appenders.append(appender)  # register it\n\n    def remove_appender(self, appender):\n        if appender not in self.appenders:  # it was never present\n            raise AppenderNotRegisteredException(f\"Appender is not registered on logger {self.name}\")\n        self.appenders.remove(appender)  # unregister it\n\n    def log(self, level, message):\n        if level.value < self.min_level.value:\n            return  # below this logger's own threshold, drop entirely\n        self.sequence_counter += 1  # bump the sequence counter\n        record = LogRecord(self.sequence_counter, self.name, level, message)  # build the record\n        for appender in self.appenders:\n            appender.on_log(record)  # notify every registered appender\n\n# Creates and caches Logger instances by name, guaranteeing the same name always returns the same instance.\nclass LoggerFactory:\n    def __init__(self):\n        self.cache = {}  # name -> Logger\n\n    def get_logger(self, name):\n        if name is None or name.strip() == \"\":  # blank names are not allowed\n            raise InvalidLoggerNameException(\"Logger name must not be blank\")\n        if name in self.cache:\n            return self.cache[name]  # already cached, return the same instance\n        logger = Logger(name, LogLevel.INFO)  # default threshold is INFO\n        self.cache[name] = logger  # cache it for future lookups\n        return logger  # hand back the newly created logger",
+            "cpp": "#include <string>\n#include <vector>\n#include <map>\n#include <memory>\n#include <algorithm>\nusing namespace std;\n\n// A named source of log events, gating calls against its own threshold before notifying appenders.\nclass Logger {\n    string name;                               // this logger's name\n    LogLevel minLevel;                            // this logger's own threshold\n    vector<shared_ptr<LogAppender>> appenders;       // registered destinations\n    int sequenceCounter = 0;                            // running sequence number\n\npublic:\n    Logger() : minLevel(LogLevel::INFO) {}\n    Logger(string n, LogLevel level) : name(n), minLevel(level) {} // constructor stores name and threshold\n\n    string getName() { return name; } // name getter\n\n    void addAppender(shared_ptr<LogAppender> appender) {\n        for (auto& existing : appenders) {                                     // scan every already-registered appender\n            if (existing == appender) throw DuplicateAppenderException(\"Appender is already registered on logger \" + name); // same instance found\n        }\n        appenders.push_back(appender); // register it\n    }\n\n    void removeAppender(shared_ptr<LogAppender> appender) {\n        auto it = find(appenders.begin(), appenders.end(), appender); // look for this exact instance\n        if (it == appenders.end()) throw AppenderNotRegisteredException(\"Appender is not registered on logger \" + name); // it was never present\n        appenders.erase(it); // unregister it\n    }\n\n    void log(LogLevel level, string message) {\n        if ((int)level < (int)minLevel) return;                     // below this logger's own threshold, drop entirely\n        sequenceCounter++;                                              // bump the sequence counter\n        LogRecord record(sequenceCounter, name, level, message);          // build the record\n        for (auto& appender : appenders) appender->onLog(record);            // notify every registered appender\n    }\n};\n\n// Creates and caches Logger instances by name, guaranteeing the same name always returns the same instance.\nclass LoggerFactory {\n    map<string, shared_ptr<Logger>> cache; // name -> Logger\n\npublic:\n    shared_ptr<Logger> getLogger(string name) {\n        if (name.empty()) throw InvalidLoggerNameException(\"Logger name must not be blank\"); // blank names are not allowed\n        if (cache.find(name) != cache.end()) return cache.at(name);   // already cached, return the same instance\n        auto logger = make_shared<Logger>(name, LogLevel::INFO);         // default threshold is INFO\n        cache[name] = logger;                                               // cache it for future lookups\n        return logger; // hand back the newly created logger\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Complete, self-contained, directly runnable file (every class above combined into one file per language, exactly as you would actually copy, compile and run it), demonstrating name-based logger caching, the two-tier filtering pipeline, a duplicate appender rejection, and an unregistered appender removal rejection:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        LoggerFactory factory = new LoggerFactory();\n\n        Logger logger1 = factory.getLogger(\"com.app.Service\");\n        Logger logger2 = factory.getLogger(\"com.app.Service\");\n        System.out.println(\"Same instance: \" + (logger1 == logger2));\n\n        ConsoleLogAppender consoleAppender = new ConsoleLogAppender(LogLevel.WARN, new PlainTextLogFormatter());\n        FileLogAppender fileAppender = new FileLogAppender(LogLevel.DEBUG, new JsonLogFormatter());\n        logger1.addAppender(consoleAppender);\n        logger1.addAppender(fileAppender);\n\n        logger1.log(LogLevel.DEBUG, \"starting up\");\n        logger1.log(LogLevel.INFO, \"service started\");\n        logger1.log(LogLevel.ERROR, \"something failed\");\n\n        try {\n            logger1.addAppender(consoleAppender);\n        } catch (DuplicateAppenderException e) {\n            System.out.println(\"Caught expected: \" + e.getMessage());\n        }\n\n        LogAppender neverAdded = new ConsoleLogAppender(LogLevel.ERROR, new PlainTextLogFormatter());\n        try {\n            logger1.removeAppender(neverAdded);\n        } catch (AppenderNotRegisteredException e) {\n            System.out.println(\"Caught expected: \" + e.getMessage());\n        }\n\n        try {\n            factory.getLogger(\"\");\n        } catch (InvalidLoggerNameException e) {\n            System.out.println(\"Caught expected: \" + e.getMessage());\n        }\n\n        System.out.println(\"Captured file lines: \" + fileAppender.getCapturedLines().size());\n        for (String line : fileAppender.getCapturedLines()) {\n            System.out.println(line);\n        }\n    }\n}\n\nenum LogLevel {\n    DEBUG(0), INFO(1), WARN(2), ERROR(3);\n\n    private final int rank;\n\n    LogLevel(int rank) {\n        this.rank = rank;\n    }\n\n    public int getRank() { return rank; }\n}\n\nclass LogRecord {\n    private final int sequenceNumber;\n    private final String loggerName;\n    private final LogLevel level;\n    private final String message;\n\n    public LogRecord(int sequenceNumber, String loggerName, LogLevel level, String message) {\n        this.sequenceNumber = sequenceNumber;\n        this.loggerName = loggerName;\n        this.level = level;\n        this.message = message;\n    }\n\n    public String getLoggerName() { return loggerName; }\n    public LogLevel getLevel() { return level; }\n    public String getMessage() { return message; }\n}\n\nclass InvalidLoggerNameException extends RuntimeException {\n    public InvalidLoggerNameException(String msg) { super(msg); }\n}\nclass DuplicateAppenderException extends RuntimeException {\n    public DuplicateAppenderException(String msg) { super(msg); }\n}\nclass AppenderNotRegisteredException extends RuntimeException {\n    public AppenderNotRegisteredException(String msg) { super(msg); }\n}\n\ninterface LogFormatter {\n    String format(LogRecord record);\n}\n\nclass PlainTextLogFormatter implements LogFormatter {\n    @Override\n    public String format(LogRecord record) {\n        return \"[\" + record.getLevel() + \"] \" + record.getLoggerName() + \": \" + record.getMessage();\n    }\n}\n\nclass JsonLogFormatter implements LogFormatter {\n    @Override\n    public String format(LogRecord record) {\n        return \"{\\\"level\\\":\\\"\" + record.getLevel() + \"\\\",\\\"logger\\\":\\\"\" + record.getLoggerName() + \"\\\",\\\"message\\\":\\\"\" + record.getMessage() + \"\\\"}\";\n    }\n}\n\ninterface LogAppender {\n    void onLog(LogRecord record);\n}\n\nclass ConsoleLogAppender implements LogAppender {\n    private final LogLevel minLevel;\n    private final LogFormatter formatter;\n\n    public ConsoleLogAppender(LogLevel minLevel, LogFormatter formatter) {\n        this.minLevel = minLevel;\n        this.formatter = formatter;\n    }\n\n    @Override\n    public void onLog(LogRecord record) {\n        if (record.getLevel().getRank() < minLevel.getRank()) return;\n        System.out.println(formatter.format(record));\n    }\n}\n\nclass FileLogAppender implements LogAppender {\n    private final LogLevel minLevel;\n    private final LogFormatter formatter;\n    private final List<String> capturedLines = new ArrayList<>();\n\n    public FileLogAppender(LogLevel minLevel, LogFormatter formatter) {\n        this.minLevel = minLevel;\n        this.formatter = formatter;\n    }\n\n    @Override\n    public void onLog(LogRecord record) {\n        if (record.getLevel().getRank() < minLevel.getRank()) return;\n        capturedLines.add(formatter.format(record));\n    }\n\n    public List<String> getCapturedLines() { return capturedLines; }\n}\n\nclass Logger {\n    private final String name;\n    private LogLevel minLevel;\n    private final List<LogAppender> appenders = new ArrayList<>();\n    private int sequenceCounter = 0;\n\n    public Logger(String name, LogLevel minLevel) {\n        this.name = name;\n        this.minLevel = minLevel;\n    }\n\n    public String getName() { return name; }\n\n    public void addAppender(LogAppender appender) {\n        if (appenders.contains(appender)) {\n            throw new DuplicateAppenderException(\"Appender is already registered on logger \" + name);\n        }\n        appenders.add(appender);\n    }\n\n    public void removeAppender(LogAppender appender) {\n        if (!appenders.remove(appender)) {\n            throw new AppenderNotRegisteredException(\"Appender is not registered on logger \" + name);\n        }\n    }\n\n    public void log(LogLevel level, String message) {\n        if (level.getRank() < minLevel.getRank()) return;\n        sequenceCounter++;\n        LogRecord record = new LogRecord(sequenceCounter, name, level, message);\n        for (LogAppender appender : appenders) appender.onLog(record);\n    }\n}\n\nclass LoggerFactory {\n    private final Map<String, Logger> cache = new HashMap<>();\n\n    public synchronized Logger getLogger(String name) {\n        if (name == null || name.trim().isEmpty()) {\n            throw new InvalidLoggerNameException(\"Logger name must not be blank\");\n        }\n        if (cache.containsKey(name)) return cache.get(name);\n        Logger logger = new Logger(name, LogLevel.INFO);\n        cache.put(name, logger);\n        return logger;\n    }\n}",
+            "python": "class LogLevelValue:\n    def __init__(self, name, value):\n        self.name = name\n        self.value = value\n\nclass LogLevel:\n    DEBUG = LogLevelValue(\"DEBUG\", 0)\n    INFO = LogLevelValue(\"INFO\", 1)\n    WARN = LogLevelValue(\"WARN\", 2)\n    ERROR = LogLevelValue(\"ERROR\", 3)\n\nclass LogRecord:\n    def __init__(self, sequence_number, logger_name, level, message):\n        self.sequence_number = sequence_number\n        self.logger_name = logger_name\n        self.level = level\n        self.message = message\n\nclass InvalidLoggerNameException(Exception): pass\nclass DuplicateAppenderException(Exception): pass\nclass AppenderNotRegisteredException(Exception): pass\n\nclass LogFormatter:\n    def format(self, record): raise NotImplementedError\n\nclass PlainTextLogFormatter(LogFormatter):\n    def format(self, record):\n        return f\"[{record.level.name}] {record.logger_name}: {record.message}\"\n\nclass JsonLogFormatter(LogFormatter):\n    def format(self, record):\n        return f'{{\"level\":\"{record.level.name}\",\"logger\":\"{record.logger_name}\",\"message\":\"{record.message}\"}}'\n\nclass LogAppender:\n    def on_log(self, record): raise NotImplementedError\n\nclass ConsoleLogAppender(LogAppender):\n    def __init__(self, min_level, formatter):\n        self.min_level = min_level\n        self.formatter = formatter\n\n    def on_log(self, record):\n        if record.level.value < self.min_level.value:\n            return\n        print(self.formatter.format(record))\n\nclass FileLogAppender(LogAppender):\n    def __init__(self, min_level, formatter):\n        self.min_level = min_level\n        self.formatter = formatter\n        self.captured_lines = []\n\n    def on_log(self, record):\n        if record.level.value < self.min_level.value:\n            return\n        self.captured_lines.append(self.formatter.format(record))\n\nclass Logger:\n    def __init__(self, name, min_level):\n        self.name = name\n        self.min_level = min_level\n        self.appenders = []\n        self.sequence_counter = 0\n\n    def add_appender(self, appender):\n        if appender in self.appenders:\n            raise DuplicateAppenderException(f\"Appender is already registered on logger {self.name}\")\n        self.appenders.append(appender)\n\n    def remove_appender(self, appender):\n        if appender not in self.appenders:\n            raise AppenderNotRegisteredException(f\"Appender is not registered on logger {self.name}\")\n        self.appenders.remove(appender)\n\n    def log(self, level, message):\n        if level.value < self.min_level.value:\n            return\n        self.sequence_counter += 1\n        record = LogRecord(self.sequence_counter, self.name, level, message)\n        for appender in self.appenders:\n            appender.on_log(record)\n\nclass LoggerFactory:\n    def __init__(self):\n        self.cache = {}\n\n    def get_logger(self, name):\n        if name is None or name.strip() == \"\":\n            raise InvalidLoggerNameException(\"Logger name must not be blank\")\n        if name in self.cache:\n            return self.cache[name]\n        logger = Logger(name, LogLevel.INFO)\n        self.cache[name] = logger\n        return logger\n\ndef main():\n    factory = LoggerFactory()\n\n    logger1 = factory.get_logger(\"com.app.Service\")\n    logger2 = factory.get_logger(\"com.app.Service\")\n    print(f\"Same instance: {logger1 is logger2}\")\n\n    console_appender = ConsoleLogAppender(LogLevel.WARN, PlainTextLogFormatter())\n    file_appender = FileLogAppender(LogLevel.DEBUG, JsonLogFormatter())\n    logger1.add_appender(console_appender)\n    logger1.add_appender(file_appender)\n\n    logger1.log(LogLevel.DEBUG, \"starting up\")\n    logger1.log(LogLevel.INFO, \"service started\")\n    logger1.log(LogLevel.ERROR, \"something failed\")\n\n    try:\n        logger1.add_appender(console_appender)\n    except DuplicateAppenderException as e:\n        print(f\"Caught expected: {e}\")\n\n    never_added = ConsoleLogAppender(LogLevel.ERROR, PlainTextLogFormatter())\n    try:\n        logger1.remove_appender(never_added)\n    except AppenderNotRegisteredException as e:\n        print(f\"Caught expected: {e}\")\n\n    try:\n        factory.get_logger(\"\")\n    except InvalidLoggerNameException as e:\n        print(f\"Caught expected: {e}\")\n\n    print(f\"Captured file lines: {len(file_appender.captured_lines)}\")\n    for line in file_appender.captured_lines:\n        print(line)\n\nif __name__ == \"__main__\":\n    main()",
+            "cpp": "#include <iostream>\n#include <string>\n#include <vector>\n#include <map>\n#include <memory>\n#include <algorithm>\n#include <stdexcept>\nusing namespace std;\n\nenum class LogLevel { DEBUG = 0, INFO = 1, WARN = 2, ERROR = 3 };\n\nstring levelName(LogLevel level) {\n    if (level == LogLevel::DEBUG) return \"DEBUG\";\n    if (level == LogLevel::INFO) return \"INFO\";\n    if (level == LogLevel::WARN) return \"WARN\";\n    return \"ERROR\";\n}\n\nclass LogRecord {\npublic:\n    int sequenceNumber;\n    string loggerName;\n    LogLevel level;\n    string message;\n\n    LogRecord() : sequenceNumber(0), level(LogLevel::DEBUG) {}\n    LogRecord(int seq, string logger, LogLevel lvl, string msg)\n        : sequenceNumber(seq), loggerName(logger), level(lvl), message(msg) {}\n};\n\nclass InvalidLoggerNameException : public runtime_error {\npublic: InvalidLoggerNameException(const string& msg) : runtime_error(msg) {}\n};\nclass DuplicateAppenderException : public runtime_error {\npublic: DuplicateAppenderException(const string& msg) : runtime_error(msg) {}\n};\nclass AppenderNotRegisteredException : public runtime_error {\npublic: AppenderNotRegisteredException(const string& msg) : runtime_error(msg) {}\n};\n\nclass LogFormatter {\npublic:\n    virtual string format(const LogRecord& record) = 0;\n    virtual ~LogFormatter() {}\n};\n\nclass PlainTextLogFormatter : public LogFormatter {\npublic:\n    string format(const LogRecord& record) override {\n        return \"[\" + levelName(record.level) + \"] \" + record.loggerName + \": \" + record.message;\n    }\n};\n\nclass JsonLogFormatter : public LogFormatter {\npublic:\n    string format(const LogRecord& record) override {\n        return \"{\\\"level\\\":\\\"\" + levelName(record.level) + \"\\\",\\\"logger\\\":\\\"\" + record.loggerName + \"\\\",\\\"message\\\":\\\"\" + record.message + \"\\\"}\";\n    }\n};\n\nclass LogAppender {\npublic:\n    virtual void onLog(const LogRecord& record) = 0;\n    virtual ~LogAppender() {}\n};\n\nclass ConsoleLogAppender : public LogAppender {\n    LogLevel minLevel;\n    shared_ptr<LogFormatter> formatter;\n\npublic:\n    ConsoleLogAppender(LogLevel level, shared_ptr<LogFormatter> fmt) : minLevel(level), formatter(fmt) {}\n\n    void onLog(const LogRecord& record) override {\n        if ((int)record.level < (int)minLevel) return;\n        cout << formatter->format(record) << endl;\n    }\n};\n\nclass FileLogAppender : public LogAppender {\n    LogLevel minLevel;\n    shared_ptr<LogFormatter> formatter;\n    vector<string> capturedLines;\n\npublic:\n    FileLogAppender(LogLevel level, shared_ptr<LogFormatter> fmt) : minLevel(level), formatter(fmt) {}\n\n    void onLog(const LogRecord& record) override {\n        if ((int)record.level < (int)minLevel) return;\n        capturedLines.push_back(formatter->format(record));\n    }\n\n    vector<string> getCapturedLines() { return capturedLines; }\n};\n\nclass Logger {\n    string name;\n    LogLevel minLevel;\n    vector<shared_ptr<LogAppender>> appenders;\n    int sequenceCounter = 0;\n\npublic:\n    Logger() : minLevel(LogLevel::INFO) {}\n    Logger(string n, LogLevel level) : name(n), minLevel(level) {}\n\n    string getName() { return name; }\n\n    void addAppender(shared_ptr<LogAppender> appender) {\n        for (auto& existing : appenders) {\n            if (existing == appender) throw DuplicateAppenderException(\"Appender is already registered on logger \" + name);\n        }\n        appenders.push_back(appender);\n    }\n\n    void removeAppender(shared_ptr<LogAppender> appender) {\n        auto it = find(appenders.begin(), appenders.end(), appender);\n        if (it == appenders.end()) throw AppenderNotRegisteredException(\"Appender is not registered on logger \" + name);\n        appenders.erase(it);\n    }\n\n    void log(LogLevel level, string message) {\n        if ((int)level < (int)minLevel) return;\n        sequenceCounter++;\n        LogRecord record(sequenceCounter, name, level, message);\n        for (auto& appender : appenders) appender->onLog(record);\n    }\n};\n\nclass LoggerFactory {\n    map<string, shared_ptr<Logger>> cache;\n\npublic:\n    shared_ptr<Logger> getLogger(string name) {\n        if (name.empty()) throw InvalidLoggerNameException(\"Logger name must not be blank\");\n        if (cache.find(name) != cache.end()) return cache.at(name);\n        auto logger = make_shared<Logger>(name, LogLevel::INFO);\n        cache[name] = logger;\n        return logger;\n    }\n};\n\nint main() {\n    LoggerFactory factory;\n\n    shared_ptr<Logger> logger1 = factory.getLogger(\"com.app.Service\");\n    shared_ptr<Logger> logger2 = factory.getLogger(\"com.app.Service\");\n    cout << \"Same instance: \" << (logger1 == logger2 ? \"true\" : \"false\") << endl;\n\n    auto consoleAppender = make_shared<ConsoleLogAppender>(LogLevel::WARN, make_shared<PlainTextLogFormatter>());\n    auto fileAppender = make_shared<FileLogAppender>(LogLevel::DEBUG, make_shared<JsonLogFormatter>());\n    logger1->addAppender(consoleAppender);\n    logger1->addAppender(fileAppender);\n\n    logger1->log(LogLevel::DEBUG, \"starting up\");\n    logger1->log(LogLevel::INFO, \"service started\");\n    logger1->log(LogLevel::ERROR, \"something failed\");\n\n    try {\n        logger1->addAppender(consoleAppender);\n    } catch (DuplicateAppenderException& e) {\n        cout << \"Caught expected: \" << e.what() << endl;\n    }\n\n    shared_ptr<LogAppender> neverAdded = make_shared<ConsoleLogAppender>(LogLevel::ERROR, make_shared<PlainTextLogFormatter>());\n    try {\n        logger1->removeAppender(neverAdded);\n    } catch (AppenderNotRegisteredException& e) {\n        cout << \"Caught expected: \" << e.what() << endl;\n    }\n\n    try {\n        factory.getLogger(\"\");\n    } catch (InvalidLoggerNameException& e) {\n        cout << \"Caught expected: \" << e.what() << endl;\n    }\n\n    cout << \"Captured file lines: \" << fileAppender->getCapturedLines().size() << endl;\n    for (auto& line : fileAppender->getCapturedLines()) {\n        cout << line << endl;\n    }\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Folder Structure",
+          "content": "Folder Structure"
+        },
+        {
+          "type": "paragraph",
+          "text": "A real project would split these classes across files as follows:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "src/main/java/logging/\n  LogLevel.java\n  LogRecord.java\n  LogFormatter.java\n  PlainTextLogFormatter.java\n  JsonLogFormatter.java\n  LogAppender.java\n  ConsoleLogAppender.java\n  FileLogAppender.java\n  Logger.java\n  LoggerFactory.java\n  exceptions/\n    InvalidLoggerNameException.java\n    DuplicateAppenderException.java\n    AppenderNotRegisteredException.java\n  Main.java",
+            "python": "logging_framework/\n  __init__.py\n  log_level.py\n  log_record.py\n  log_formatter.py\n  log_appender.py\n  exceptions.py\n  logger.py\n  logger_factory.py\n  main.py",
+            "cpp": "logging_framework/\n  include/\n    LogRecord.h\n    LogFormatter.h\n    LogAppender.h\n    Exceptions.h\n    Logger.h\n    LoggerFactory.h\n  src/\n    JsonLogFormatter.cpp\n    ConsoleLogAppender.cpp\n    FileLogAppender.cpp\n    Logger.cpp\n    LoggerFactory.cpp\n    main.cpp"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Interview Discussion Points",
+          "content": "Interview Discussion Points"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Why filter at both the logger level and the appender level instead of just one? Because they solve different problems: the logger threshold controls how much work the application even bothers producing, while each appender's threshold controls how much of that production actually reaches a given destination, letting one appender capture everything for debugging while another shows only what operators need to see.",
+            "Why does LoggerFactory cache instances by name rather than construct a fresh Logger every time? Because two different parts of a codebase logging under the same name need to share configuration and see each other's appender wiring, which is only possible if they are working with the exact same object.",
+            "How would you extend this to support parent-child logger hierarchies? Give each Logger an optional parent reference, and have log delivery also walk up to parent loggers' appenders after the current logger's own, the same design real frameworks like Log4j use."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Trade-offs & Alternative Designs",
+          "content": "Trade-offs & Alternative Designs"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Two-tier filtering vs a single global threshold:</strong> two-tier filtering gives fine-grained control per destination, at the cost of slightly more configuration to reason about; a single global threshold is simpler but forces every destination to see exactly the same set of messages.",
+            "<strong>Synchronous logging vs asynchronous, buffered logging:</strong> synchronous logging is simple and guarantees a message is fully processed before the call returns, at the cost of coupling application latency to however slow the slowest appender is; asynchronous logging decouples that latency at the cost of added complexity and the risk of losing buffered messages on a crash.",
+            "<strong>Name-based caching vs constructing a Logger by hand each time:</strong> caching guarantees shared configuration and identity for a given name, at the cost of a small amount of synchronization overhead on lookup; manual construction avoids that overhead but risks two parts of a codebase silently drifting out of sync on the same logical logger."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Production Considerations & Best Practices",
+          "content": "Production Considerations & Best Practices"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Persist critical log configuration (which appenders exist, their thresholds) externally so it can be adjusted without redeploying, using the schema in the Database Design section as a starting point.",
+            "Replace the in-memory FileLogAppender simulation with real, rotated file output or a network log shipper in production.",
+            "Add asynchronous, buffered appenders for high-throughput services where synchronous logging would otherwise become a bottleneck.",
+            "Monitor dropped-message counts per logger to catch a threshold misconfiguration that is silently hiding important log output."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

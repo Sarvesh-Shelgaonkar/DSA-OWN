@@ -40,6 +40,44 @@ const TOPICS = [
   'Advanced Topics',
 ];
 
+const TOPIC_SLUGS = {
+  'What is DSA and Its Patterns?': 'what-is-dsa-and-patterns',
+  'How to Solve DSA Problems Effectively': 'how-to-solve-dsa-problems',
+  'Solve Related Problems': 'solve-related-problems',
+  'Big O Notation': 'big-o-notation',
+  Arrays: 'arrays',
+  Strings: 'strings',
+  'Bit Manipulation': 'bit-manipulation',
+  'Hash Tables': 'hash-tables',
+  'Two Pointers': 'two-pointers',
+  'Prefix Sum': 'prefix-sum',
+  'Sliding Window': 'sliding-window',
+  "Kadane's Algorithm": 'kadanes-algorithm',
+  Matrix: 'matrix',
+  'Linked List': 'linked-list',
+  Stacks: 'stacks',
+  Queues: 'queues',
+  Deque: 'deque',
+  Sorting: 'sorting',
+  'Recursion & Backtracking': 'recursion-backtracking',
+  'Divide and Conquer': 'divide-and-conquer',
+  'Binary Search': 'binary-search',
+  'Binary Tree': 'binary-tree',
+  'BST / Ordered Set': 'bst-ordered-set',
+  Tries: 'tries',
+  'Fenwick Tree (Binary Indexed Tree)': 'fenwick-tree',
+  'Segment Tree': 'segment-tree',
+  'Sparse Table': 'sparse-table',
+  Heaps: 'heaps',
+  Intervals: 'intervals',
+  'Data Structure Design': 'data-structure-design',
+  Greedy: 'greedy',
+  Graphs: 'graphs',
+  'Dynamic Programming': 'dynamic-programming',
+  'Maths / Geometry': 'maths-geometry',
+  'Advanced Topics': 'advanced-topics',
+};
+
 const COMPLEXITY_TABS = {
   'Loop Patterns': [
     { code: 'for (int i = 0; i < n; i++)', note: 'Single loop', complexity: 'O(n)' },
@@ -528,7 +566,7 @@ const EngineeringDsaLesson = () => {
         <div className="mt-4 rounded-xl border border-border bg-bg/50 p-4">
           <div className="flex items-end justify-between">
             <span className="text-2xl font-bold tracking-tight text-fg">{complete ? 100 : 0}%</span>
-            <span className="text-xs text-fg-subtle">{topicProgress}/152 Docs</span>
+            <span className="text-xs text-fg-subtle">{topicProgress}/35 Docs</span>
           </div>
           <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-2">
             <div className="h-full rounded-full bg-primary transition-all duration-300" style={{ width: complete ? '100%' : '0%' }} />
@@ -539,7 +577,7 @@ const EngineeringDsaLesson = () => {
               <p className="mt-0.5 text-fg-subtle">Problems</p>
             </div>
             <div className="rounded-lg bg-surface-2 p-2.5">
-              <p className="font-semibold text-fg">{topicProgress}/152</p>
+              <p className="font-semibold text-fg">{topicProgress}/35</p>
               <p className="mt-0.5 text-fg-subtle">Docs</p>
             </div>
           </div>
@@ -558,10 +596,16 @@ const EngineeringDsaLesson = () => {
         <nav className="space-y-1" aria-label="DSA documents">
           {TOPICS.map((topic) => {
             const active = topic === 'How to Solve DSA Problems Effectively';
+            const destination =
+              topic === 'Solve Related Problems'
+                ? '/engineering/sheets'
+                : active
+                  ? '/engineering/dsa/docs/how-to-solve-dsa-problems'
+                  : '/engineering/dsa';
             return (
-              <button
+              <Link
                 key={topic}
-                type="button"
+                to={destination}
                 onClick={() => active && setSidebarOpen(false)}
                 className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${
                   active ? 'bg-primary/10 font-semibold text-primary' : 'text-fg-muted hover:bg-surface-2 hover:text-fg'
@@ -569,7 +613,7 @@ const EngineeringDsaLesson = () => {
               >
                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? 'bg-primary' : 'bg-border-strong'}`} />
                 {topic}
-              </button>
+              </Link>
             );
           })}
         </nav>

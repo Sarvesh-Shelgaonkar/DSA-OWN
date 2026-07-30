@@ -1,0 +1,523 @@
+{
+  "slug": "disaster-recovery",
+  "title": "Disaster Recovery",
+  "content": [
+    {
+      "id": "disaster-recovery",
+      "title": "Disaster Recovery",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "So far this module has assumed one instance fails and another one takes over."
+        },
+        {
+          "type": "paragraph",
+          "text": "Disaster recovery is about something bigger, a whole region going dark or a database getting corrupted."
+        },
+        {
+          "type": "paragraph",
+          "text": "It means having a plan you already wrote down, not one you invent while everything is on fire."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Disaster Recovery Is Not the Same as Self Healing",
+          "id": "dr-scope"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579901990-46769235.png",
+          "alt": "Self healing handles small failures while disaster recovery handles major ones",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Restarting a crashed process is routine. Kubernetes or your process manager already does that for you."
+        },
+        {
+          "type": "paragraph",
+          "text": "Disaster recovery covers the case where the entire environment your server runs in is gone."
+        },
+        {
+          "type": "paragraph",
+          "text": "That could be a region outage, a corrupted database, or an account level security incident."
+        },
+        {
+          "type": "paragraph",
+          "text": "The tools are different too. You are restoring from backups, not just starting a new container."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. What Could Actually Go Wrong",
+          "id": "dr-scenarios"
+        },
+        {
+          "type": "paragraph",
+          "text": "A cloud region can lose power, networking, or simply become unreachable for hours."
+        },
+        {
+          "type": "paragraph",
+          "text": "A database can be corrupted by a bad migration, a bug, or an attacker, not just accidentally deleted."
+        },
+        {
+          "type": "paragraph",
+          "text": "Credentials can leak, forcing you to rotate everything and rebuild trust from a clean slate."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A cloud region or availability zone goes offline for an extended period.",
+            "A database is corrupted by a bad deploy, a runaway script, or a hostile actor.",
+            "A cloud account is locked, suspended, or compromised.",
+            "A dependency your MCP server relies on disappears or changes its API without warning."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. List Everything Your Server Depends On",
+          "id": "dr-state-inventory"
+        },
+        {
+          "type": "paragraph",
+          "text": "Before planning recovery, write down every piece of state your MCP server cannot function without."
+        },
+        {
+          "type": "paragraph",
+          "text": "Most teams are surprised how much of this lives outside version control, hiding in a dashboard somewhere."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"State type\",\"Example\",\"Lost without backup\"],\"rows\":[[\"Primary database\",\"Tool call history, user accounts\",\"Server has no memory of anything\"],[\"Configuration\",\"Feature flags, rate limits\",\"Server falls back to unsafe defaults\"],[\"Secrets\",\"API keys, signing keys\",\"Server cannot authenticate to anything\"],[\"Search or vector index\",\"Embeddings for retrieval tools\",\"Retrieval tools return nothing useful\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Backing Up the Database",
+          "id": "dr-db-backup"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579904268-516678492.png",
+          "alt": "A live database is backed up on a regular schedule",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The database is usually the most important thing to protect, and the easiest to get wrong."
+        },
+        {
+          "type": "paragraph",
+          "text": "A nightly logical dump, shipped somewhere other than the same disk, is the minimum bar."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "#!/usr/bin/env bash\nset -euo pipefail\nTIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)\nFILE=\"mcp-db-${TIMESTAMP}.sql.gz\"\n\npg_dump \"$DATABASE_URL\" | gzip > \"/tmp/${FILE}\"\n\naws s3 cp \"/tmp/${FILE}\" \"s3://mcp-backups-offsite/db/${FILE}\" \\\n  --sse AES256\n\necho \"backup written to s3://mcp-backups-offsite/db/${FILE}\""
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The offsite bucket should sit in a different region and a different account than the database itself."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Backing Up Configuration and Secrets",
+          "id": "dr-config-backup"
+        },
+        {
+          "type": "paragraph",
+          "text": "Configuration and secrets are easy to forget because they rarely change, until the day you need them."
+        },
+        {
+          "type": "paragraph",
+          "text": "Export them from your secrets manager on a schedule, encrypted, and store that export separately too."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "aws secretsmanager list-secrets --query \"SecretList[].Name\" --output text \\\n  | tr '\\t' '\\n' \\\n  | while read -r name; do\n      aws secretsmanager get-secret-value --secret-id \"$name\" \\\n        --query SecretString --output text \\\n        >> /tmp/secrets-export.jsonl\n    done\n\ngpg --symmetric --cipher-algo AES256 /tmp/secrets-export.jsonl"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Never store secret exports unencrypted",
+          "content": "A plaintext secrets dump sitting in a bucket is a bigger risk than the disaster you were preparing for."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Recovery Point Objective, How Much Data You Can Lose",
+          "id": "dr-rpo"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579905795-392254939.png",
+          "alt": "Recovery point objective is compared against recovery time objective",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Recovery point objective is the maximum amount of data you are willing to lose if disaster strikes."
+        },
+        {
+          "type": "paragraph",
+          "text": "A nightly backup means an RPO of roughly one day, whatever changed since the last dump is gone."
+        },
+        {
+          "type": "paragraph",
+          "text": "If that is too much, you need more frequent backups or continuous replication, not just a better script."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Recovery Time Objective, How Long Recovery Can Take",
+          "id": "dr-rto"
+        },
+        {
+          "type": "paragraph",
+          "text": "Recovery time objective is how long you can be down before it becomes unacceptable to your users."
+        },
+        {
+          "type": "paragraph",
+          "text": "An RTO of thirty minutes and an RTO of two days call for very different levels of automation."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Goal\",\"What it forces you to build\"],\"rows\":[[\"RTO of days\",\"Manual restore from backup is acceptable\"],[\"RTO of hours\",\"Scripted, tested restore procedure\"],[\"RTO of minutes\",\"Warm standby in a second region, ready to take traffic\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Writing the Recovery Plan Down",
+          "id": "dr-runbook"
+        },
+        {
+          "type": "paragraph",
+          "text": "A recovery plan that exists only in one engineer’s head is not a plan, it is a single point of failure."
+        },
+        {
+          "type": "paragraph",
+          "text": "During an actual incident, people are stressed, tired, and thinking less clearly than usual."
+        },
+        {
+          "type": "paragraph",
+          "text": "A written runbook gives whoever is on call something concrete to follow instead of improvising."
+        },
+        {
+          "type": "list",
+          "items": [
+            "What counts as a disaster, and who has the authority to declare one.",
+            "Exact commands to restore the database, in order, with no steps assumed.",
+            "Where secrets and access credentials for the recovery process itself are stored.",
+            "Who to notify, and what to tell users while recovery is in progress."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Designing for a Region Going Down",
+          "id": "dr-region-failover"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579907688-844377901.png",
+          "alt": "A primary region failing over to a standby region using offsite backups",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The most demanding disaster scenario is losing an entire cloud region, not just one server."
+        },
+        {
+          "type": "paragraph",
+          "text": "Recovering from that means your backups, and ideally a standby environment, must live outside that region."
+        },
+        {
+          "type": "paragraph",
+          "text": "A standby environment does not need to run at full scale, it just needs to exist and be ready to scale up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Restoring a Corrupted Database Step by Step",
+          "id": "dr-restore-steps"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579909451-44195260.png",
+          "alt": "A corrupted database is restored from the last good backup step by step",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Corruption is trickier than total loss, because the bad data can look valid at first glance."
+        },
+        {
+          "type": "paragraph",
+          "text": "The safe move is to restore into a fresh database, verify it, then cut traffic over."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "# 1. Create a fresh database, never restore over the live one directly\ncreatedb mcp_restore_check\n\n# 2. Pull the most recent known good backup from offsite storage\naws s3 cp s3://mcp-backups-offsite/db/mcp-db-20260630T020000Z.sql.gz /tmp/\n\n# 3. Restore into the fresh database\ngunzip -c /tmp/mcp-db-20260630T020000Z.sql.gz | psql mcp_restore_check\n\n# 4. Run sanity checks before pointing the server at it\npsql mcp_restore_check -c \"select count(*) from tool_calls;\"\n\n# 5. Only after checks pass, repoint the server's DATABASE_URL"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Automating Backup Verification",
+          "id": "dr-verify-backups"
+        },
+        {
+          "type": "paragraph",
+          "text": "A backup you have never restored is a guess, not a backup."
+        },
+        {
+          "type": "paragraph",
+          "text": "A simple job that restores the latest backup into a throwaway database catches broken backups early."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "# runs nightly, right after the backup job\nLATEST=$(aws s3 ls s3://mcp-backups-offsite/db/ | sort | tail -n 1 | awk '{print $4}')\naws s3 cp \"s3://mcp-backups-offsite/db/${LATEST}\" /tmp/verify.sql.gz\ncreatedb mcp_backup_verify --if-not-exists\ngunzip -c /tmp/verify.sql.gz | psql mcp_backup_verify\npsql mcp_backup_verify -c \"select count(*) from tool_calls;\" || exit 1\ndropdb mcp_backup_verify"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "If this job ever fails, treat it as urgently as a real outage. Your safety net just tore."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Testing the Plan on Purpose",
+          "id": "dr-drills"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579911152-463807064.png",
+          "alt": "A recovery plan is tested on purpose rather than only during a real incident",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A disaster recovery plan you have never rehearsed usually turns out to be wrong in some small but painful way."
+        },
+        {
+          "type": "paragraph",
+          "text": "Schedule a drill, pick a scenario, and actually restore into a test environment following the written runbook."
+        },
+        {
+          "type": "paragraph",
+          "text": "Time the whole exercise and compare it against your stated recovery time objective."
+        },
+        {
+          "type": "note",
+          "title": "Drills find the gaps improvisation hides",
+          "content": "A missing permission, a stale credential, or an outdated command only shows up when you actually try the steps."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Who Does What During an Incident",
+          "id": "dr-roles"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579912850-694489217.png",
+          "alt": "Each role has a clear responsibility during an incident response",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "When something big breaks, unclear ownership wastes the first, most valuable minutes."
+        },
+        {
+          "type": "paragraph",
+          "text": "Assign roles ahead of time so nobody is debating who is in charge while data is still at risk."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Incident lead, decides when to declare a disaster and when it is resolved.",
+            "Executor, runs the actual restore commands from the runbook.",
+            "Communicator, updates users and stakeholders on status.",
+            "Scribe, records a timeline of what happened for the review afterward."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Common Ways the Plan Itself Goes Stale",
+          "id": "dr-plan-pitfalls"
+        },
+        {
+          "type": "paragraph",
+          "text": "A recovery plan is a living document, and living documents rot if nobody tends to them."
+        },
+        {
+          "type": "paragraph",
+          "text": "Credentials referenced in the runbook expire, servers get renamed, and commands quietly stop matching reality."
+        },
+        {
+          "type": "paragraph",
+          "text": "Tie a review of the plan to any major infrastructure change, not just to a calendar reminder."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Keeping Backups and Plans Current Together",
+          "id": "dr-plan-maintenance"
+        },
+        {
+          "type": "paragraph",
+          "text": "Backups and the plan to use them need to evolve together, or the plan quietly stops matching reality."
+        },
+        {
+          "type": "paragraph",
+          "text": "When you add a new datastore to your MCP server, add it to the backup script and the runbook the same day."
+        },
+        {
+          "type": "paragraph",
+          "text": "Treat the runbook as part of the system, reviewed in the same pull requests as the infrastructure it describes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: A Small Team’s Disaster Recovery Setup",
+          "id": "dr-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "A small team running one MCP server sets an RPO of one day and an RTO of four hours."
+        },
+        {
+          "type": "paragraph",
+          "text": "They run the nightly database backup script, ship it to an offsite bucket in a second region."
+        },
+        {
+          "type": "paragraph",
+          "text": "A backup verification job restores that dump into a scratch database every morning and checks row counts."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "bash",
+            "content": "# quarterly drill, run against a disposable environment\n./scripts/restore-latest-backup.sh --target disaster-drill-env\n./scripts/smoke-test.sh --env disaster-drill-env\necho \"recovery completed in: $SECONDS seconds\""
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The written runbook lists exact commands, who is on call, and how to notify users, so nobody improvises."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "dr-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Backing up the database but never testing whether the backup actually restores.",
+            "Storing backups in the same account or region as the primary system they protect.",
+            "Keeping the recovery plan only in one person’s memory instead of a shared document.",
+            "Never rehearsing the plan, so the first real test happens during an actual outage.",
+            "Forgetting configuration and secrets, and backing up only the database."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "dr-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Write down every piece of state your own MCP server depends on, then check which parts are actually backed up."
+        },
+        {
+          "type": "paragraph",
+          "text": "Pick the riskiest gap, write a backup script for it, and schedule a verification job right alongside it."
+        },
+        {
+          "type": "paragraph",
+          "text": "Then run a small drill, restore that backup somewhere disposable, and time how long it takes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "dr-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Disaster recovery means planning for a whole region or database being gone, not just one process crashing."
+        },
+        {
+          "type": "paragraph",
+          "text": "Back up everything your server depends on, write the recovery steps down, and rehearse them before a real disaster forces you to."
+        },
+        {
+          "type": "paragraph",
+          "text": "That closes out the Production MCP module. Next up is MCP Frameworks and SDKs, covering the concrete tooling used to build on MCP."
+        }
+      ]
+    }
+  ]
+}

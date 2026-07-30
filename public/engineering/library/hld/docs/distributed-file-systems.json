@@ -1,0 +1,654 @@
+{
+  "slug": "distributed-file-systems",
+  "title": "Distributed File Systems",
+  "content": [
+    {
+      "id": "distributed-file-systems",
+      "title": "Distributed File Systems",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "A single hard drive tops out somewhere around a few hundred megabytes per second of throughput and a few terabytes of capacity. A single server built around that drive tops out even sooner, limited by its network card, its CPU, and the simple fact that it is one machine that can fail at any moment. Yet modern analytics platforms, search engines, and machine learning pipelines routinely need to store and process petabytes of data, read it at tens of gigabytes per second, and keep working even when individual disks and machines die on a normal Tuesday. A distributed file system is the answer to that gap."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285153288-298735971.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285153288-298735971.png",
+          "alt": "A client asking a NameNode for a file and being pointed to the DataNodes holding its blocks"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson builds up a distributed file system from first principles, using the architecture popularized by the Google File System and its open source cousin HDFS as the running example, then broadens out to compare it against alternatives like Ceph and cloud object storage. By the end you should be able to explain not just what these systems do, but why every major design choice inside them exists."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 What This Lesson Covers",
+          "text": "1.1 What This Lesson Covers"
+        },
+        {
+          "type": "list",
+          "content": "[\"What a distributed file system actually is and what problem it solves\",\"The classic NameNode and DataNode architecture\",\"How files get split into blocks and replicated across machines\",\"The exact sequence of steps in a read and a write\",\"How the system detects and recovers from node failure\",\"What consistency guarantees these systems actually offer\",\"How HDFS, GFS, and Ceph differ from each other\",\"A worked example of running a batch analytics job over a large dataset\",\"When you would NOT want a distributed file system at all\"]",
+          "items": [
+            "What a distributed file system actually is and what problem it solves",
+            "The classic NameNode and DataNode architecture",
+            "How files get split into blocks and replicated across machines",
+            "The exact sequence of steps in a read and a write",
+            "How the system detects and recovers from node failure",
+            "What consistency guarantees these systems actually offer",
+            "How HDFS, GFS, and Ceph differ from each other",
+            "A worked example of running a batch analytics job over a large dataset",
+            "When you would NOT want a distributed file system at all"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. What a Distributed File System Actually Is",
+          "text": "2. What a Distributed File System Actually Is"
+        },
+        {
+          "type": "blockQuote",
+          "content": "A distributed file system is a file system whose data and metadata live on many machines, while still presenting clients with one unified namespace that looks and behaves like an ordinary file system."
+        },
+        {
+          "type": "paragraph",
+          "content": "That last part matters more than it sounds. A user or an application talking to a distributed file system typically still thinks in terms of paths like /data/2026/07/clickstream.log, and still calls something that looks like open, read, write, and close. The complexity of which physical machines actually hold the bytes, how many copies exist, and what happens if one of those machines is unreachable right now is hidden behind that familiar interface."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is different from simply attaching a bunch of disks to a bunch of machines and telling application code to keep track of which file lives where itself. A distributed file system owns that bookkeeping. It decides where new data goes, it decides how many copies to keep, and it decides what to do when a copy disappears."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Why Distributed File Systems Exist",
+          "text": "3. Why Distributed File Systems Exist"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 The Single Machine Ceiling",
+          "text": "3.1 The Single Machine Ceiling"
+        },
+        {
+          "type": "paragraph",
+          "content": "Three separate limits show up as soon as data grows past what one machine comfortably holds. Capacity is the most obvious one, a machine with twelve drives at 20 terabytes each tops out around 240 terabytes usable, and that number does not move no matter how much money you spend on a faster CPU. Throughput is the second limit, since reading a file faster than a single disk or a single network interface can deliver is simply not possible on one machine, no matter how the software is written. Fault tolerance is the third and most subtle limit, because a single machine holding the only copy of your data is one power supply failure away from losing it permanently."
+        },
+        {
+          "type": "list",
+          "content": "[\"Capacity, one machine cannot hold petabytes of data cost effectively\",\"Throughput, one network interface and one set of disks cap how fast data can be read or written\",\"Fault tolerance, one machine is a single point of failure for every byte it holds\"]",
+          "items": [
+            "Capacity, one machine cannot hold petabytes of data cost effectively",
+            "Throughput, one network interface and one set of disks cap how fast data can be read or written",
+            "Fault tolerance, one machine is a single point of failure for every byte it holds"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Why Not Just Buy a Bigger Server",
+          "text": "3.2 Why Not Just Buy a Bigger Server"
+        },
+        {
+          "type": "paragraph",
+          "content": "Vertical scaling, buying a bigger and bigger single machine, runs into steeply rising costs long before it runs into a hard technical wall. A server with double the RAM, double the CPU cores, and double the disks rarely costs twice as much, it usually costs far more, because high end specialized hardware carries a premium that ordinary commodity hardware does not. Distributed file systems flip that economics around, they are designed from day one to run on large numbers of ordinary, inexpensive, unreliable machines and to get reliability from software rather than from expensive hardware."
+        },
+        {
+          "type": "note",
+          "title": "A useful framing",
+          "content": "A distributed file system assumes failure is normal, not exceptional. At the scale of thousands of disks, a drive failing every few days is simply the expected background rate of operation, not an incident."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Classic Architecture, NameNode and DataNode Style",
+          "text": "4. Classic Architecture, NameNode and DataNode Style"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most distributed file systems that grew out of the Google File System lineage, including HDFS, split responsibilities into two very different kinds of node. This separation is the single most important architectural idea in this whole lesson, so it is worth understanding thoroughly before moving on."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 The NameNode, Metadata Only",
+          "text": "4.1 The NameNode, Metadata Only"
+        },
+        {
+          "type": "paragraph",
+          "content": "The NameNode is a single, specialized server that holds the file system's metadata, the directory tree, which files exist, which blocks make up each file, and which DataNodes currently hold a copy of each block. Critically, the NameNode never stores actual file data, only the map that describes where that data lives. This keeps its memory footprint small enough to fit entirely in RAM even for a file system holding hundreds of petabytes of actual data, because metadata is orders of magnitude smaller than the data it describes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 The DataNode, Bulk Storage",
+          "text": "4.2 The DataNode, Bulk Storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "DataNodes are the workhorses, ordinary commodity servers with local disks that store the actual blocks of file data. A typical cluster runs anywhere from a few dozen to several thousand DataNodes, each periodically sending a heartbeat to the NameNode to say it is alive, along with a block report listing exactly which blocks it currently holds."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Role\",\"Stores\",\"Typical count in a cluster\",\"What happens if it dies\"],\"rows\":[[\"NameNode\",\"Metadata only, the directory tree and block locations\",\"1 active, usually 1 or more standby\",\"Standby takes over, or the whole cluster is unusable until it is restored\"],[\"DataNode\",\"Actual file data, in fixed size blocks\",\"Dozens to thousands\",\"Its blocks are re-replicated elsewhere, no data lost if replication was healthy\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Why this split matters",
+          "content": "Separating a small, fast, memory resident metadata service from a large, slow, disk backed data service lets each half scale independently. You can add DataNodes all day to grow capacity without ever touching the NameNode's design."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Block Splitting and Replication",
+          "text": "5. Block Splitting and Replication"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Why Files Are Split Into Blocks",
+          "text": "5.1 Why Files Are Split Into Blocks"
+        },
+        {
+          "type": "paragraph",
+          "content": "A distributed file system does not store a file as one contiguous chunk of bytes on one machine. Instead, a large file is split into fixed size blocks, commonly 128 megabytes or 256 megabytes in HDFS, and each block is treated as an independent unit that can live on any DataNode in the cluster. A 10 gigabyte file at a 128 megabyte block size becomes roughly 80 separate blocks, scattered across whichever DataNodes have space and capacity at write time."
+        },
+        {
+          "type": "paragraph",
+          "content": "Splitting into blocks buys two things at once. It lets a single huge file be spread across many machines so no one disk has to hold the whole thing, and it lets many machines read different parts of the same file in parallel, which is exactly what a batch analytics job wants."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Replication",
+          "text": "5.2 Replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every block is replicated, typically three times by default in HDFS, onto three different DataNodes. Replication is what turns \"a disk will eventually fail\" from a data loss event into a routine, unremarkable background task. Losing one of three replicas of a block simply means the system quietly makes a fourth copy from one of the two survivors, nobody notices."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285155150-812215832.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285155150-812215832.png",
+          "alt": "A large file split into fixed size blocks, each one replicated three times across different DataNodes"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.3 Rack Awareness",
+          "text": "5.3 Rack Awareness"
+        },
+        {
+          "type": "paragraph",
+          "content": "A naive replication scheme might put all three copies of a block on three DataNodes that happen to share the same power supply or the same network switch, which defeats the purpose the moment that shared piece of infrastructure fails. Rack aware placement policies solve this by deliberately spreading replicas across different physical racks, a typical policy places one replica locally, a second replica on a different rack, and a third replica on that same different rack, balancing fault tolerance against the network cost of cross rack traffic."
+        },
+        {
+          "type": "list",
+          "content": "[\"One replica on the local rack, for a fast first write\",\"A second replica on a different rack, to survive a rack level failure\",\"A third replica on the same different rack, to limit cross rack network traffic while still surviving one rack failure\"]",
+          "items": [
+            "One replica on the local rack, for a fast first write",
+            "A second replica on a different rack, to survive a rack level failure",
+            "A third replica on the same different rack, to limit cross rack network traffic while still surviving one rack failure"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Read and Write Paths",
+          "text": "6. Read and Write Paths"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 The Write Path",
+          "text": "6.1 The Write Path"
+        },
+        {
+          "type": "paragraph",
+          "content": "Writing a block does not simply hand the bytes to one DataNode and call it done. Instead, the client streams the block's bytes to the first DataNode in a pipeline, which immediately forwards the same bytes to the second DataNode, which forwards it to the third. Each DataNode only acknowledges success back up the pipeline once it has both written the bytes locally and received acknowledgement that the DataNode after it also succeeded."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285157141-824010052.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285157141-824010052.png",
+          "alt": "A client streaming a block through a pipeline of three DataNodes, with acknowledgements flowing back once all three have stored it"
+        },
+        {
+          "type": "paragraph",
+          "content": "This pipelined design means the client only sends the data once over the network, not three separate times, while the cluster still ends up with three durable copies before the write is considered complete. The write only returns success to the client after acknowledgement has propagated all the way back, which is what gives the system its durability guarantee, a completed write really did land on multiple machines."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 The Read Path",
+          "text": "6.2 The Read Path"
+        },
+        {
+          "type": "paragraph",
+          "content": "Reading is simpler and does not involve a pipeline at all. The client first asks the NameNode which DataNodes hold the blocks for the requested file, gets back a list ordered by proximity, and then reads each block's bytes directly from whichever DataNode is closest, usually meaning same rack or even same machine if the client happens to be co-located with a DataNode. The NameNode is completely out of the data path itself, it only ever hands out locations, never the bytes."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285158891-528907609.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285158891-528907609.png",
+          "alt": "A client getting ranked DataNode locations from the NameNode, then reading block data directly from the nearest DataNode"
+        },
+        {
+          "type": "note",
+          "title": "Why the NameNode never touches file bytes",
+          "content": "If every read and write had to physically flow through the NameNode, it would instantly become the throughput bottleneck for the entire cluster. Keeping it metadata only is exactly what lets DataNodes scale to serve aggregate throughput far beyond what any single machine could handle."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Failure Handling",
+          "text": "7. Failure Handling"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Detecting a Dead DataNode",
+          "text": "7.1 Detecting a Dead DataNode"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every DataNode sends a heartbeat to the NameNode on a short interval, commonly every three seconds in HDFS. If the NameNode does not hear from a DataNode for a configured timeout, commonly around ten minutes by default to tolerate brief network blips, it marks that DataNode as dead and immediately treats every block that DataNode was holding as under replicated."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030677-544458665.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030677-544458665.png",
+          "alt": "A NameNode noticing a missed heartbeat, marking a DataNode dead, and scheduling re-replication of its blocks"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Re-Replication",
+          "text": "7.2 Re-Replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "For every block that dropped below its target replication count, the NameNode picks a healthy DataNode still holding a copy and instructs it to copy that block to a new destination DataNode, restoring the replica count back to three. This process happens continuously and automatically in the background, with no human intervention and typically no visible impact to clients reading or writing at the time."
+        },
+        {
+          "type": "list",
+          "content": "[\"DataNode misses its heartbeat window and is marked dead\",\"NameNode scans its metadata for every block that DataNode was holding\",\"Each affected block is now below its target replication factor\",\"NameNode instructs a healthy replica holder to copy the block to a new DataNode\",\"Replication factor is restored, cluster is healthy again\"]",
+          "items": [
+            "DataNode misses its heartbeat window and is marked dead",
+            "NameNode scans its metadata for every block that DataNode was holding",
+            "Each affected block is now below its target replication factor",
+            "NameNode instructs a healthy replica holder to copy the block to a new DataNode",
+            "Replication factor is restored, cluster is healthy again"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.3 What Happens if the NameNode Itself Dies",
+          "text": "7.3 What Happens if the NameNode Itself Dies"
+        },
+        {
+          "type": "paragraph",
+          "content": "Because the NameNode holds the only map of where every block lives, its failure is far more serious than a DataNode failure. Production deployments run a standby NameNode that continuously replicates the same metadata edits, using a mechanism such as a shared edit log or a quorum journal, so that a failover can promote the standby to active within seconds rather than losing the cluster entirely. Early versions of HDFS did not have this and the NameNode was a well known single point of failure, which is exactly why High Availability NameNode setups became standard practice."
+        },
+        {
+          "type": "note",
+          "title": "A subtlety worth remembering",
+          "content": "Losing the NameNode does not lose the actual file data sitting on the DataNodes. It loses the ability to find that data, which from a practical standpoint is nearly as bad, hence the strong emphasis on NameNode high availability in any real deployment."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Consistency Models",
+          "text": "8. Consistency Models"
+        },
+        {
+          "type": "paragraph",
+          "content": "Distributed file systems in this style generally favor a relatively simple consistency model over the strongest possible guarantees, because the workloads they were built for, batch analytics and large sequential reads, do not need anything stronger."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Write Once, Read Many",
+          "text": "8.1 Write Once, Read Many"
+        },
+        {
+          "type": "paragraph",
+          "content": "The classic GFS and HDFS design assumes files are mostly written once, in large sequential appends, and then read many times afterward, rather than being edited in small random writes the way a traditional database file might be. This assumption lets the system skip a lot of the complexity that general purpose file systems need for arbitrary in place modification."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 What Readers See During a Write",
+          "text": "8.2 What Readers See During a Write"
+        },
+        {
+          "type": "paragraph",
+          "content": "A block is only visible to readers once it has been fully written and acknowledged across its full replica set, a reader never sees a half written, inconsistent block. Across multiple replicas of the same block, the system guarantees they are byte for byte identical once a write is acknowledged, there is no scenario where three replicas of the same completed block silently disagree."
+        },
+        {
+          "type": "list",
+          "content": "[\"A block is either fully written and consistent across all replicas, or not yet visible at all\",\"There is no partial or torn write visible to a reader\",\"Once acknowledged, all replicas of a block hold identical bytes\",\"Directory and file metadata changes are serialized through the single active NameNode, giving strongly consistent metadata\"]",
+          "items": [
+            "A block is either fully written and consistent across all replicas, or not yet visible at all",
+            "There is no partial or torn write visible to a reader",
+            "Once acknowledged, all replicas of a block hold identical bytes",
+            "Directory and file metadata changes are serialized through the single active NameNode, giving strongly consistent metadata"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "This is not the same as a database's consistency guarantees",
+          "content": "A distributed file system guarantees a completed write is durable and identical across replicas. It says nothing about coordinating multiple concurrent writers editing the same region of the same file, that kind of fine grained consistency is left to whatever application or database is built on top."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Real Systems",
+          "text": "9. Real Systems"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 The Google File System",
+          "text": "9.1 The Google File System"
+        },
+        {
+          "type": "paragraph",
+          "content": "The Google File System, described in a widely read 2003 paper, was the original design this whole architecture is based on. It introduced the master and chunkserver split, exactly the same idea as NameNode and DataNode, and it was built specifically to support Google's internal MapReduce style batch processing over enormous datasets stored on commodity hardware."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 HDFS",
+          "text": "9.2 HDFS"
+        },
+        {
+          "type": "paragraph",
+          "content": "HDFS is the open source implementation that grew out of the Hadoop project, directly inspired by the Google File System paper, and it remains the most widely deployed distributed file system for on premises big data clusters. It is the default storage layer underneath tools like Hive, Spark, and the broader Hadoop ecosystem."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.3 Ceph",
+          "text": "9.3 Ceph"
+        },
+        {
+          "type": "paragraph",
+          "content": "Ceph takes a meaningfully different approach. Instead of a central NameNode style server tracking every block location, Ceph clients compute where an object should live themselves, using an algorithm called CRUSH that deterministically maps an object to a set of storage daemons based on a cluster map, with no lookup service in the data path at all."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285162407-24061656.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285162407-24061656.png",
+          "alt": "A client running the CRUSH placement function to compute which Object Storage Daemons hold a given object"
+        },
+        {
+          "type": "paragraph",
+          "content": "This removes the single metadata bottleneck entirely, since there is no NameNode equivalent to overload, but it trades away the simplicity of a single authoritative map, and it means every client needs an up to date copy of the cluster map to compute placement correctly."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"System\",\"Metadata approach\",\"Primary workload\",\"Notable trait\"],\"rows\":[[\"GFS\",\"Central master server\",\"Google internal batch processing\",\"The original design this architecture is based on\"],[\"HDFS\",\"Central NameNode, standby for high availability\",\"Hadoop ecosystem batch analytics\",\"Most widely deployed open source distributed file system\"],[\"Ceph\",\"CRUSH algorithm, no central lookup\",\"General purpose object, block, and file storage\",\"Clients compute placement themselves, no single metadata bottleneck\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Block Placement, a Simplified Walkthrough",
+          "text": "10. Block Placement, a Simplified Walkthrough"
+        },
+        {
+          "type": "paragraph",
+          "content": "The following pseudocode sketches the core decision a NameNode makes when a client asks to write a new block, choosing which DataNodes should receive it. Real implementations weigh many more signals, such as current disk utilization and network load, but the shape of the decision is the same."
+        },
+        {
+          "type": "code",
+          "content": "function chooseReplicaTargets(clusterState, replicationFactor):\n    candidates = clusterState.liveDataNodes()\n    candidates = filter(candidates, node -> node.hasFreeSpace())\n\n    localRack = clusterState.rackOf(clientLocation)\n    firstReplica = pickLeastLoaded(candidates, rack = localRack)\n\n    remoteRack = pickDifferentRack(candidates, exclude = localRack)\n    secondReplica = pickLeastLoaded(candidates, rack = remoteRack)\n    thirdReplica = pickLeastLoaded(candidates, rack = remoteRack, exclude = secondReplica)\n\n    return [firstReplica, secondReplica, thirdReplica]",
+          "code": {
+            "language": "text",
+            "content": "function chooseReplicaTargets(clusterState, replicationFactor):\n    candidates = clusterState.liveDataNodes()\n    candidates = filter(candidates, node -> node.hasFreeSpace())\n\n    localRack = clusterState.rackOf(clientLocation)\n    firstReplica = pickLeastLoaded(candidates, rack = localRack)\n\n    remoteRack = pickDifferentRack(candidates, exclude = localRack)\n    secondReplica = pickLeastLoaded(candidates, rack = remoteRack)\n    thirdReplica = pickLeastLoaded(candidates, rack = remoteRack, exclude = secondReplica)\n\n    return [firstReplica, secondReplica, thirdReplica]"
+          },
+          "codes": {
+            "text": "function chooseReplicaTargets(clusterState, replicationFactor):\n    candidates = clusterState.liveDataNodes()\n    candidates = filter(candidates, node -> node.hasFreeSpace())\n\n    localRack = clusterState.rackOf(clientLocation)\n    firstReplica = pickLeastLoaded(candidates, rack = localRack)\n\n    remoteRack = pickDifferentRack(candidates, exclude = localRack)\n    secondReplica = pickLeastLoaded(candidates, rack = remoteRack)\n    thirdReplica = pickLeastLoaded(candidates, rack = remoteRack, exclude = secondReplica)\n\n    return [firstReplica, secondReplica, thirdReplica]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The same decision logic runs again during re-replication after a failure, just with a smaller candidate list and one required output instead of three, replace the lost replica while still respecting the rack diversity rule."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Worked Example, Batch Analytics Over a Large Dataset",
+          "text": "11. Worked Example, Batch Analytics Over a Large Dataset"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consider a company that logs 5 terabytes of clickstream data per day and wants to run a nightly job that computes daily active users per country. Here is how that flows through a distributed file system built this way."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.1 Step by Step",
+          "text": "11.1 Step by Step"
+        },
+        {
+          "type": "list",
+          "content": "[\"Log collectors write the day's events into the file system as one large file, split automatically into roughly 40,000 blocks at 128 megabytes each\",\"Each block is replicated three times across different racks as it is written, protecting against any single disk or rack failure overnight\",\"The NameNode records that this new file exists and which blocks and DataNodes make it up\",\"When the analytics job starts, its scheduler asks the NameNode for the block locations of the input file\",\"The scheduler places each processing task on or near the DataNode that already holds the block it needs to read, so most reads never cross the network at all\",\"Thousands of tasks run in parallel across the cluster, each reading its own local blocks, computing a partial count, and writing results back\"]",
+          "items": [
+            "Log collectors write the day's events into the file system as one large file, split automatically into roughly 40,000 blocks at 128 megabytes each",
+            "Each block is replicated three times across different racks as it is written, protecting against any single disk or rack failure overnight",
+            "The NameNode records that this new file exists and which blocks and DataNodes make it up",
+            "When the analytics job starts, its scheduler asks the NameNode for the block locations of the input file",
+            "The scheduler places each processing task on or near the DataNode that already holds the block it needs to read, so most reads never cross the network at all",
+            "Thousands of tasks run in parallel across the cluster, each reading its own local blocks, computing a partial count, and writing results back"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "example-box",
+          "title": "Why locality matters here",
+          "text": "Moving 5 terabytes of data across the network to a small pool of compute machines would take a long time and saturate the network. Moving the computation to where the data already sits, reading it from local disk instead, is the entire reason this architecture scales the way it does. This idea, moving computation to data instead of data to computation, is one of the most important lessons from the original GFS and MapReduce papers."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.2 What Happens if a DataNode Dies Mid Job",
+          "text": "11.2 What Happens if a DataNode Dies Mid Job"
+        },
+        {
+          "type": "paragraph",
+          "content": "If a DataNode holding one of the input blocks dies partway through the nightly job, the scheduler simply reruns that one task against a different DataNode that holds a healthy replica of the same block. Nothing else about the job needs to restart, because replication already guaranteed at least two other copies existed elsewhere."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Trade-offs Versus a Single Powerful File Server",
+          "text": "12. Trade-offs Versus a Single Powerful File Server"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth being honest about when a distributed file system is overkill. A single powerful file server, with fast SSDs, a lot of RAM for caching, and a solid backup routine, is simpler to operate, cheaper at small scale, and perfectly adequate for datasets that comfortably fit within a few tens of terabytes with modest throughput needs."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Scales to petabytes by adding commodity machines rather than needing exotic hardware\",\"Meaningfully more operational complexity than a single server, more moving parts to monitor\"],[\"Survives routine disk and machine failures automatically through replication\",\"Higher minimum cluster size before it becomes cost effective compared to one strong server\"],[\"Delivers aggregate throughput far beyond what one machine's disks and network card allow\",\"Consistency and latency characteristics are tuned for large sequential access, not small random writes\"],[\"Lets compute be scheduled near the data it needs, cutting network cost dramatically\",\"Requires expertise most small teams do not have on staff, running a healthy multi node cluster is a real skill\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Trade-offs Versus Cloud Object Storage",
+          "text": "13. Trade-offs Versus Cloud Object Storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "A different comparison worth making explicitly is against managed cloud object storage such as Amazon S3 or Google Cloud Storage, since many teams today reach for one of those instead of running their own HDFS or Ceph cluster."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Dimension\",\"Self managed distributed file system\",\"Cloud object storage\"],\"rows\":[[\"Operational burden\",\"You run and monitor the cluster yourself\",\"Fully managed, no cluster to operate\"],[\"Data model\",\"Hierarchical directories and files, POSIX-like semantics available\",\"Flat key based buckets and objects, no true directories\"],[\"Compute locality\",\"Compute can run directly on the same machines as storage\",\"Compute and storage are always separate, always over the network\"],[\"Cost at very large steady scale\",\"Often cheaper on owned hardware over years\",\"Pay per gigabyte stored and per request, scales with usage\"],[\"Best fit\",\"On premises big data clusters needing tight compute and storage coupling\",\"Variable workloads, teams wanting zero operational overhead\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Many organizations today actually run analytics engines like Spark directly against cloud object storage instead of HDFS, accepting the loss of true data locality in exchange for not having to operate a storage cluster at all. Whether that trade is worth it depends heavily on workload shape, an organization running compute in the same cloud region as its storage buckets pays a smaller locality penalty than one running its own on premises compute against a remote object store."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "14. Common Mistakes and Misconceptions",
+          "text": "14. Common Mistakes and Misconceptions"
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming a distributed file system automatically means strong consistency for concurrent writers, it usually only guarantees consistent completed blocks, not fine grained concurrent editing\",\"Treating the NameNode as a data path component, when its entire design point is to stay out of the data path\",\"Forgetting that replication protects against disk and machine failure but not against a whole datacenter level event unless replicas are spread across independent facilities\",\"Choosing a distributed file system for a dataset that would fit comfortably on one strong server, paying for complexity that buys nothing\",\"Ignoring rack awareness and letting all replicas of a block land in one failure domain by accident\"]",
+          "items": [
+            "Assuming a distributed file system automatically means strong consistency for concurrent writers, it usually only guarantees consistent completed blocks, not fine grained concurrent editing",
+            "Treating the NameNode as a data path component, when its entire design point is to stay out of the data path",
+            "Forgetting that replication protects against disk and machine failure but not against a whole datacenter level event unless replicas are spread across independent facilities",
+            "Choosing a distributed file system for a dataset that would fit comfortably on one strong server, paying for complexity that buys nothing",
+            "Ignoring rack awareness and letting all replicas of a block land in one failure domain by accident"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "15. Interview Angle",
+          "text": "15. Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "When this topic comes up in a system design interview, it is rarely the whole question, more often it appears as a building block underneath a bigger system such as a log aggregation platform, a data lake, or a MapReduce style batch pipeline. Interviewers are usually listening for whether you understand the metadata versus data split, why replication factor three is a common default, and why moving computation to the data matters at this scale."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "15.1 Questions Worth Being Ready For",
+          "text": "15.1 Questions Worth Being Ready For"
+        },
+        {
+          "type": "list",
+          "content": "[\"Why does the NameNode only store metadata instead of file bytes\",\"Walk through what happens end to end when a client writes a large file\",\"What happens if a DataNode goes offline during a read, and during a write\",\"Why is the default replication factor three rather than two or four\",\"When would you choose cloud object storage over running your own distributed file system\"]",
+          "items": [
+            "Why does the NameNode only store metadata instead of file bytes",
+            "Walk through what happens end to end when a client writes a large file",
+            "What happens if a DataNode goes offline during a read, and during a write",
+            "Why is the default replication factor three rather than two or four",
+            "When would you choose cloud object storage over running your own distributed file system"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "A strong signal in an interview",
+          "content": "Being able to explain the write pipeline's acknowledgement order, from the last DataNode back to the client, shows you actually understand how the durability guarantee is constructed, not just that replication exists."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "16. Summary",
+          "text": "16. Summary"
+        },
+        {
+          "type": "paragraph",
+          "content": "A distributed file system solves a problem no single machine can, storing and serving petabytes of data reliably and quickly by spreading both the data and the bookkeeping about that data across many ordinary machines. The classic architecture splits a small, fast metadata service, the NameNode, from a large pool of bulk storage services, the DataNodes, letting each scale on its own terms."
+        },
+        {
+          "type": "paragraph",
+          "content": "Files are split into blocks, each block replicated across multiple machines and multiple racks, which turns individual disk and machine failures from emergencies into routine background maintenance. Reads go straight from client to the nearest DataNode, writes flow through a pipeline that only reports success once every replica has confirmed it, and a steady stream of heartbeats lets the NameNode detect failure and trigger re-replication automatically."
+        },
+        {
+          "type": "paragraph",
+          "content": "None of this is free. It costs real operational complexity and a real minimum scale before it pays for itself, and it is tuned for large sequential batch style access rather than small random writes. Knowing when to reach for HDFS or Ceph, when to reach for cloud object storage instead, and when a single well specified server is simply the right answer, is as much a part of mastering this topic as understanding the internals themselves."
+        }
+      ]
+    }
+  ]
+}

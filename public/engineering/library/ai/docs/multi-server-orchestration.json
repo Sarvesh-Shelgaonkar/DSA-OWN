@@ -1,0 +1,557 @@
+{
+  "slug": "multi-server-orchestration",
+  "title": "Multi-Server Orchestration",
+  "content": [
+    {
+      "id": "multi-server-orchestration",
+      "title": "Multi-Server Orchestration",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Imagine a personal assistant that needs to plan your week. It has to check your calendar, look up flight prices, read your notes about the trip, and draft a couple of emails, and each of those things lives behind a different MCP server."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of those servers know about each other, and none of them need to. The one piece of code that does know about all of them is the host, and the discipline of making several servers work together toward one task is called multi-server orchestration."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson is about that discipline, how a host coordinates calls across servers, in what order, and how it stitches the separate results back into one coherent answer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Orchestration Actually Means",
+          "id": "mso-what-orchestration-means"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173369816-456036196.png",
+          "alt": "A host orchestrates three MCP servers to complete one task",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173369816-456036196.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Orchestration is not a protocol feature of MCP itself, MCP only defines how one client talks to one server. Orchestration is application logic that sits in the host, deciding which servers to call, in what sequence, with what arguments, and how to combine what comes back. Every host that talks to more than one server is doing some form of orchestration, whether or not the developer thinks of it that way."
+        },
+        {
+          "type": "paragraph",
+          "text": "The simplest orchestration is sequential, call server A, wait, call server B, wait, then hand both results to the model. More sophisticated orchestration runs independent calls in parallel, retries failed calls, and adapts which server to call next based on what an earlier call returned. All of these are still just application code wrapping several MCP client instances."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a host holding three independent client connections\nclients = {\n    \"calendar\": MCPClient(server=\"calendar-server\"),\n    \"flights\": MCPClient(server=\"flights-server\"),\n    \"notes\": MCPClient(server=\"notes-server\"),\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Sequential Orchestration",
+          "id": "mso-sequential-orchestration"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173371917-822807367.png",
+          "alt": "Sequential orchestration is compared against parallel orchestration",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173371917-822807367.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sequential orchestration calls one server, waits for the result, and only then decides whether and how to call the next one. This is the easiest pattern to reason about, and it is the right default whenever a later call genuinely depends on an earlier one's output, for example you cannot look up hotel availability until you know the travel dates the calendar server just returned."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "dates = clients[\"calendar\"].call_tool(\"get_trip_dates\", {})\nflights = clients[\"flights\"].call_tool(\"search_flights\", {\n    \"depart_date\": dates[\"start\"], \"return_date\": dates[\"end\"]\n})"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The cost of sequential orchestration is latency, each call waits for the one before it to finish, so total time is the sum of every step. That is a fine tradeoff for a handful of dependent calls, but it adds up quickly once a task touches five or six servers in a row."
+        },
+        {
+          "type": "paragraph",
+          "text": "Sequential orchestration is also the easiest pattern to test and debug, since each step happens in a predictable order, a stack trace or log file reads top to bottom the same way the calls actually executed. That predictability is worth preserving even after you introduce parallelism elsewhere, do not parallelize a step just because you can, only when it is genuinely independent."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Parallel Orchestration",
+          "id": "mso-parallel-orchestration"
+        },
+        {
+          "type": "paragraph",
+          "text": "When calls to different servers do not depend on each other's results, there is no reason to wait for one before starting the next. A host can issue several calls at once and gather the results as they arrive, cutting total latency down to roughly the slowest single call rather than the sum of all of them."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\n\nasync def gather_trip_context():\n    calendar_task = clients[\"calendar\"].call_tool_async(\"get_trip_dates\", {})\n    notes_task = clients[\"notes\"].call_tool_async(\"search_notes\", {\"query\": \"trip\"})\n    calendar, notes = await asyncio.gather(calendar_task, notes_task)\n    return calendar, notes"
+          }
+        },
+        {
+          "type": "note",
+          "title": "A useful rule of thumb",
+          "content": "If you would naturally phrase two calls with the word and rather than then, they are usually independent and safe to parallelize, calendar and notes, not calendar then flights."
+        },
+        {
+          "type": "paragraph",
+          "text": "Parallel orchestration does add complexity, a host now has to handle the case where one call finishes quickly and another is slow or fails, without letting the whole task hang on a single straggler."
+        },
+        {
+          "type": "paragraph",
+          "text": "A practical middle ground many hosts use is partial parallelism, group calls into dependency layers, everything in one layer runs in parallel, and the host waits for a whole layer to finish before starting the next one. This keeps the mental model simple, layer by layer, while still capturing most of the speed benefit of full parallelism."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "layer_1 = [\"calendar\"]\nlayer_2 = [\"flights\", \"notes\"]  # both only need calendar's output\n\nresults = {}\nfor name in layer_1:\n    results[name] = await clients[name].call_tool_async(\"get_trip_dates\", {})\nresults.update(dict(zip(layer_2, await asyncio.gather(*(\n    clients[n].call_tool_async(\"search\", results[\"calendar\"]) for n in layer_2\n)))))"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Fan Out, Fan In",
+          "id": "mso-fan-out-fan-in"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173373588-919126666.png",
+          "alt": "One request fans out to many servers then fans back into one result",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173373588-919126666.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A very common shape in multi-server orchestration is fan out then fan in, the host sends the same kind of request to several servers at once, the fan out, and then merges all of their answers into a single combined result, the fan in. A research assistant that queries three different search servers and then de-duplicates and ranks the combined results is a textbook fan out, fan in example."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Stage\",\"What happens\"],\"rows\":[[\"Fan out\",\"The same style of request goes to multiple servers at once\"],[\"Collect\",\"The host waits for each server to respond, or time out\"],[\"Fan in\",\"Results are merged, de-duplicated, and ranked into one answer\"]]}"
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "results = await asyncio.gather(*(\n    client.call_tool_async(\"search\", {\"query\": q}) for client in search_clients\n), return_exceptions=True)\nmerged = merge_and_rank([r for r in results if not isinstance(r, Exception)])"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Ordering Dependent Calls Correctly",
+          "id": "mso-ordering-dependent-calls"
+        },
+        {
+          "type": "paragraph",
+          "text": "Getting the order right matters more than it might first appear. Calling the flights server before the calendar server has returned real travel dates means either blocking on a guess or throwing away work and starting over. A useful habit is to sketch the dependency graph of a task before writing any orchestration code, which calls need something another call produced, and which calls are free-standing."
+        },
+        {
+          "type": "list",
+          "items": [
+            "List every server call the task needs",
+            "Mark which calls need output from another call as input",
+            "Group the free-standing calls for parallel execution",
+            "Chain the dependent calls in the order their inputs become available"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "text": "This is exactly the kind of planning a human project manager does with a task list, dependencies first, then whatever can run alongside them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Aggregating Results Into One Answer",
+          "id": "mso-aggregating-results"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173375161-450445091.png",
+          "alt": "Results from several servers aggregate into one final answer",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173375161-450445091.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once every call the task needs has returned, the host still has to turn several separate, differently shaped results into one coherent answer the model, and eventually the user, can actually use. This aggregation step is where a lot of orchestration bugs hide, a result from one server silently missing from the final answer because it arrived in a shape the aggregation code did not expect."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def aggregate(calendar, flights, notes):\n    return {\n        \"trip_dates\": calendar,\n        \"flight_options\": flights[:3],\n        \"relevant_notes\": [n[\"text\"] for n in notes],\n    }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A good aggregation function documents, even just to itself, what shape each input arrives in and what shape it produces, this makes it far easier to add a fourth server later without breaking the first three."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "6.1 Normalizing Shapes Before Merging",
+          "id": "mso-normalizing-shapes"
+        },
+        {
+          "type": "paragraph",
+          "text": "Different servers, even ones doing conceptually similar things, rarely return data in exactly the same shape. One search server might return a list of strings, another a list of objects with a text field. Normalizing every result into one common shape before merging avoids a whole class of aggregation bugs where the code only handles the shape from whichever server it was written against first."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def normalize(result, source):\n    if isinstance(result, list) and result and isinstance(result[0], str):\n        return [{\"text\": r, \"source\": source} for r in result]\n    return [{\"text\": r[\"text\"], \"source\": source} for r in result]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Handling Partial Failure",
+          "id": "mso-handling-partial-failure"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173376750-938463498.png",
+          "alt": "One server failing should not block results from the others",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173376750-938463498.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "With several servers involved, the odds that every single one succeeds on every single call go down as the number of servers goes up. A well-built orchestrator decides upfront what happens when one server in the group fails, does the whole task fail, or does it proceed with whatever data it did manage to collect."
+        },
+        {
+          "type": "note",
+          "title": "A practical default",
+          "content": "For most tasks, treat a failed non-essential server call as a gap to note rather than a reason to abandon the whole task, a trip planner missing your notes can still tell you the flight options."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "try:\n    notes = clients[\"notes\"].call_tool(\"search_notes\", {\"query\": \"trip\"})\nexcept MCPToolError:\n    notes = []  # proceed without notes rather than failing the whole task"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Timeouts and Slow Servers",
+          "id": "mso-timeouts-slow-servers"
+        },
+        {
+          "type": "paragraph",
+          "text": "A server that never responds is functionally the same as one that fails, except the host does not find out until it gives up waiting. Every orchestrated call needs a timeout, otherwise one slow or hung server can stall an entire multi-server task indefinitely."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "async def call_with_timeout(client, tool, args, seconds=5):\n    try:\n        return await asyncio.wait_for(client.call_tool_async(tool, args), timeout=seconds)\n    except asyncio.TimeoutError:\n        return None"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Choosing the right timeout value is a balance, too short and you cut off servers that would have answered fine given another second, too long and one flaky server drags down every task that touches it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Prioritizing Servers by Importance",
+          "id": "mso-prioritizing-servers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173378273-556714541.png",
+          "alt": "A critical server is compared against a nice to have server",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173378273-556714541.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Not every server in a multi-server task matters equally. A trip planning task probably cannot proceed meaningfully without calendar dates, but it can absolutely proceed without the notes server. Ranking servers by how essential they are to the task lets an orchestrator decide, calmly and in advance, which failures are fatal and which are just missing nice-to-have detail."
+        },
+        {
+          "type": "paragraph",
+          "text": "This ranking does not have to be static either, the same notes server might be essential for a task specifically about retrieving a saved note, and merely optional for a general trip planning task. Essentialness is a property of the task, not a permanent label stamped on a server."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Server\",\"Essential\",\"Behavior if it fails\"],\"rows\":[[\"Calendar\",\"Yes\",\"Abort the task, dates are required\"],[\"Flights\",\"Yes\",\"Abort the task, no flights to show\"],[\"Notes\",\"No\",\"Proceed without notes, note the gap\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Keeping Orchestration Logic Separate From Servers",
+          "id": "mso-orchestration-separate-from-servers"
+        },
+        {
+          "type": "paragraph",
+          "text": "A server should never need to know it is one of several being orchestrated together, that knowledge belongs entirely to the host. If a server starts assuming it is only ever called alongside some other specific server, it stops being independently reusable, which defeats one of the main reasons to build MCP servers in the first place."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keep the orchestration function, the piece deciding call order and aggregation, in the host's own code, a distinct layer above the individual MCP client calls it coordinates. This separation is what lets you swap the notes server for a different one later without touching the flights or calendar integration at all."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# orchestration lives in the host, servers stay unaware of each other\nasync def plan_trip(host_clients):\n    dates = await host_clients[\"calendar\"].call_tool_async(\"get_trip_dates\", {})\n    flights = await host_clients[\"flights\"].call_tool_async(\"search_flights\", dates)\n    return aggregate(dates, flights)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Choosing Which Servers a Task Needs",
+          "id": "mso-choosing-which-servers"
+        },
+        {
+          "type": "paragraph",
+          "text": "A more advanced host does not always call every server it happens to be connected to, it selects which servers are relevant to the specific task at hand. A request about restaurant recommendations has no business invoking the flights server, calling it anyway wastes time and can even confuse the model with irrelevant results mixed into its context."
+        },
+        {
+          "type": "paragraph",
+          "text": "This selection step is often driven by the model itself, deciding from the user's request which tools, and by extension which servers, look relevant, then the host only orchestrates that relevant subset."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "relevant = [name for name, tags in server_tags.items() if \"travel\" in tags]\n# only orchestrate calendar and flights, skip unrelated servers entirely"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Passing Shared Context Across Calls",
+          "id": "mso-passing-shared-context"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173379998-77568224.png",
+          "alt": "Shared context is passed along as calls move across multiple servers",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785173379998-77568224.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Several servers in one task often need a bit of the same background information, a user id, a locale, a session identifier. Rather than each server figuring this out independently, or worse, guessing, the orchestrator is responsible for threading this shared context consistently into every call it makes."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "shared_context = {\"user_id\": \"u_492\", \"locale\": \"en-IN\"}\nfor client, tool, args in planned_calls:\n    client.call_tool(tool, {**args, **shared_context})"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson, Context Sharing, goes much deeper into this exact problem, avoiding redundant fetches and keeping context consistent across an entire multi-server, multi-agent task."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Observability Across Multiple Servers",
+          "id": "mso-observability"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a task spans five servers and something goes wrong, figuring out which one is at fault without good logging is painful. Tagging every call with a shared task or trace identifier, and logging which server was called, with what arguments, and how long it took, turns a confusing multi-server failure into a readable timeline."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import logging\n\ndef log_call(trace_id, server, tool, duration_ms, ok):\n    logging.info(f\"trace={trace_id} server={server} tool={tool} ms={duration_ms} ok={ok}\")"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Worth the upfront cost",
+          "content": "A few lines of structured logging around each orchestrated call pay for themselves the first time a multi-server task fails in production and you need to know exactly which server misbehaved."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "13.1 Rate Limiting Across Multiple Servers",
+          "id": "mso-rate-limiting"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single orchestrated task rarely causes rate limit trouble on its own, the real risk shows up when many concurrent tasks all orchestrate the same set of servers at once, and one popular downstream server starts throttling or rejecting requests. An orchestrator that is aware of shared rate limits across concurrent tasks can queue or slow down its own calls before that server starts failing outright."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from asyncio import Semaphore\n\nserver_limits = {\"flights\": Semaphore(5), \"notes\": Semaphore(20)}\n\nasync def limited_call(client, server_name, tool, args):\n    async with server_limits[server_name]:\n        return await client.call_tool_async(tool, args)"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Shared, not per-task",
+          "content": "Rate limits need to be tracked per server across the whole host process, not freshly created inside each individual task, otherwise ten concurrent tasks each think they have their own full quota."
+        },
+        {
+          "type": "paragraph",
+          "text": "This matters more as a host scales up, a single user's trip planning request is unlikely to trip a rate limit, but a hundred users hitting the same flights server through a hundred concurrent orchestrated tasks absolutely can."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. A Simple Orchestration Framework",
+          "id": "mso-simple-framework"
+        },
+        {
+          "type": "paragraph",
+          "text": "You do not need a heavyweight workflow engine to orchestrate a handful of MCP servers well. A small function describing a list of steps, each with the servers and tools it needs, dependencies on earlier steps, and whether it is essential, covers the great majority of real orchestration needs."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "steps = [\n    {\"name\": \"dates\", \"server\": \"calendar\", \"tool\": \"get_trip_dates\", \"essential\": True},\n    {\"name\": \"flights\", \"server\": \"flights\", \"tool\": \"search_flights\", \"depends_on\": \"dates\", \"essential\": True},\n    {\"name\": \"notes\", \"server\": \"notes\", \"tool\": \"search_notes\", \"essential\": False},\n]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A tiny runner can walk this list, running independent steps in parallel, waiting on dependencies, and skipping failures for non-essential steps, without needing any external orchestration library at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Worked Example: Planning a Weekend Trip",
+          "id": "mso-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Bring the earlier pieces together with a full example. A user asks their assistant to plan a weekend trip. The host first calls the calendar server to confirm free dates, an essential, blocking step. Once dates are known, it fans out in parallel to the flights server and the notes server, since neither depends on the other, flights is essential and notes is not."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "async def plan_weekend_trip(clients):\n    dates = await clients[\"calendar\"].call_tool_async(\"get_free_weekend\", {})\n\n    flights_task = clients[\"flights\"].call_tool_async(\"search_flights\", dates)\n    notes_task = call_with_timeout(clients[\"notes\"], \"search_notes\", {\"query\": \"weekend trip\"})\n    flights, notes = await asyncio.gather(flights_task, notes_task)\n\n    if notes is None:\n        notes = []\n    return aggregate(dates, flights, notes)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "If the flights call fails, the whole task fails, since flight options are the point of the request, but if the notes call times out, the task quietly proceeds with an empty notes list rather than blocking the user's entire trip plan on a nice-to-have lookup."
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice how each design decision made earlier in this lesson shows up concretely in this one function, essential versus optional steps, a timeout wrapping the optional call, parallel execution for the independent pair, and an aggregation function that tolerates a missing notes list. A real orchestrator for a production host looks very much like this, just with more servers and more edge cases layered on top of the same core shape."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "mso-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Calling every connected server for every task instead of only the ones actually relevant, wasting latency and cluttering the model's context.",
+            "Running dependent calls in parallel by mistake, sending a request to the flights server before the calendar server has actually returned real dates.",
+            "Skipping timeouts, so one slow or hung server stalls the entire multi-server task indefinitely.",
+            "Treating every server as equally essential, aborting an entire task just because one optional, nice-to-have server failed.",
+            "Letting a server assume it is only ever called alongside some other specific server, quietly breaking its independent reusability.",
+            "Aggregating results without handling missing or differently shaped data from a server that partially failed."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "mso-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Design an orchestration plan for a host that needs to answer, what should I cook for dinner tonight. Assume three MCP servers exist, a pantry inventory server, a recipe search server, and a grocery delivery server. Write out which calls are essential, which can run in parallel, and what the host should do if the grocery delivery server is unreachable."
+        },
+        {
+          "type": "paragraph",
+          "text": "As a stretch goal, add a fourth server, a nutrition information server, that is only relevant if the user mentions a dietary restriction, and decide how the host would determine whether to include that server in the orchestration plan at all for a given request."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "steps = [\n    {\"name\": \"pantry\", \"server\": \"pantry\", \"tool\": \"list_ingredients\", \"essential\": True},\n    {\"name\": \"recipes\", \"server\": \"recipes\", \"tool\": \"search_by_ingredients\", \"depends_on\": \"pantry\", \"essential\": True},\n    {\"name\": \"delivery\", \"server\": \"grocery\", \"tool\": \"check_missing_items\", \"depends_on\": \"recipes\", \"essential\": False},\n]\n# fill in a small runner that executes this plan and handles the optional step failing"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "mso-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Multi-server orchestration is application logic living entirely in the host, deciding which servers a task actually needs, sequencing dependent calls correctly, running independent calls in parallel, and aggregating the results into one coherent answer while handling partial failure gracefully. None of this requires the servers themselves to know about each other, and keeping that boundary clean is what keeps every server independently reusable."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson, Server Chaining, looks closely at one specific orchestration shape, piping one server's tool output directly into another server's tool as input, building genuine pipelines out of otherwise unrelated MCP servers."
+        }
+      ]
+    }
+  ]
+}

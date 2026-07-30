@@ -1,0 +1,678 @@
+{
+  "slug": "consensus-algorithms-overview",
+  "title": "Consensus Algorithms Overview",
+  "content": [
+    {
+      "id": "consensus-algorithms-overview",
+      "title": "Consensus Algorithms Overview",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Picture three friends trying to decide where to eat, over a phone call with a bad signal. One person's voice keeps cutting out, another's message arrives late, and somebody has to decide on a restaurant anyway. That, roughly, is what a distributed system does every time it needs several machines to agree on something."
+        },
+        {
+          "type": "paragraph",
+          "content": "Consensus algorithms are the machinery that makes that agreement possible even when machines crash, restart, or simply take too long to reply. You won't implement one from scratch on the job. But you will constantly rely on systems built on top of one, and you need to recognize where that reliance is happening."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287250740-331024986.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287250740-331024986.png",
+          "alt": "Three nodes voting different values and a cluster needing to pick one agreed value",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287250740-331024986.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This topic is a map, not a manual. By the end you should be able to explain why perfect agreement is provably hard, how Paxos and Raft each get around that, and which real systems you'd actually reach for instead of writing your own."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every distributed system eventually hits the same wall. You have several machines, each with its own clock, its own memory, and its own chance of crashing at the worst possible moment. At some point you need them to agree on one thing: who is the leader, what the next entry in a log is, or whether a transaction committed."
+        },
+        {
+          "type": "paragraph",
+          "content": "That agreement problem is called <strong>consensus</strong>. It sounds abstract until you realize almost every serious backend leans on it somewhere, often without the team even naming it."
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Coordination</strong> deciding who is in charge right now, so two nodes don't both think they're the leader\",\"<strong>Ordering</strong> agreeing on the sequence operations happened in, so replicas stay in sync\",\"<strong>Commitment</strong> agreeing that a transaction either happened everywhere or nowhere, never halfway\"]",
+          "items": [
+            "<strong>Coordination</strong> deciding who is in charge right now, so two nodes don't both think they're the leader",
+            "<strong>Ordering</strong> agreeing on the sequence operations happened in, so replicas stay in sync",
+            "<strong>Commitment</strong> agreeing that a transaction either happened everywhere or nowhere, never halfway"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The rest of this topic walks through what makes this hard, the two protocols that dominate real systems, and how to talk about all of it in an interview without pretending you'd hand roll one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Consensus Problem",
+          "text": "2. The Consensus Problem"
+        },
+        {
+          "type": "paragraph",
+          "content": "Strip away the jargon and consensus is just this: a set of nodes need to agree on a single value, and that agreement has to hold even if some nodes crash, restart, or fall behind. Nobody gets to change their mind afterward either. Once the group agrees, that's final."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 What agreement actually means",
+          "text": "2.1 What agreement actually means"
+        },
+        {
+          "type": "paragraph",
+          "content": "A consensus protocol has to satisfy a few properties at once, and it's the combination that makes it tricky."
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Agreement</strong> every node that decides, decides on the same value\",\"<strong>Validity</strong> the agreed value has to be one that somebody actually proposed, not made up out of thin air\",\"<strong>Termination</strong> every working node eventually decides something, the system doesn't hang forever\"]",
+          "items": [
+            "<strong>Agreement</strong> every node that decides, decides on the same value",
+            "<strong>Validity</strong> the agreed value has to be one that somebody actually proposed, not made up out of thin air",
+            "<strong>Termination</strong> every working node eventually decides something, the system doesn't hang forever"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Any single one of these is easy on its own. A single machine can trivially satisfy all three by just deciding whatever it wants. The moment you spread the decision across multiple machines that might fail independently, all three at once gets genuinely hard."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Why failures and delays make it hard",
+          "text": "2.2 Why failures and delays make it hard"
+        },
+        {
+          "type": "paragraph",
+          "content": "If every message arrived instantly and no node ever crashed, consensus would be a non problem. Just ask everyone, wait for all replies, done. Real networks don't work that way."
+        },
+        {
+          "type": "list",
+          "content": "[\"Messages can be delayed, sometimes for seconds, sometimes indefinitely\",\"Nodes can crash mid conversation and never come back, or come back much later with stale state\",\"You often can't tell the difference between a node that's dead and one that's just slow\"]",
+          "items": [
+            "Messages can be delayed, sometimes for seconds, sometimes indefinitely",
+            "Nodes can crash mid conversation and never come back, or come back much later with stale state",
+            "You often can't tell the difference between a node that's dead and one that's just slow"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "The core difficulty in one line",
+          "content": "You cannot always tell whether a silent node has crashed or is simply slow to reply, and any correct protocol has to behave safely either way."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Why Consensus Matters",
+          "text": "3. Why Consensus Matters"
+        },
+        {
+          "type": "paragraph",
+          "content": "It's tempting to file consensus under theoretical distributed systems trivia. It isn't. A huge amount of infrastructure you already use quietly depends on solving this exact problem."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Leader election",
+          "text": "3.1 Leader election"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030431-870186770.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030431-870186770.png",
+          "alt": "Three nodes agreeing on which one becomes the elected leader",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030431-870186770.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Plenty of systems want exactly one node in charge at a time, a primary database, a lock holder, a job scheduler. If two nodes both believe they're the leader at once, you get split brain, duplicate writes, and data corruption. Consensus is how the cluster agrees on a single leader and agrees on when that leader has changed."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Replicated log ordering",
+          "text": "3.2 Replicated log ordering"
+        },
+        {
+          "type": "paragraph",
+          "content": "Databases that replicate data across machines need every replica to apply the same operations in the same order. If replica A applies write 1 then write 2, and replica B applies them in the opposite order, they end up with different data. Consensus keeps the ordering identical everywhere."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.3 Distributed transaction commit",
+          "text": "3.3 Distributed transaction commit"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a transaction spans multiple services or shards, everyone involved has to agree whether it committed or rolled back. Half committed states are worse than useless, they're actively wrong. Consensus underlies the commit protocols that keep this atomic across machines."
+        },
+        {
+          "type": "note",
+          "title": "Not just databases",
+          "content": "Job schedulers, service discovery, distributed locks, configuration stores. Anything that needs one true answer shared across machines is leaning on consensus somewhere under the hood."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The FLP Impossibility Result",
+          "text": "4. The FLP Impossibility Result"
+        },
+        {
+          "type": "paragraph",
+          "content": "In 1985, Fischer, Lynch, and Paterson proved something that still shapes every consensus protocol built since. It's usually just called FLP after their initials."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 The result in plain terms",
+          "text": "4.1 The result in plain terms"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030431-89505679.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030431-89505679.png",
+          "alt": "A message from a sender crossing an unbounded network and a receiver unable to tell if the sender is dead or just slow",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030431-89505679.png"
+        },
+        {
+          "type": "blockQuote",
+          "content": "In a fully asynchronous network, where messages can be delayed by any amount of time, no consensus protocol can guarantee both correctness and termination if even one node might fail."
+        },
+        {
+          "type": "paragraph",
+          "content": "The proof itself is subtle, but the intuition is approachable. If you can't bound how long a message might take, you can never be sure whether a silent node crashed or is just running late. Wait long enough to be safe and you might wait forever. Decide too soon and you risk getting it wrong."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Why timeouts save us in practice",
+          "text": "4.2 Why timeouts save us in practice"
+        },
+        {
+          "type": "paragraph",
+          "content": "FLP is a statement about a purely asynchronous world with zero timing assumptions. Real networks aren't quite that hostile. Messages usually arrive within a reasonable window, even if you can't prove an exact bound."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every practical consensus protocol quietly sidesteps FLP by adding timeouts. If a node doesn't reply within some window, assume it's down and move on. This trades a small amount of theoretical purity for something that actually works."
+        },
+        {
+          "type": "note",
+          "title": "Safety over liveness",
+          "content": "When a timeout guesses wrong, protocols like Paxos and Raft never sacrifice correctness for speed. Worst case they pause and retry an election. They never let two nodes disagree on the final answer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Paxos: The Original Consensus Protocol",
+          "text": "5. Paxos: The Original Consensus Protocol"
+        },
+        {
+          "type": "paragraph",
+          "content": "Paxos, published by Leslie Lamport, was the first consensus protocol that was both provably correct and actually usable. It's also famous for being confusing to learn, which is a big part of why Raft exists."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 The three roles",
+          "text": "5.1 The three roles"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287256759-529751419.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287256759-529751419.png",
+          "alt": "A proposer sending values to acceptors which forward decisions to a learner",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287256759-529751419.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Proposer</strong> suggests a value that the cluster should agree on\",\"<strong>Acceptor</strong> votes on proposals, and a majority of acceptors agreeing is what makes a value official\",\"<strong>Learner</strong> finds out what was decided, so the result can actually be used\"]",
+          "items": [
+            "<strong>Proposer</strong> suggests a value that the cluster should agree on",
+            "<strong>Acceptor</strong> votes on proposals, and a majority of acceptors agreeing is what makes a value official",
+            "<strong>Learner</strong> finds out what was decided, so the result can actually be used"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "In real deployments one machine often plays more than one role at once. A node can be a proposer and an acceptor at the same time. The roles describe responsibilities, not necessarily separate physical machines."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Phase one: prepare and promise",
+          "text": "5.2 Phase one: prepare and promise"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287258781-379318751.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287258781-379318751.png",
+          "alt": "A proposer sending a prepare message with a proposal number to three acceptors",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287258781-379318751.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every proposal carries a unique, increasing number. The proposer sends a prepare message tagged with that number to a majority of acceptors, essentially asking, will you consider a proposal numbered this high."
+        },
+        {
+          "type": "paragraph",
+          "content": "An acceptor promises not to accept any proposal numbered lower than what it already saw. If it had already promised something with a higher number, it rejects the request. This is the mechanism that stops old, stale proposers from overwriting newer decisions."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.3 Phase two: accept and accepted",
+          "text": "5.3 Phase two: accept and accepted"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287260836-793080947.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287260836-793080947.png",
+          "alt": "A proposer sending an accept request and acceptors either accepting or rejecting based on the proposal number",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287260836-793080947.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once the proposer hears back promises from a majority, it sends an accept request with an actual value, either its own or one it learned an acceptor had already promised to a higher numbered proposal. Acceptors that haven't promised something newer in the meantime accept it."
+        },
+        {
+          "type": "paragraph",
+          "content": "When a majority of acceptors accept the same value, that value is decided. Permanently. No further round can override it."
+        },
+        {
+          "type": "note",
+          "title": "Why a majority, not everyone",
+          "content": "Requiring a majority instead of unanimous agreement is what lets Paxos keep working even if some nodes are down. Two overlapping majorities out of any group always share at least one node, which is exactly the guarantee that prevents two different values from both being decided."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.4 A worked example",
+          "text": "5.4 A worked example"
+        },
+        {
+          "type": "example-box",
+          "title": "Three acceptors, one crashed proposer",
+          "text": "Proposer P1 sends prepare with number 1 to acceptors A, B, C. All three promise. P1 crashes before sending accept. Later, proposer P2 sends prepare with number 2. A, B, C promise again, since 2 is higher than 1. P2 sends accept with value X. A and B accept it, forming a majority, so X is decided, even though the original proposer never got to finish."
+        },
+        {
+          "type": "code",
+          "content": "// simplified acceptor state machine, not production code\nclass Acceptor {\n  promisedNum = 0;\n  acceptedNum = 0;\n  acceptedValue = null;\n\n  onPrepare(num) {\n    if (num > this.promisedNum) {\n      this.promisedNum = num;\n      return { promised: true, acceptedNum: this.acceptedNum, acceptedValue: this.acceptedValue };\n    }\n    return { promised: false };\n  }\n\n  onAccept(num, value) {\n    if (num >= this.promisedNum) {\n      this.promisedNum = num;\n      this.acceptedNum = num;\n      this.acceptedValue = value;\n      return { accepted: true };\n    }\n    return { accepted: false };\n  }\n}",
+          "code": {
+            "language": "javascript",
+            "content": "// simplified acceptor state machine, not production code\nclass Acceptor {\n  promisedNum = 0;\n  acceptedNum = 0;\n  acceptedValue = null;\n\n  onPrepare(num) {\n    if (num > this.promisedNum) {\n      this.promisedNum = num;\n      return { promised: true, acceptedNum: this.acceptedNum, acceptedValue: this.acceptedValue };\n    }\n    return { promised: false };\n  }\n\n  onAccept(num, value) {\n    if (num >= this.promisedNum) {\n      this.promisedNum = num;\n      this.acceptedNum = num;\n      this.acceptedValue = value;\n      return { accepted: true };\n    }\n    return { accepted: false };\n  }\n}"
+          },
+          "codes": {
+            "javascript": "// simplified acceptor state machine, not production code\nclass Acceptor {\n  promisedNum = 0;\n  acceptedNum = 0;\n  acceptedValue = null;\n\n  onPrepare(num) {\n    if (num > this.promisedNum) {\n      this.promisedNum = num;\n      return { promised: true, acceptedNum: this.acceptedNum, acceptedValue: this.acceptedValue };\n    }\n    return { promised: false };\n  }\n\n  onAccept(num, value) {\n    if (num >= this.promisedNum) {\n      this.promisedNum = num;\n      this.acceptedNum = num;\n      this.acceptedValue = value;\n      return { accepted: true };\n    }\n    return { accepted: false };\n  }\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.5 Why Paxos is hard to love",
+          "text": "5.5 Why Paxos is hard to love"
+        },
+        {
+          "type": "paragraph",
+          "content": "The core two phase idea above is genuinely simple. What makes Paxos painful in practice is everything around it: handling multiple values in sequence (Multi Paxos), picking a stable leader so proposers aren't fighting each other constantly, and the sparse original paper that left a lot of engineering detail as an exercise for the reader."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Proven correct, decades of production use\",\"Original description is notoriously hard to map to real code\"],[\"Handles crashed proposers gracefully\",\"Multiple competing proposers can cause livelock without extra care\"],[\"Well understood failure modes\",\"Few engineers can explain it cleanly, which makes debugging harder\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Raft: Consensus You Can Actually Reason About",
+          "text": "6. Raft: Consensus You Can Actually Reason About"
+        },
+        {
+          "type": "paragraph",
+          "content": "Raft was published in 2014 by Diego Ongaro and John Ousterhout with one explicit design goal: understandability. It solves the exact same problem as Paxos but organizes the solution around a strong leader, which maps much more naturally to how engineers already think about systems."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Terms and roles",
+          "text": "6.1 Terms and roles"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030433-878133429.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030433-878133429.png",
+          "alt": "A follower becoming a candidate, winning a majority vote to become leader, then eventually stepping down",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030433-878133429.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Leader</strong> the single node handling all client writes and replicating them to everyone else\",\"<strong>Follower</strong> a passive node that accepts entries from the leader and responds to heartbeats\",\"<strong>Candidate</strong> a temporary state a follower enters when it thinks the leader is gone, while it tries to get elected\"]",
+          "items": [
+            "<strong>Leader</strong> the single node handling all client writes and replicating them to everyone else",
+            "<strong>Follower</strong> a passive node that accepts entries from the leader and responds to heartbeats",
+            "<strong>Candidate</strong> a temporary state a follower enters when it thinks the leader is gone, while it tries to get elected"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Time in Raft is divided into <strong>terms</strong>, numbered periods each with at most one leader. Every message carries a term number, and a node always defers to whichever term is higher, which is what keeps a stale, isolated leader from causing trouble once it rejoins the cluster."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Leader election",
+          "text": "6.2 Leader election"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287265410-187860613.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287265410-187860613.png",
+          "alt": "A leader sending heartbeats to followers, with one follower timing out and becoming a candidate",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287265410-187860613.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The leader continuously sends heartbeats to followers. If a follower doesn't hear from the leader within its election timeout, it assumes the leader is gone, bumps the term number, and becomes a candidate."
+        },
+        {
+          "type": "paragraph",
+          "content": "The candidate votes for itself and asks every other node for their vote. Each node can only vote once per term, first come first served. Whoever gets a majority becomes the new leader for that term."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.3 Log replication",
+          "text": "6.3 Log replication"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030431-479148126.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030431-479148126.png",
+          "alt": "A client write appended to the leader log and replicated to followers until a majority acknowledges it",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030431-479148126.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once elected, the leader is the only node that accepts client writes. Each write is appended to the leader's log and sent to every follower. When a majority of nodes have replicated the entry, the leader considers it committed and applies it, then tells followers to do the same on their next heartbeat."
+        },
+        {
+          "type": "note",
+          "title": "Consistency check on every append",
+          "content": "Followers reject a new log entry if it doesn't line up with what they already have at the previous index. This forces the leader to backfill gaps before it can move forward, which is exactly what keeps every log identical in the end."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.4 Split votes and randomized timeouts",
+          "text": "6.4 Split votes and randomized timeouts"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287269792-31191805.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287269792-31191805.png",
+          "alt": "Two candidates each getting half the votes with neither reaching a majority, followed by a retried election",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287269792-31191805.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sometimes two followers time out at nearly the same moment and both become candidates in the same term. Votes get split and nobody reaches a majority. Nothing breaks, the term just ends without a leader and a new election starts."
+        },
+        {
+          "type": "paragraph",
+          "content": "Raft avoids repeating this forever by randomizing each node's election timeout within a range, say 150 to 300 milliseconds. Random timeouts mean it's statistically unlikely for the same split to happen twice in a row."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.5 A worked example",
+          "text": "6.5 A worked example"
+        },
+        {
+          "type": "example-box",
+          "title": "A five node cluster loses its leader",
+          "text": "Nodes N1 through N5 are running with N1 as leader in term 4. N1 crashes. N3 times out first, bumps the term to 5, votes for itself, and requests votes from N2, N4, and N5. It gets three votes including its own, a majority of five, and becomes leader for term 5. N1 eventually restarts, sees term 5 is higher than the term 4 it remembers, and steps down to follower without ever causing a conflict."
+        },
+        {
+          "type": "code",
+          "content": "// simplified follower side election logic, not production code\nfunction onElectionTimeout(node) {\n  node.currentTerm += 1;\n  node.state = 'candidate';\n  node.votedFor = node.id;\n  let votes = 1; // votes for itself\n\n  for (const peer of node.peers) {\n    const granted = requestVote(peer, node.currentTerm, node.lastLogIndex);\n    if (granted) votes += 1;\n  }\n\n  if (votes > node.peers.length / 2) {\n    node.state = 'leader';\n    startSendingHeartbeats(node);\n  } else {\n    resetRandomizedElectionTimeout(node);\n  }\n}",
+          "code": {
+            "language": "javascript",
+            "content": "// simplified follower side election logic, not production code\nfunction onElectionTimeout(node) {\n  node.currentTerm += 1;\n  node.state = 'candidate';\n  node.votedFor = node.id;\n  let votes = 1; // votes for itself\n\n  for (const peer of node.peers) {\n    const granted = requestVote(peer, node.currentTerm, node.lastLogIndex);\n    if (granted) votes += 1;\n  }\n\n  if (votes > node.peers.length / 2) {\n    node.state = 'leader';\n    startSendingHeartbeats(node);\n  } else {\n    resetRandomizedElectionTimeout(node);\n  }\n}"
+          },
+          "codes": {
+            "javascript": "// simplified follower side election logic, not production code\nfunction onElectionTimeout(node) {\n  node.currentTerm += 1;\n  node.state = 'candidate';\n  node.votedFor = node.id;\n  let votes = 1; // votes for itself\n\n  for (const peer of node.peers) {\n    const granted = requestVote(peer, node.currentTerm, node.lastLogIndex);\n    if (granted) votes += 1;\n  }\n\n  if (votes > node.peers.length / 2) {\n    node.state = 'leader';\n    startSendingHeartbeats(node);\n  } else {\n    resetRandomizedElectionTimeout(node);\n  }\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Paxos and Raft Side by Side",
+          "text": "7. Paxos and Raft Side by Side"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287272221-428349323.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287272221-428349323.png",
+          "alt": "Paxos roles of proposer acceptor and learner compared side by side with Raft roles of leader follower and candidate",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785287272221-428349323.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Both protocols solve the same problem and both require a majority to make progress. Where they differ is how explicit the leader is. Paxos was designed leaderless at its core, with leader election added on as a practical optimization layer. Raft makes the leader the centerpiece from the start, which is a big part of why it reads so much more naturally."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Paxos: flexible, no single point tied to correctness\",\"Paxos: harder to implement correctly, sparse original spec\"],[\"Raft: easy to reason about, strong leader simplifies logic\",\"Raft: all writes funnel through one leader at a time\"],[\"Both: tolerate a minority of node failures safely\",\"Both: add real latency compared to no coordination at all\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Real Systems Built on Consensus",
+          "text": "8. Real Systems Built on Consensus"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030430-382071719.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030430-382071719.png",
+          "alt": "An application talking to a consensus backed service that could be etcd, Zookeeper, or Consul",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030430-382071719.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "You will almost never write Paxos or Raft yourself on the job. You will use a battle tested implementation someone else already built and proved out. Here are the ones you'll run into constantly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 etcd",
+          "text": "8.1 etcd"
+        },
+        {
+          "type": "paragraph",
+          "content": "A distributed key value store built directly on Raft. Kubernetes uses etcd to store all of its cluster state. Anytime you deploy something to Kubernetes, you're relying on a Raft cluster underneath to keep that state consistent."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Zookeeper",
+          "text": "8.2 Zookeeper"
+        },
+        {
+          "type": "paragraph",
+          "content": "An older coordination service used heavily by Kafka and Hadoop era systems, built on a Paxos flavored protocol called ZAB. It provides locks, leader election, and configuration storage as ready made building blocks."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.3 Consul",
+          "text": "8.3 Consul"
+        },
+        {
+          "type": "paragraph",
+          "content": "HashiCorp's service discovery and configuration tool, also built on Raft. Teams reach for it when they need service registration, health checks, and a consistent key value store in one package."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.4 CockroachDB",
+          "text": "8.4 CockroachDB"
+        },
+        {
+          "type": "paragraph",
+          "content": "A distributed SQL database that runs a separate Raft group per data range. Every shard of your data has its own tiny consensus cluster keeping its replicas in sync, which is what lets the whole database survive individual node failures without losing writes."
+        },
+        {
+          "type": "note",
+          "title": "The pattern to notice",
+          "content": "In every one of these, consensus is a component, not the whole product. Nobody markets \"we implemented Raft\" as the feature. They market \"your data survives a node dying,\" and Raft is just the plumbing that makes the promise true."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. The Interview Angle",
+          "text": "9. The Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "Interviewers bring up consensus to see if you understand distributed tradeoffs, not to see if you can whiteboard the Paxos accept phase from memory."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 Treat it as a building block",
+          "text": "9.1 Treat it as a building block"
+        },
+        {
+          "type": "paragraph",
+          "content": "The strongest answer in a system design interview is rarely \"let me implement Raft here.\" It's recognizing that the problem in front of you needs consensus at all, then reaching for an existing, proven implementation instead of building one under interview pressure."
+        },
+        {
+          "type": "list",
+          "content": "[\"Name the problem first: multiple nodes need to agree on one value or one order, despite possible failures\",\"Name a real tool: etcd, Zookeeper, or Consul, depending on what's already in the stack\",\"Say what it costs: extra latency and coordination overhead, in exchange for correctness when nodes fail\"]",
+          "items": [
+            "Name the problem first: multiple nodes need to agree on one value or one order, despite possible failures",
+            "Name a real tool: etcd, Zookeeper, or Consul, depending on what's already in the stack",
+            "Say what it costs: extra latency and coordination overhead, in exchange for correctness when nodes fail"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 What to actually say in an interview",
+          "text": "9.2 What to actually say in an interview"
+        },
+        {
+          "type": "blockQuote",
+          "content": "You don't need to derive Paxos from scratch on a whiteboard. You need to know it exists, understand what guarantee it buys you, and know exactly which off the shelf system you'd reach for instead of writing your own."
+        },
+        {
+          "type": "note",
+          "title": "A common trap",
+          "content": "Reaching for consensus everywhere is its own mistake. Plenty of systems get by fine with simpler coordination, like a single database with proper locking. Bringing up Raft for a problem that doesn't need it reads as overengineering, not depth."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Wrapping Up",
+          "text": "10. Wrapping Up"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030677-690973384.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030677-690973384.png",
+          "alt": "A decision flow asking whether multiple nodes need one agreed truth and whether an existing consensus service can be used",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030677-690973384.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consensus exists because agreement across unreliable machines is provably hard, not just annoying. FLP tells you why perfect agreement is impossible in a fully asynchronous world. Paxos and Raft both work around that by using timeouts and majorities, trading a sliver of theoretical purity for something that runs reliably in production."
+        },
+        {
+          "type": "paragraph",
+          "content": "Remember the shape of it: proposers and acceptors, or leaders and followers, always needing a majority, always favoring correctness over speed when something goes wrong. Recognize it in etcd, Zookeeper, Consul, and CockroachDB, and you'll spot exactly where it's quietly holding a real system together."
+        }
+      ]
+    }
+  ]
+}

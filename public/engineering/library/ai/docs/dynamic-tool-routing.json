@@ -1,0 +1,499 @@
+{
+  "slug": "dynamic-tool-routing",
+  "title": "Dynamic Tool Routing",
+  "content": [
+    {
+      "id": "dynamic-tool-routing",
+      "title": "Dynamic Tool Routing",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "When an agent is connected to several MCP servers at once, it ends up with a pile of tools that all look plausible on paper."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some read files, some hit databases, some call external APIs, and at any given step the agent has to decide which one actually belongs there."
+        },
+        {
+          "type": "paragraph",
+          "text": "Dynamic tool routing is the piece of agent logic that makes that decision at runtime instead of at code time."
+        },
+        {
+          "type": "paragraph",
+          "text": "Nobody wrote an if statement that says use this tool for this step, the agent looks at what is available right now and picks."
+        },
+        {
+          "type": "paragraph",
+          "text": "Get this right and an agent can pick up new tools without anyone touching its code. Get it wrong and the agent either calls the wrong tool confidently or freezes with too many options."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Dynamic Tool Routing Means",
+          "id": "dtr-what-it-means"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579510548-325462664.png",
+          "alt": "An agent step is matched against a combined tool list from multiple servers",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Dynamic tool routing is choosing, at the moment a step needs to happen, which of the currently available tools should handle it."
+        },
+        {
+          "type": "paragraph",
+          "text": "The choice is made from whatever tools are connected right now, not from a fixed list baked into the agent ahead of time."
+        },
+        {
+          "type": "paragraph",
+          "text": "This matters because MCP agents are meant to plug into different servers depending on the situation."
+        },
+        {
+          "type": "paragraph",
+          "text": "A support agent might have five tools today and twelve tomorrow, and the routing logic has to keep working either way."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Why Hardcoding the Tool Choice Falls Apart",
+          "id": "dtr-why-hardcoding-fails"
+        },
+        {
+          "type": "paragraph",
+          "text": "Hardcoding means writing logic like, if the user asks about weather, call the weather tool by its exact name."
+        },
+        {
+          "type": "paragraph",
+          "text": "That works fine until the weather server is swapped out, renamed, or simply not connected in a given session."
+        },
+        {
+          "type": "paragraph",
+          "text": "The moment a tool name changes or a new server offers an equivalent tool, hardcoded logic silently stops working or has to be rewritten by hand."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A new server is added and its tools are invisible until someone edits the routing code.",
+            "A server is temporarily unavailable and there is no fallback path defined.",
+            "Two servers offer overlapping tools and the hardcoded path only ever tries one of them."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Where the Combined Tool List Comes From",
+          "id": "dtr-combined-tool-list"
+        },
+        {
+          "type": "paragraph",
+          "text": "An agent host typically talks to more than one MCP server in a session."
+        },
+        {
+          "type": "paragraph",
+          "text": "Each server exposes its own tools/list, and the host merges all of those into one combined list before any routing decision happens."
+        },
+        {
+          "type": "paragraph",
+          "text": "Every tool in that merged list carries a name, a description, and an input schema, and that is all the router has to work with when it decides what fits."
+        },
+        {
+          "type": "paragraph",
+          "text": "The merge step is also a good place to drop exact duplicates, two servers sometimes proxy the very same underlying tool, and calling both would waste a step for no benefit."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "combined_tools = []\nfor server in connected_servers:\n    tools = server.list_tools()  # each tool has name, description, input_schema\n    for t in tools:\n        t[\"server_id\"] = server.id\n        combined_tools.append(t)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Routing by Description, Not by Name",
+          "id": "dtr-routing-by-description"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579513059-484536908.png",
+          "alt": "Routing by tool description is compared against routing by tool name",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Tool names are often short and inconsistent across servers, one server calls it read_file, another calls it get_document."
+        },
+        {
+          "type": "paragraph",
+          "text": "The description field is what actually explains what a tool does and when to use it."
+        },
+        {
+          "type": "paragraph",
+          "text": "A good router treats the description as the primary signal for matching a step to a tool, and treats the tool name as little more than a label."
+        },
+        {
+          "type": "note",
+          "title": "Descriptions are the contract",
+          "content": "The MCP spec leaves tool descriptions free text on purpose, so servers can be specific about what a tool does and does not cover. A router that ignores descriptions and only pattern matches on names is throwing away the most useful signal it has."
+        },
+        {
+          "type": "paragraph",
+          "text": "A vague description hurts routing more than a vague name ever could, since the router has nothing else to compare the step against."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Routing by Schema Fit",
+          "id": "dtr-routing-by-schema"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579515731-787516344.png",
+          "alt": "A task is routed to the tool whose schema best fits the available data",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Description tells you what a tool is for, the input schema tells you whether you can actually call it right now. A tool that reads a URL is useless for this step if you have no URL in hand."
+        },
+        {
+          "type": "paragraph",
+          "text": "A solid router checks both, does the description sound right for this step, and do you have values available for the required fields in its input schema."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Signal\",\"What it tells the router\",\"Where it comes from\"],\"rows\":[[\"Description\",\"What the tool is meant to do\",\"tools/list response, description field\"],[\"Input schema\",\"What arguments the tool needs, and their types\",\"tools/list response, input_schema field\"],[\"Tool name\",\"A rough label, not reliable enough alone\",\"tools/list response, name field\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Weighing both signals together is what keeps routing honest, a tool can sound right and still be unusable, or sound generic and still be exactly the right fit."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. A Simple Scoring Approach",
+          "id": "dtr-simple-scoring"
+        },
+        {
+          "type": "paragraph",
+          "text": "A practical router scores every tool in the combined list against the current step, then picks the highest scorer above some minimum threshold."
+        },
+        {
+          "type": "paragraph",
+          "text": "The scoring function itself can be as simple as an embedding similarity between the step and each tool description, combined with a check that required schema fields can be filled."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def route(step_description, combined_tools, available_values, min_score=0.5):\n    scored = []\n    for tool in combined_tools:\n        sim = embed_similarity(step_description, tool[\"description\"])\n        required = tool[\"input_schema\"].get(\"required\", [])\n        fillable = all(field in available_values for field in required)\n        if not fillable:\n            continue\n        scored.append((sim, tool))\n\n    if not scored:\n        return None  # nothing fits, caller must fall back\n\n    scored.sort(key=lambda pair: pair[0], reverse=True)\n    best_score, best_tool = scored[0]\n    if best_score < min_score:\n        return None\n    return best_tool"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The min_score threshold is what keeps a weak match from ever being treated as a confident pick, tune it against real examples rather than guessing a number upfront."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Letting the Model Itself Choose",
+          "id": "dtr-model-as-router"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579517460-896619476.png",
+          "alt": "The model itself chooses which tool to call from the available list",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Instead of hand rolled similarity scoring, many agents just hand the whole combined tool list, with names, descriptions, and schemas, to the model as available functions, and let the model pick."
+        },
+        {
+          "type": "paragraph",
+          "text": "This works because modern tool calling models are trained to read a description and a schema and decide whether that function applies to the current request."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "7.1 Scoring Versus Letting the Model Decide",
+          "id": "dtr-scoring-vs-model"
+        },
+        {
+          "type": "paragraph",
+          "text": "Hand rolled scoring is cheaper and easier to explain, but it needs tuning."
+        },
+        {
+          "type": "paragraph",
+          "text": "Letting the model choose adapts better to new tools, but it costs an extra model call and can be harder to audit after the fact."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Hand rolled scoring: fast, predictable, needs a good similarity function and threshold tuning.",
+            "Model as router: adapts to new tools instantly, but each decision costs a model call and is less transparent.",
+            "Many production agents combine both, scoring narrows a huge list down, then the model picks among the top few."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. When Multiple Tools Could Plausibly Work",
+          "id": "dtr-multiple-plausible"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579519010-828849431.png",
+          "alt": "Tool A and tool B could both plausibly handle the same step",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is common for two or more tools from different servers to look like reasonable choices for the same step."
+        },
+        {
+          "type": "paragraph",
+          "text": "Two file servers might both expose a read tool, or a search tool from one server might overlap with a fetch tool from another."
+        },
+        {
+          "type": "paragraph",
+          "text": "The router needs a deliberate tie break rule here, because picking arbitrarily leads to inconsistent behavior between runs."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Prefer the tool whose schema requires fewer assumptions or guessed values.",
+            "Prefer a tool from a server that has already succeeded earlier in this same task.",
+            "Prefer the more specific description over a more generic one.",
+            "If still tied, ask the user or the calling agent to disambiguate rather than guessing silently."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Two file read tools tying is a normal, expected case once an agent is connected to more than a couple of servers, so the tie break rule should be written down, not improvised each time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Scoped Preference Instead of Silent Guessing",
+          "id": "dtr-scoped-preference"
+        },
+        {
+          "type": "paragraph",
+          "text": "A router can also carry small, explicit preferences scoped to a task, such as always preferring the internal database server over a public web search when both could answer a factual question."
+        },
+        {
+          "type": "paragraph",
+          "text": "These preferences should be visible and adjustable, not buried logic that nobody remembers is there."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Handling Near Duplicate Tools Across Servers",
+          "id": "dtr-near-duplicate-tools"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sometimes two servers expose tools that are functionally identical but named and described slightly differently. Routing logic should not assume tool names are unique across servers."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping the originating server alongside every tool in the combined list, as shown earlier with server_id, is what makes it possible to trace a call back to the right connection afterward."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Falling Back Gracefully When Nothing Fits",
+          "id": "dtr-graceful-fallback"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579520671-78141230.png",
+          "alt": "No tool fitting leads to a graceful fallback rather than a crash",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sometimes no available tool is a good match for the step at hand. The right response is not to force the closest tool anyway, it is to recognize the gap and handle it openly."
+        },
+        {
+          "type": "paragraph",
+          "text": "A graceful fallback might mean telling the user this action is not supported right now, or asking a planning step to revise the plan given the tools actually on hand."
+        },
+        {
+          "type": "note",
+          "title": "A bad fit is worse than no tool at all",
+          "content": "Calling a tool that does not really match the step can produce a confident sounding but wrong result. An honest failure that says nothing fits is far easier to recover from than a wrong call that looked fine."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Designing the Fallback Path",
+          "id": "dtr-designing-fallback"
+        },
+        {
+          "type": "paragraph",
+          "text": "A fallback path is a small piece of logic on its own, and it deserves the same care as the routing logic itself."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "best_tool = route(step_description, combined_tools, available_values)\nif best_tool is None:\n    return {\n        \"status\": \"no_tool_fits\",\n        \"step\": step_description,\n        \"message\": \"No connected tool matches this step, ask the user or revise the plan\"\n    }\ncall_tool(best_tool, ...)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Routing Cost and When to Cache It",
+          "id": "dtr-routing-cost"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579522228-618541046.png",
+          "alt": "A routing decision is cached to avoid repeating the same cost",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Scoring every tool against every step adds latency, especially with a large combined list pulled from many servers."
+        },
+        {
+          "type": "paragraph",
+          "text": "Caching the routing decision for a step that repeats often, or narrowing the combined list to a relevant subset before scoring, keeps this cheap without giving up the dynamic behavior."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Routing Failures Are Feedback, Not Just Errors",
+          "id": "dtr-failures-as-feedback"
+        },
+        {
+          "type": "paragraph",
+          "text": "When routing repeatedly fails to find a fit for a certain kind of step, that is useful signal, it usually means a needed tool is missing from the connected servers, not that the routing logic is broken."
+        },
+        {
+          "type": "paragraph",
+          "text": "Logging these misses over time is one of the simplest ways to know which server integrations are actually worth adding next."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Worked Example",
+          "id": "dtr-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "An agent is connected to a file server, a web search server, and a database server, and needs to answer, what does the latest sprint report say about the checkout bug."
+        },
+        {
+          "type": "list",
+          "items": [
+            "1. The host merges tools/list results from all three servers into one combined list.",
+            "2. The step describes a need to look inside a stored document, not the open web.",
+            "3. The router scores read_file and search_documents from the file server highest, since their descriptions mention reading stored reports.",
+            "4. search_web scores low, its description is about public internet content, which does not match a private sprint report.",
+            "5. query_db scores low too, its schema needs a table name, and there is no table for sprint reports.",
+            "6. The router picks search_documents, and the agent proceeds to call it with the sprint report query."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Common Mistakes",
+          "id": "dtr-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Hardcoding a tool name in agent logic instead of matching against descriptions and schemas at runtime.",
+            "Ignoring input schema fit and picking a tool purely on how good its description sounds.",
+            "Letting the first tool found in the combined list win a tie instead of applying a deliberate tie break rule.",
+            "Forcing a call to the closest available tool when nothing actually fits the step.",
+            "Assuming tool names are unique across servers and losing track of which server a tool actually came from."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Practice",
+          "id": "dtr-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take a combined tool list from three imaginary servers, each with overlapping tools, and write a routing function that scores tools for a given step, breaks ties using server success history, and returns a clear no fit result when nothing clears the threshold."
+        },
+        {
+          "type": "paragraph",
+          "text": "Then test it by removing one server from the list entirely and confirming the router adapts without any code changes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "dtr-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Dynamic tool routing means matching a step to a tool at runtime, using the tool descriptions and schemas that are actually connected right now, instead of hardcoding which tool gets called."
+        },
+        {
+          "type": "paragraph",
+          "text": "Handle ties with clear rules, and handle no fit by saying so plainly, since a graceful fallback is always safer than forcing a call to a tool that does not really belong."
+        }
+      ]
+    }
+  ]
+}

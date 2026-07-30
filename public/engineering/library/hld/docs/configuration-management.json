@@ -1,0 +1,528 @@
+{
+  "slug": "configuration-management",
+  "title": "Configuration Management",
+  "content": [
+    {
+      "id": "configuration-management",
+      "title": "Configuration Management",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "The same backend service gets deployed three times: once to a developer's laptop, once to staging, and once to production. The code in all three is identical, down to the last line. Yet the service connects to a different database, logs at a different verbosity, and talks to a different payment provider in each place."
+        },
+        {
+          "type": "paragraph",
+          "content": "None of that difference lives in the code. It lives in <strong>configuration</strong>, the set of values that are supplied to a running instance of an application rather than baked into it. Getting this separation right is one of those things that looks trivial until a hardcoded staging database URL quietly ships to production."
+        },
+        {
+          "type": "paragraph",
+          "content": "Configuration touches almost every other operational concern too. Secrets, feature flags, and the shift to distributed systems all rest on the same foundation, which is why it is worth understanding thoroughly rather than treating it as a handful of environment variables you set once and forget."
+        },
+        {
+          "type": "paragraph",
+          "content": "This topic covers where configuration should live, how to keep secrets out of it safely, how to validate it before it can cause damage, and how the picture changes once you are running many services instead of one."
+        },
+        {
+          "type": "paragraph",
+          "content": "The theme running through all of it is the same: code answers the question of how a system behaves, configuration answers the question of how it behaves right now, in this particular environment, and the two need to be kept genuinely separate."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396529743-151277585.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396529743-151277585.png",
+          "alt": "The identical build artifact behaves differently in dev, staging, and prod purely because of config"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Why Configuration Doesn't Belong in Code",
+          "text": "1. Why Configuration Doesn't Belong in Code"
+        },
+        {
+          "type": "paragraph",
+          "content": "The whole point of a build pipeline is to produce a single, tested artifact, whether that is a compiled binary, a container image, or a packaged bundle, and promote that exact same artifact through dev, staging, and production. If you rebuild the code for every environment, you are no longer testing what you ship, you are testing something adjacent to it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Configuration is what lets one artifact behave correctly in many environments without being rebuilt for each. The database connection string, the log level, the third party API keys, the feature toggles, all of it is supplied to the running process from the outside, rather than compiled into the binary itself."
+        },
+        {
+          "type": "paragraph",
+          "content": "Hardcoding a value that changes per environment creates two problems at once. First, it forces a rebuild (or worse, a manual code edit) every time you promote code between environments, which defeats the purpose of a repeatable pipeline. Second, and more dangerous, it makes it easy for the wrong value to slip through, a staging database URL that quietly ships to production because nobody remembered to change a hardcoded line."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a useful analogy here to a piece of furniture built with adjustable legs versus one built to a single fixed height. The adjustable version can be leveled for any floor without being rebuilt, exactly the flexibility configuration is meant to give a deployed service."
+        },
+        {
+          "type": "note",
+          "title": "The test to apply",
+          "content": "If a value would need to change for the exact same code to run correctly in a different environment, it is configuration, not code, and it does not belong in a source file."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is also a large part of what makes an artifact trustworthy. When the exact bytes that passed staging are the exact bytes running in production, the only variable left is configuration, which makes a production incident far easier to reason about than one where the code itself might differ subtly between environments."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Environment Variables",
+          "text": "2. Environment Variables"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most common way to supply configuration is through <strong>environment variables</strong>, key value pairs set in the process's environment before it starts. Almost every language and framework reads them natively, container orchestrators inject them easily, and they leave no configuration file sitting on disk that could accidentally get committed to source control."
+        },
+        {
+          "type": "code",
+          "content": "DATABASE_URL=postgres://prod-db:5432/orders\nLOG_LEVEL=warn\nPAYMENT_PROVIDER_KEY=sk_live_xxxxx\nFEATURE_NEW_CHECKOUT=true",
+          "code": {
+            "language": "bash",
+            "content": "DATABASE_URL=postgres://prod-db:5432/orders\nLOG_LEVEL=warn\nPAYMENT_PROVIDER_KEY=sk_live_xxxxx\nFEATURE_NEW_CHECKOUT=true"
+          },
+          "codes": {
+            "bash": "DATABASE_URL=postgres://prod-db:5432/orders\nLOG_LEVEL=warn\nPAYMENT_PROVIDER_KEY=sk_live_xxxxx\nFEATURE_NEW_CHECKOUT=true"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Environment variables have real limits too. They are flat strings, so anything structured, a list of allowed origins, a nested object, has to be encoded into a string and parsed back out. There is also no built in namespacing, so a large application can end up with a sprawling, undocumented list of variables that nobody fully remembers."
+        },
+        {
+          "type": "list",
+          "content": "[\"Simple to set in almost any deployment environment, from a shell to a container platform\",\"Language agnostic, every runtime can read them without a special library\",\"Flat and string only, poor fit for deeply structured configuration\",\"Easy to leak into logs or process listings if you are not careful\"]",
+          "items": [
+            "Simple to set in almost any deployment environment, from a shell to a container platform",
+            "Language agnostic, every runtime can read them without a special library",
+            "Flat and string only, poor fit for deeply structured configuration",
+            "Easy to leak into logs or process listings if you are not careful"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "A practical convention many teams adopt is a naming prefix, grouping related variables under a common prefix like <strong>PAYMENT_</strong> or <strong>DB_</strong>, which at least gives the sprawling list some visible structure even though the underlying mechanism stays flat."
+        },
+        {
+          "type": "heading3",
+          "content": "When environment variables are the right call",
+          "text": "When environment variables are the right call"
+        },
+        {
+          "type": "paragraph",
+          "content": "They are the natural default whenever the value is a small, simple string, and whenever the deployment platform already treats environment variables as its primary way to inject configuration, which most container platforms and process managers do."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Config Files",
+          "text": "3. Config Files"
+        },
+        {
+          "type": "paragraph",
+          "content": "When configuration grows structured, nested objects, arrays, environment specific overrides, a <strong>config file</strong> in YAML, JSON, or TOML is often a better fit than a wall of environment variables. The file can be validated as a whole, diffed cleanly in version control, and read with real structure instead of parsed strings."
+        },
+        {
+          "type": "code",
+          "content": "server:\n  port: 8080\n  logLevel: warn\ndatabase:\n  host: prod-db\n  poolSize: 20\nfeatures:\n  newCheckout: true",
+          "code": {
+            "language": "yaml",
+            "content": "server:\n  port: 8080\n  logLevel: warn\ndatabase:\n  host: prod-db\n  poolSize: 20\nfeatures:\n  newCheckout: true"
+          },
+          "codes": {
+            "yaml": "server:\n  port: 8080\n  logLevel: warn\ndatabase:\n  host: prod-db\n  poolSize: 20\nfeatures:\n  newCheckout: true"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "A common pattern combines both: a base config file checked into the repository for structure and safe defaults, with environment variables layered on top to override the handful of values that actually differ per environment or that must never be committed, like credentials."
+        },
+        {
+          "type": "paragraph",
+          "content": "Config files also make it easy to spot a drift problem, comparing the staging file against the production file line by line shows exactly what is supposed to differ between them, which is much harder to audit across dozens of loosely related environment variables."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396529743-571936347.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396529743-571936347.png",
+          "alt": "Defaults, a config file, and environment variables are merged into the config the app actually uses"
+        },
+        {
+          "type": "paragraph",
+          "content": "That layering needs a clear, documented precedence order. If a value can come from a default, a file, and an environment variable at once, the application has to be unambiguous about which one wins, otherwise debugging a wrong value in production turns into archaeology."
+        },
+        {
+          "type": "heading3",
+          "content": "Which one should you reach for",
+          "text": "Which one should you reach for"
+        },
+        {
+          "type": "paragraph",
+          "content": "A useful rule of thumb: use environment variables for the small number of values that genuinely differ per environment, and a config file for everything structural that stays the same shape across environments but might have a few overridden fields. Neither replaces the other, they solve different parts of the same problem."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. A Config Service",
+          "text": "4. A Config Service"
+        },
+        {
+          "type": "paragraph",
+          "content": "At small scale, environment variables and a file are enough. Some systems go further and fetch configuration from a dedicated <strong>config service</strong> at startup or periodically at runtime, rather than reading it from the local environment or disk at all."
+        },
+        {
+          "type": "paragraph",
+          "content": "This earns its cost when configuration needs to be shared consistently across many running instances, updated without redeploying every one of them, or audited centrally, who changed what value, and when. A single service reading its own environment variables rarely needs this; a fleet of many services that must agree on shared values often does."
+        },
+        {
+          "type": "paragraph",
+          "content": "Even for a single service, a config service can be worth adopting early if the value of a live update, changing a rate limit during an incident without a deploy, outweighs the added moving part. It is a judgment call, not a rule, and it is easy to overbuild here before the need is real."
+        },
+        {
+          "type": "paragraph",
+          "content": "A config service also opens the door to a live update, an operator changes one value in a dashboard and every subscribed instance picks it up within seconds, without anyone triggering a deployment. That capability is powerful, and it is also exactly the sort of thing that needs the validation and fail fast discipline covered next, since a bad value can now propagate everywhere almost instantly."
+        },
+        {
+          "type": "note",
+          "title": "This is not the same as distributed configuration",
+          "content": "A config service that one application uses to centralize its own settings is a smaller idea than distributed configuration across a whole microservices fleet, which gets its own dedicated treatment in section 9."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Secrets vs Non-Secret Configuration",
+          "text": "5. Secrets vs Non-Secret Configuration"
+        },
+        {
+          "type": "paragraph",
+          "content": "Not all configuration is equally sensitive. A log level or a feature flag is harmless if someone reads it. A database password, a payment provider's API key, or a signing secret is catastrophic if it leaks. Treating both categories the same, dropping everything into the same environment variable list or the same config file, is a common and dangerous shortcut."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396529744-204593003.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396529744-204593003.png",
+          "alt": "Non-secret values flow through normal config, secret values are handled by a dedicated secrets manager"
+        },
+        {
+          "type": "paragraph",
+          "content": "Non-secret configuration can live in plain environment variables or a config file checked into version control without much risk. <strong>Secrets</strong> need stronger handling: encrypted storage, tightly scoped access, rotation, and an audit trail of who accessed them and when. That is exactly what the platform's <strong>Secrets Management</strong> topic covers in depth, and this topic will not repeat it."
+        },
+        {
+          "type": "paragraph",
+          "content": "The two categories usually flow through different loading paths entirely. Ordinary config is read directly from the environment or a file at startup, while a secret value is typically fetched at startup from a secrets manager using a short lived credential, then held only in memory for as long as the process runs."
+        },
+        {
+          "type": "paragraph",
+          "content": "What matters here is the boundary itself. A config loader should be written so that it is obvious, ideally enforced, which values are expected to be secret and routed through a secrets manager, versus which are ordinary settings that can sit in a plain file. Blurring that line is how a credential ends up committed to a repository by accident."
+        },
+        {
+          "type": "paragraph",
+          "content": "A simple habit that catches a lot of accidental leaks: if a value would be embarrassing or dangerous to see printed in a log line or a crash report, it is a secret, and it should never travel through the same code path as an ordinary, printable config value."
+        },
+        {
+          "type": "list",
+          "content": "[\"Ordinary config: log level, port number, feature flags, safe to print and version control\",\"Secrets: database passwords, API keys, signing keys, never printed, never committed, always rotated\",\"The loader that assembles config at startup is the natural place to enforce this split consistently\"]",
+          "items": [
+            "Ordinary config: log level, port number, feature flags, safe to print and version control",
+            "Secrets: database passwords, API keys, signing keys, never printed, never committed, always rotated",
+            "The loader that assembles config at startup is the natural place to enforce this split consistently"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Config Validation at Startup",
+          "text": "6. Config Validation at Startup"
+        },
+        {
+          "type": "paragraph",
+          "content": "A service that starts successfully with missing or malformed configuration is far more dangerous than one that refuses to start at all. If a required database URL is absent and the application quietly falls back to some default or starts anyway, it will fail later, mid request, in a way that is much harder to diagnose than a clear startup error."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530150-673179989.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530150-673179989.png",
+          "alt": "The app validates every required config value before it accepts a single request"
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix is to <strong>fail fast</strong>: validate every required configuration value the moment the process starts, before it opens a port or accepts a single request. Check that required values are present, that types and formats are correct, a port is actually a number, a URL actually parses, and crash immediately with a clear error message if anything is wrong."
+        },
+        {
+          "type": "code",
+          "content": "function loadConfig() {\n  const required = ['DATABASE_URL', 'PAYMENT_PROVIDER_KEY', 'PORT'];\n  const missing = required.filter((k) => !process.env[k]);\n  if (missing.length) {\n    throw new Error(`Missing required config: ${missing.join(', ')}`);\n  }\n  return {\n    port: Number(process.env.PORT),\n    databaseUrl: process.env.DATABASE_URL,\n    paymentKey: process.env.PAYMENT_PROVIDER_KEY,\n  };\n}\n// call this before the server starts listening, not after",
+          "code": {
+            "language": "javascript",
+            "content": "function loadConfig() {\n  const required = ['DATABASE_URL', 'PAYMENT_PROVIDER_KEY', 'PORT'];\n  const missing = required.filter((k) => !process.env[k]);\n  if (missing.length) {\n    throw new Error(`Missing required config: ${missing.join(', ')}`);\n  }\n  return {\n    port: Number(process.env.PORT),\n    databaseUrl: process.env.DATABASE_URL,\n    paymentKey: process.env.PAYMENT_PROVIDER_KEY,\n  };\n}\n// call this before the server starts listening, not after"
+          },
+          "codes": {
+            "javascript": "function loadConfig() {\n  const required = ['DATABASE_URL', 'PAYMENT_PROVIDER_KEY', 'PORT'];\n  const missing = required.filter((k) => !process.env[k]);\n  if (missing.length) {\n    throw new Error(`Missing required config: ${missing.join(', ')}`);\n  }\n  return {\n    port: Number(process.env.PORT),\n    databaseUrl: process.env.DATABASE_URL,\n    paymentKey: process.env.PAYMENT_PROVIDER_KEY,\n  };\n}\n// call this before the server starts listening, not after"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This single habit turns an entire category of production incident, a service silently misbehaving because of a typo in a variable name, into a deployment that fails loudly in a health check or a startup log, minutes after the mistake was made rather than hours after users noticed."
+        },
+        {
+          "type": "paragraph",
+          "content": "It also pairs naturally with the deployment process itself: an orchestrator that sees a new instance fail its startup checks can simply refuse to route traffic to it and keep the previous, working version serving instead, which turns a bad config change into a non event for users."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A service that fails to start because config is wrong is a five minute fix. A service that starts anyway and misbehaves quietly is a multi hour investigation."
+        },
+        {
+          "type": "paragraph",
+          "content": "Fail fast validation is also cheap to write relative to the pain it prevents. It is a short function, checked once at startup, and the return on it shows up the first time someone forgets to set a newly added required variable in one environment and finds out from a startup log instead of from an outage."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Feature Flags as Dynamic Configuration",
+          "text": "7. Feature Flags as Dynamic Configuration"
+        },
+        {
+          "type": "paragraph",
+          "content": "A <strong>feature flag</strong> is configuration too, just configuration that is expected to change far more often than a database URL, and often without a deploy at all. A flag might turn a new checkout flow on for five percent of users, or disable a struggling integration instantly during an incident."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530152-118528906.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530152-118528906.png",
+          "alt": "The app checks a flag at runtime and takes one code path or the other"
+        },
+        {
+          "type": "paragraph",
+          "content": "What makes a flag different from ordinary config is the expectation of change. Nobody expects a database host to flip several times a day, but a rollout flag might change every few minutes as a team ramps a new feature up or rolls it back. That expectation shapes how flags are usually delivered, from a dedicated flag service or a lightweight config store that the app polls or subscribes to, rather than a value baked into a static environment variable set at deploy time."
+        },
+        {
+          "type": "paragraph",
+          "content": "Feature flags also blur the line between configuration and code behavior in a useful way. They let a team ship code for a new feature continuously, merged and deployed, while keeping it invisible to users until the flag says otherwise. That decoupling of deploy from release is one of the more valuable side effects of treating flags as dynamic configuration rather than a code branch."
+        },
+        {
+          "type": "heading3",
+          "content": "Rollout flags",
+          "text": "Rollout flags"
+        },
+        {
+          "type": "paragraph",
+          "content": "These gradually widen who sees a feature, five percent of users today, fifty percent next week, and they exist to catch problems on a small blast radius before a full release."
+        },
+        {
+          "type": "heading3",
+          "content": "Kill switches",
+          "text": "Kill switches"
+        },
+        {
+          "type": "paragraph",
+          "content": "These exist purely to turn something off fast during an incident, a failing third party integration, a runaway background job, without waiting for a deploy pipeline to run. Their entire value is in how quickly they can be flipped."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Hot Reloading vs Requiring a Restart",
+          "text": "8. Hot Reloading vs Requiring a Restart"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once configuration can change after startup, whether through a config service or a feature flag store, a design choice follows immediately: does the running process pick up the new value automatically, <strong>hot reloading</strong> it, or does it keep serving the old value until it is restarted?"
+        },
+        {
+          "type": "paragraph",
+          "content": "Hot reloading is convenient, a flag flips and every running instance reacts within seconds without anyone touching a deployment pipeline. It is also more complex to build correctly: the application needs to watch for changes, apply them safely to code that might be mid request, and handle a bad or partial update without crashing."
+        },
+        {
+          "type": "paragraph",
+          "content": "Requiring a restart is simpler and safer for anything foundational, a database connection pool size, a core dependency's address, values where changing them mid flight risks leaving the process in an inconsistent state. Most real systems split the difference: cheap, frequently changing values like feature flags are hot reloaded, while structural configuration is only picked up on the next deploy or restart."
+        },
+        {
+          "type": "list",
+          "content": "[\"Hot reload: fast to propagate, good fit for flags and thresholds, more implementation complexity\",\"Restart required: simple and safe, good fit for structural config like connection settings\",\"Most systems use both, choosing per value rather than picking one approach globally\"]",
+          "items": [
+            "Hot reload: fast to propagate, good fit for flags and thresholds, more implementation complexity",
+            "Restart required: simple and safe, good fit for structural config like connection settings",
+            "Most systems use both, choosing per value rather than picking one approach globally"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "A good question to ask about any new configuration value while designing it: what is the worst case if this changes underneath a request that is already in flight? If the answer is nothing serious, hot reloading is a reasonable default. If the answer involves a corrupted connection pool or an inconsistent transaction, require a restart instead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. One Service vs Many: Where Distributed Configuration Takes Over",
+          "text": "9. One Service vs Many: Where Distributed Configuration Takes Over"
+        },
+        {
+          "type": "paragraph",
+          "content": "Everything so far describes configuration for a <strong>single service</strong>: its own environment variables, its own config file, its own startup validation. That is the foundational picture, and it holds up fine as long as one team owns one deployable thing."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530153-226502484.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396530153-226502484.png",
+          "alt": "A single service manages its own config locally, many services share a central config store"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once a system splits into many independently deployed services, a different set of problems shows up. Dozens of services may need to agree on the same value, a shared feature flag, a common timeout, a service discovery address, and updating each service's own environment variables one at a time does not scale operationally and cannot change all of them consistently at once."
+        },
+        {
+          "type": "paragraph",
+          "content": "That is precisely the problem the platform's <strong>Distributed Configuration</strong> topic covers: tools like etcd, Consul, and Spring Cloud Config that act as a shared, centrally managed configuration store which many services read from and can react to live. This topic is the general, single service foundation; that one is the specific answer for a multi service system that needs configuration to be centralized and propagated consistently."
+        },
+        {
+          "type": "note",
+          "title": "How the two topics relate",
+          "content": "Configuration management is the concept: separate config from code, validate it, protect secrets. Distributed configuration is the infrastructure you add once that concept has to hold true across many independently deployed services at once."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth recognizing this as a scaling transition rather than a completely different problem. Every principle from this topic, fail fast validation, separating secrets, treating flags as dynamic config, still applies once you adopt a distributed configuration store, the store just becomes the shared source those principles are enforced against."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. A Practical Config Loading Pattern",
+          "text": "10. A Practical Config Loading Pattern"
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice, most well built services follow a similar shape at startup regardless of language: gather values from defaults, a config file, and environment variables in a defined precedence order, validate the merged result against required fields and types, route anything sensitive through a secrets manager instead of a plain value, and only then start accepting traffic."
+        },
+        {
+          "type": "code",
+          "content": "const config = {\n  ...defaults,\n  ...loadFile('config.yaml'),\n  ...fromEnv(process.env),\n};\nvalidate(config);              // throws and exits on any missing/invalid field\nconfig.paymentKey = await secretsManager.get('payment-key');\nstartServer(config);           // only reachable once config is known good",
+          "code": {
+            "language": "javascript",
+            "content": "const config = {\n  ...defaults,\n  ...loadFile('config.yaml'),\n  ...fromEnv(process.env),\n};\nvalidate(config);              // throws and exits on any missing/invalid field\nconfig.paymentKey = await secretsManager.get('payment-key');\nstartServer(config);           // only reachable once config is known good"
+          },
+          "codes": {
+            "javascript": "const config = {\n  ...defaults,\n  ...loadFile('config.yaml'),\n  ...fromEnv(process.env),\n};\nvalidate(config);              // throws and exits on any missing/invalid field\nconfig.paymentKey = await secretsManager.get('payment-key');\nstartServer(config);           // only reachable once config is known good"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Wrapping this in a single, well tested config module, rather than scattering <strong>process.env</strong> reads throughout the codebase, makes the whole surface easy to audit. Anyone can look at one file and see exactly what configuration the service depends on, what is required, and what has a safe default."
+        },
+        {
+          "type": "paragraph",
+          "content": "This module is also the natural place to write a small test suite: assert that missing required values throw, that malformed values throw, and that a fully valid environment produces the expected merged config. It is a short amount of test code that guards against an entire class of deployment mistakes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Designing This in an Interview",
+          "text": "11. Designing This in an Interview"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>State the separation clearly:</strong> I explain that the same build artifact runs in every environment, and only its configuration changes, never its code, which is why config has to be supplied externally rather than compiled in."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Split secrets out immediately:</strong> I call out that secrets need encrypted storage and access control that ordinary config does not, and I point to a dedicated secrets manager rather than treating everything the same."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Fail fast on startup:</strong> I mention validating required configuration before the service accepts traffic, so a missing value is a loud, immediate failure instead of a silent, later one."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Scale the answer with the system:</strong> for a single service I describe environment variables and a config file, for a system with many services I bring up a shared config store like etcd or Consul and explain why centralization becomes necessary at that scale."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Bring up flags when relevant:</strong> if the design involves gradual rollouts or an operational kill switch, I mention feature flags as dynamic configuration, distinct from static settings decided once at deploy time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Common Questions",
+          "text": "12. Common Questions"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Should config files ever be committed to version control?</strong> Non-secret defaults, yes, that gives you history and review. Anything secret should never be committed, even encrypted, and should come from a secrets manager instead."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>What is the difference between a feature flag and an environment variable?</strong> Both are configuration, but a flag is expected to change frequently and often without a deploy, while an environment variable is typically set once at deploy time and left alone until the next one."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Is a config service overkill for a small app?</strong> Usually yes. A single service reading its own environment variables and a local file is simpler and entirely sufficient until you have multiple services that genuinely need to share and synchronize configuration."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>What happens if two config sources disagree?</strong> Whichever source is defined to have higher precedence wins, which is exactly why that precedence order needs to be explicit and documented, not left to be discovered by reading code during an incident."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Do I need a config service from day one?</strong> No. Start with environment variables and a config file, and reach for a dedicated config service or distributed configuration store only once you actually have multiple services that need to share and synchronize values, not in anticipation of it."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Can a feature flag replace proper configuration validation?</strong> No, they solve different problems. Validation guarantees the service has what it structurally needs to run at all; flags control optional behavior on top of a service that is already correctly configured."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Key Takeaways",
+          "text": "13. Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"Configuration is anything that changes per environment while the code itself stays identical.\",\"Environment variables and config files are the two common local mechanisms, each with different tradeoffs.\",\"Secrets need stronger handling than ordinary config, covered separately by Secrets Management.\",\"Validate required configuration at startup and fail fast, rather than starting up broken and failing later.\",\"Feature flags are configuration expected to change often, sometimes without a deploy at all.\",\"Hot reloading suits fast changing values like flags, a restart is often safer for structural config.\",\"A single service manages its own config locally; many services need centralized, distributed configuration instead.\"]",
+          "items": [
+            "Configuration is anything that changes per environment while the code itself stays identical.",
+            "Environment variables and config files are the two common local mechanisms, each with different tradeoffs.",
+            "Secrets need stronger handling than ordinary config, covered separately by Secrets Management.",
+            "Validate required configuration at startup and fail fast, rather than starting up broken and failing later.",
+            "Feature flags are configuration expected to change often, sometimes without a deploy at all.",
+            "Hot reloading suits fast changing values like flags, a restart is often safer for structural config.",
+            "A single service manages its own config locally; many services need centralized, distributed configuration instead."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Configuration management sounds like a small, almost administrative concern next to bigger architectural decisions, but it is the layer that decides whether the exact same code behaves correctly, safely, and predictably no matter where it runs."
+        },
+        {
+          "type": "paragraph",
+          "content": "Get the fundamentals right at the single service level and everything that follows, secrets, feature flags, a fleet wide config store, becomes a natural extension rather than a rewrite."
+        }
+      ]
+    }
+  ]
+}

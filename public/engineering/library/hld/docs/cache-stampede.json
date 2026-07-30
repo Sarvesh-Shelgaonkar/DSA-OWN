@@ -1,0 +1,479 @@
+{
+  "slug": "cache-stampede",
+  "title": "Cache Stampede",
+  "content": [
+    {
+      "id": "cache-stampede",
+      "title": "Cache Stampede",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "A cache exists to protect the database from the full weight of real traffic. That protection has one nasty failure mode: the moment a single, extremely popular cached value disappears, all at once, every request that would normally have been served from cache suddenly needs the real data at the exact same instant. A <strong>cache stampede</strong>, also called the thundering herd problem or dog-piling, is what happens when that flood of simultaneous misses hits the database together, often hard enough to take it down."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521720-643142458.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521720-643142458.png",
+          "alt": "One popular key expiring can turn thousands of cheap cache hits into thousands of simultaneous, expensive database queries",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521720-643142458.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What a Cache Stampede Actually Is",
+          "text": "1. What a Cache Stampede Actually Is"
+        },
+        {
+          "type": "paragraph",
+          "content": "The scenario is almost always the same shape: a single cache key is extremely popular, being read thousands of times a second, and that one key expires or gets evicted. Every one of those thousands of requests that would have been an instant cache hit a moment earlier now misses at the same time, and every single one of them independently decides to go fetch the value from the database."
+        },
+        {
+          "type": "paragraph",
+          "content": "The database, which was never sized to handle that same query thousands of times per second, since the cache was supposed to prevent exactly that, suddenly receives exactly that. In the worst cases, this is enough to overload the database entirely, causing every other, unrelated query to slow down or fail too, turning one hot key expiring into a system-wide outage."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is closely related to, but distinct from, the hot key problem covered elsewhere in this course. A hot key is about sustained, uneven load on one piece of data. A stampede is specifically about many requests converging on refetching that same piece of data at the exact same moment, usually triggered by that key becoming temporarily uncached."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521722-32081930.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521722-32081930.png",
+          "alt": "A well-known example: a link going viral on a forum sends a sudden flood of traffic at a page nobody expected to be popular a moment ago",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521722-32081930.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A familiar real-world version of this is what internet communities have long called the \"hug of death\", a small website gets linked from somewhere with enormous reach, and the sudden flood of simultaneous visitors overwhelms a server that was doing perfectly fine moments earlier. The mechanism is identical: a page that was rarely requested suddenly gets requested by thousands of people within seconds, all effectively as a fresh cache miss at once."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is this all-at-once quality that makes a stampede meaningfully different from ordinary high traffic. A database can often be scaled or tuned to comfortably handle a large, steady volume of queries. A stampede is not steady at all, it is a sudden, sharp burst concentrated into a very short window, which is a fundamentally harder pattern to absorb even for a database that would otherwise handle the equivalent average load without any trouble."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 A quick mental model",
+          "text": "1.1 A quick mental model"
+        },
+        {
+          "type": "paragraph",
+          "content": "Picture a single checkout counter at a store that normally serves one customer at a time, comfortably, because a large sign out front usually tells most people the item they want is already in their basket, no need to queue. The moment that sign disappears, everyone who would have simply walked out with their item now lines up at the one counter at once. The counter is the database, the sign is the cache, and a stampede is what happens the instant the sign comes down for even a moment."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Why It Happens: The Anatomy of the Problem",
+          "text": "2. Why It Happens: The Anatomy of the Problem"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281767110-890305044.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281767110-890305044.png",
+          "alt": "A stampede can be triggered by a normal TTL expiring, a cache restarting empty, or a fresh deploy clearing everything at once",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281767110-890305044.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 TTL expiry",
+          "text": "2.1 TTL expiry"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most common trigger is the most mundane one: a popular key simply reaches the end of its time-to-live, covered in depth under Cache Invalidation, and expires during a moment of continued heavy traffic."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Cache restart or cold start",
+          "text": "2.2 Cache restart or cold start"
+        },
+        {
+          "type": "paragraph",
+          "content": "A cache node restarting, whether from a deploy, a crash, or routine maintenance, comes back up completely empty. Every single request that would normally hit that cache now misses, all at once, for every key, not just one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.3 A fresh deployment",
+          "text": "2.3 A fresh deployment"
+        },
+        {
+          "type": "paragraph",
+          "content": "Deploying a new version of an application, or rolling out a cache configuration change, can have the same effect as a restart, wiping out a warm cache and replacing it with a cold, empty one at the worst possible moment, right when traffic is still flowing normally."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth noticing that all three triggers share the same underlying shape: a large amount of demand that was previously being absorbed by a warm cache suddenly has nowhere to go but the origin, all at the same moment. Whether that demand built up over time (a popular key) or was always there (steady traffic hitting a newly-cold cache), the failure mode at the database is identical."
+        },
+        {
+          "type": "paragraph",
+          "content": "Knowing which of these three triggers is actually responsible in a given incident matters for the fix, jittering TTLs addresses expiry-driven stampedes specifically, but does nothing for a stampede caused by a cache node restarting, which calls for the warm-up approach covered later in this section instead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Fix 1: Locking (Mutex-Based)",
+          "text": "3. Fix 1: Locking (Mutex-Based)"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281769160-860555401.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281769160-860555401.png",
+          "alt": "Only the first request that misses actually queries the database; every other concurrent request waits for that one result instead of duplicating the work",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281769160-860555401.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most direct fix: when a request misses the cache, before going to the database, it first tries to acquire a lock (often just a short-lived special key in the cache itself) for that specific cache key. Only the request that successfully acquires the lock actually queries the database. Every other concurrent request for that same key sees the lock is held and waits briefly, then reads the now-freshly-populated cache instead of independently hitting the database itself."
+        },
+        {
+          "type": "code",
+          "content": "if cache.set_if_not_exists(f\"lock:{key}\", ttl=5):\n    value = db.fetch(key)\n    cache.set(key, value, ttl=300)\n    cache.delete(f\"lock:{key}\")\nelse:\n    sleep(0.05)\n    return cache.get(key)  # by now, likely populated by the lock holder",
+          "code": {
+            "language": "python",
+            "content": "if cache.set_if_not_exists(f\"lock:{key}\", ttl=5):\n    value = db.fetch(key)\n    cache.set(key, value, ttl=300)\n    cache.delete(f\"lock:{key}\")\nelse:\n    sleep(0.05)\n    return cache.get(key)  # by now, likely populated by the lock holder"
+          },
+          "codes": {
+            "python": "if cache.set_if_not_exists(f\"lock:{key}\", ttl=5):\n    value = db.fetch(key)\n    cache.set(key, value, ttl=300)\n    cache.delete(f\"lock:{key}\")\nelse:\n    sleep(0.05)\n    return cache.get(key)  # by now, likely populated by the lock holder"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 The lock needs its own expiry",
+          "text": "3.1 The lock needs its own expiry"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281771371-287763889.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281771371-287763889.png",
+          "alt": "A lock with no timeout of its own can leave every other request waiting forever if its holder crashes mid-fetch",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281771371-287763889.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A critical detail easy to miss: the lock itself needs a short TTL. If the request holding the lock crashes or hangs before releasing it, every other request waiting on that lock would otherwise wait forever, turning a brief stampede into a total, indefinite outage for that key. Giving the lock its own short expiry (a few seconds, comfortably longer than a normal database fetch takes) means the system self-heals even in that failure case, another request eventually acquires the lock once it naturally expires."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 The lock has to be shared, not local",
+          "text": "3.2 The lock has to be shared, not local"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281773141-392191165.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281773141-392191165.png",
+          "alt": "If each app server keeps its own local lock, every other server still races to the database at the same time",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281773141-392191165.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A common implementation mistake: acquiring the lock in local application memory rather than in the shared cache itself. With many application instances running behind a load balancer, a lock held only in one instance memory does nothing to stop every other instance from independently racing to the database at the same moment. The lock needs to live somewhere every instance can see it, almost always the shared cache layer itself, which is exactly why the example in this section uses a cache-based lock rather than an in-process one."
+        },
+        {
+          "type": "paragraph",
+          "content": "The small wait imposed on waiting requests, typically tens of milliseconds, is usually an easy trade to accept, since it is dramatically shorter than the delay those same requests would experience if they were left to independently overwhelm a struggling database instead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Fix 2: Request Coalescing",
+          "text": "4. Fix 2: Request Coalescing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281774960-619335616.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281774960-619335616.png",
+          "alt": "Many identical in-flight requests get merged into a single real fetch, and the one result is shared with all of them",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281774960-619335616.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A closely related but distinct technique operates at the application layer rather than the cache layer: if the application notices it already has an in-flight fetch running for a given key, any new request for that same key simply attaches itself to the existing in-flight request instead of starting a new one. When the original fetch completes, every attached request receives the same result. This is sometimes called request collapsing or single-flight, and several standard libraries implement it directly (Go famous singleflight package is a well-known example)."
+        },
+        {
+          "type": "paragraph",
+          "content": "The distinction from locking matters in practice: locking still lets every waiting request eventually make its own trip to the cache once the lock is released, while coalescing shares the literal in-memory result object across every attached caller, skipping even that second cache read. Coalescing is somewhat more complex to implement correctly, but scales a little better under extreme concurrency for exactly that reason."
+        },
+        {
+          "type": "paragraph",
+          "content": "Implementing this correctly means keying the in-flight tracking structure by the exact same cache key being fetched, and being careful to clean up that tracking entry once the fetch completes, whether it succeeded or failed, so a single failed fetch does not permanently block every future request for that key."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Fix 3: Probabilistic Early Expiration",
+          "text": "5. Fix 3: Probabilistic Early Expiration"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521723-122219289.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521723-122219289.png",
+          "alt": "Rather than every request waiting until the exact expiry moment, each one has a small, growing chance of refreshing a little early",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521723-122219289.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of every request treating a cache entry as either fully valid or fully expired, this technique gives each request a small, and increasing, probability of treating a not-yet-expired entry as if it needs a refresh anyway, as it gets closer to its actual expiry time. The effect is that refreshes get smeared out across a window of time leading up to expiry, rather than every single request piling up at the exact expiry instant."
+        },
+        {
+          "type": "paragraph",
+          "content": "This technique, sometimes called XFetch or early recomputation, requires no locking infrastructure at all, each request independently decides whether to treat itself as the one responsible for refreshing, based on a formula that weighs how close the entry is to expiring and how long the last refresh actually took. It trades a small amount of statistical unpredictability, occasionally two requests both decide to refresh, for a system that needs no shared coordination mechanism whatsoever."
+        },
+        {
+          "type": "paragraph",
+          "content": "The formula generally weighs three things: how much time is left before true expiry, how long the last computation of this value took, and a random factor, combining them so that keys expensive to recompute start their early-refresh window earlier than cheap ones do."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Fix 4: Reuse Stale-While-Revalidate",
+          "text": "6. Fix 4: Reuse Stale-While-Revalidate"
+        },
+        {
+          "type": "paragraph",
+          "content": "The stale-while-revalidate approach covered under Cache Invalidation solves stampedes as a natural side effect: since an expired entry is still served immediately while a single background refresh happens, there is no moment where a flood of requests all simultaneously discover a miss and race to the database, exactly one background refresh runs regardless of how many requests are asking."
+        },
+        {
+          "type": "list",
+          "content": "[\"No request ever waits on a lock or a fetch, the stale value is always available immediately.\",\"Exactly one background refresh runs per expiry, regardless of how many requests arrive during that window.\",\"The trade-off is explicit: every one of those requests knowingly receives a briefly stale value.\"]",
+          "items": [
+            "No request ever waits on a lock or a fetch, the stale value is always available immediately.",
+            "Exactly one background refresh runs per expiry, regardless of how many requests arrive during that window.",
+            "The trade-off is explicit: every one of those requests knowingly receives a briefly stale value."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Fix 5: Jittered TTLs",
+          "text": "7. Fix 5: Jittered TTLs"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281779995-706523418.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281779995-706523418.png",
+          "alt": "Identical TTLs across many keys make them all expire in sync; adding a small random offset spreads that expiry out",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281779995-706523418.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "If many different keys are all set with the exact same TTL, perhaps because they were all populated in the same batch job, they all expire at the same moment too, which can create a stampede across many keys simultaneously rather than just one. Adding a small amount of random jitter, a 300 second TTL becoming somewhere between 270 and 330 seconds, spreads that expiry out naturally, so the resulting misses trickle in rather than arrive as one wave."
+        },
+        {
+          "type": "paragraph",
+          "content": "Jitter is cheap to add and worth doing by default on any TTL applied to a batch of related keys, there is essentially no downside to spreading expiry out slightly, and the alternative, discovering a synchronized-expiry stampede in production, is a genuinely painful way to learn the lesson."
+        },
+        {
+          "type": "paragraph",
+          "content": "The amount of jitter to add scales naturally with how many keys share a TTL and how sensitive the downstream database is to a burst, a wider jitter window spreads expiry more thinly, at the cost of a slightly wider range of staleness across otherwise identical keys."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Stampedes Can Cascade Beyond the Cache",
+          "text": "8. Stampedes Can Cascade Beyond the Cache"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281782097-540984144.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281782097-540984144.png",
+          "alt": "A stampede that starts at the cache layer can overload the database, and from there ripple into completely unrelated parts of the system",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785281782097-540984144.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth remembering that a cache stampede rarely stays contained to the cache layer. Once the database is overloaded by the sudden flood of duplicate queries, every other feature that also depends on that same database can slow down or fail too, an outage that started as one popular product page expiring can end up looking, to an on-call engineer, like a mysterious, unrelated database-wide incident."
+        },
+        {
+          "type": "paragraph",
+          "content": "This cascading risk is exactly why capacity planning for a database should never assume the cache will always be there to protect it, a database sized only for the traffic that survives caching is a database one bad cache moment away from a full outage."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Why this makes on-call debugging harder",
+          "text": "8.1 Why this makes on-call debugging harder"
+        },
+        {
+          "type": "paragraph",
+          "content": "From the perspective of whoever is paged, a database suddenly slowing down for every query looks identical whether the true cause is a genuine capacity problem, a bad migration, or a stampede triggered by one specific cache key expiring. Good monitoring, specifically tracking cache hit ratio alongside database load, is what lets an on-call engineer tell these apart quickly rather than spending precious minutes investigating the wrong layer of the system entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Choosing a Fix",
+          "text": "9. Choosing a Fix"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Situation\",\"Reasonable fix\"],\"rows\":[[\"A handful of extremely hot keys\",\"Locking or request coalescing\"],[\"Staleness of a few seconds is acceptable\",\"Stale-while-revalidate\"],[\"Many keys expiring in sync from a batch job\",\"Jittered TTLs\"],[\"Want to avoid ever hitting a hard expiry moment\",\"Probabilistic early expiration\"]]}"
+        },
+        {
+          "type": "list",
+          "content": "[\"Combining approaches is common and reasonable, jittered TTLs to reduce how often a stampede-worthy moment even happens, plus locking as a backstop for whichever key still manages to expire under heavy concurrent load anyway.\",\"There is no single fix that is strictly best, each one trades a small amount of latency, complexity, or staleness for protection against the same underlying failure mode.\"]",
+          "items": [
+            "Combining approaches is common and reasonable, jittered TTLs to reduce how often a stampede-worthy moment even happens, plus locking as a backstop for whichever key still manages to expire under heavy concurrent load anyway.",
+            "There is no single fix that is strictly best, each one trades a small amount of latency, complexity, or staleness for protection against the same underlying failure mode."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth sizing the actual risk before adding complexity too. A key read a few times a second expiring is not a stampede risk worth engineering around, the handful of simultaneous misses that could occur are well within what any reasonably sized database handles without noticing. This is a problem worth solving specifically for the genuinely hot keys identified through the same monitoring covered under Handling Hot Keys, not a default to apply defensively to every cache read in a system."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 A note on negative caching",
+          "text": "9.1 A note on negative caching"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521723-498151057.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521723-498151057.png",
+          "alt": "Caching the fact that a key does not exist prevents every subsequent request for that same missing key from hitting the database",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521723-498151057.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A related, often-overlooked case: a request for a key that genuinely does not exist in the database at all still counts as a cache miss, and if that specific \"missing\" lookup becomes popular, perhaps from a scraper or a broken client retrying a deleted resource, it can create its own stampede pattern. <strong>Negative caching</strong>, explicitly caching the fact that a key was not found, with a shorter TTL than a normal successful lookup, prevents this exact scenario from repeatedly hitting the database for something that was never going to be there."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Common Mistakes",
+          "text": "10. Common Mistakes"
+        },
+        {
+          "type": "list",
+          "content": "[\"Setting identical TTLs across a batch of related keys without adding jitter, then being surprised when they all expire together later.\",\"Implementing locking without a lock timeout, so a crashed lock holder leaves every other request waiting indefinitely.\",\"Assuming a cache stampede is purely a cache problem, and not planning for its ability to cascade into a full database overload.\",\"Warming a brand new cache node with real production traffic instead of pre-loading it, effectively creating a stampede on every single deploy.\"]",
+          "items": [
+            "Setting identical TTLs across a batch of related keys without adding jitter, then being surprised when they all expire together later.",
+            "Implementing locking without a lock timeout, so a crashed lock holder leaves every other request waiting indefinitely.",
+            "Assuming a cache stampede is purely a cache problem, and not planning for its ability to cascade into a full database overload.",
+            "Warming a brand new cache node with real production traffic instead of pre-loading it, effectively creating a stampede on every single deploy."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "A final, less technical mistake worth naming: treating this as purely an engineering problem to solve once and forget. Traffic patterns change, a key that was never hot can become hot overnight after a product goes viral, which is exactly why the monitoring covered under Handling Hot Keys needs to run continuously, not just at initial launch."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.1 Scheduled warm-up as a deploy-time safeguard",
+          "text": "10.1 Scheduled warm-up as a deploy-time safeguard"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521724-985765407.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521724-985765407.png",
+          "alt": "Running a warm-up job just before cutting traffic to a new instance means it never has to survive a fully cold start under real load",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396521724-985765407.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "For the deployment-triggered case specifically, many teams run an automated cache warm-up step as part of the deploy pipeline itself, replaying a sample of recent real traffic against the new instance before it ever receives live user traffic, so by the time it is cut over, its cache is already reasonably warm. This connects directly to the Cache Warming topic elsewhere in this section, deploy-triggered stampedes and cold-start problems are, in practice, the same problem looked at from two different angles."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. HLD Interview: How to Talk About This",
+          "text": "11. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "The strongest answers open by naming the actual mechanism, many concurrent misses converging on the database at once, rather than jumping straight to solution names. From there, being able to compare locking (simple, but adds a small wait) against stale-while-revalidate (no wait, but briefly serves old data) shows a real grasp of the trade-off rather than a memorized list of fixes."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A cache stampede is what happens when the very thing meant to protect your database from load becomes, for one bad moment, the thing that concentrates it."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is also worth mentioning that this exact problem is not unique to application caches, CDNs, DNS resolvers, and even certificate renewal systems all deal with their own versions of a thundering herd, and the same handful of techniques, locking, jitter, coalescing, show up again and again across all of them."
+        },
+        {
+          "type": "paragraph",
+          "content": "Bringing up a concrete detection signal, a sudden, correlated spike in database query latency alongside a matching dip in cache hit ratio, ties the whole answer back to something an interviewer can picture happening on a real monitoring dashboard."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "Key Takeaways",
+          "text": "Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"A cache stampede happens when many concurrent requests for the same expired or evicted key all fall through to the database at once.\",\"Common triggers are a normal TTL expiry, a cache restart or cold start, and a fresh deployment wiping a warm cache.\",\"Locking ensures only one request refetches from the database while others wait for the result.\",\"Request coalescing merges duplicate in-flight requests at the application layer, independent of the cache itself.\",\"Stale-while-revalidate and probabilistic early expiration both avoid the hard cliff-edge of a synchronized expiry moment entirely.\",\"A stampede that overloads the database can cascade into an outage that looks unrelated to the original cache event.\"]",
+          "items": [
+            "A cache stampede happens when many concurrent requests for the same expired or evicted key all fall through to the database at once.",
+            "Common triggers are a normal TTL expiry, a cache restart or cold start, and a fresh deployment wiping a warm cache.",
+            "Locking ensures only one request refetches from the database while others wait for the result.",
+            "Request coalescing merges duplicate in-flight requests at the application layer, independent of the cache itself.",
+            "Stale-while-revalidate and probabilistic early expiration both avoid the hard cliff-edge of a synchronized expiry moment entirely.",
+            "A stampede that overloads the database can cascade into an outage that looks unrelated to the original cache event."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "How this connects to the rest of this section",
+          "content": "Cache Invalidation covers why a key might expire in the first place. Cache Warming covers how to avoid a cold start ever happening at all. This topic sits between the two, handling the moment where, despite best efforts, many requests still converge on a single miss at once."
+        },
+        {
+          "type": "paragraph",
+          "content": "Treat this page as the practical response to a question every one of the other caching topics eventually raises: what actually happens the moment a cache entry stops being there. The answer, for a popular enough key, is always some version of a stampede unless one of the fixes here is already in place."
+        }
+      ]
+    }
+  ]
+}

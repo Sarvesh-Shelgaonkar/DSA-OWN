@@ -1,0 +1,517 @@
+{
+  "slug": "read-replicas",
+  "title": "Read Replicas",
+  "content": [
+    {
+      "id": "read-replicas",
+      "title": "Read Replicas",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "A single database server can only take so many reads before its CPU, memory, and disk I/O run out, and for most applications reads outnumber writes by a wide margin, sometimes a hundred to one. Read replicas solve this by keeping full copies of the data on separate servers that only serve reads, so read traffic scales out across many machines while all writes still go through one place that owns the source of truth."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284209481-623946928.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284209481-623946928.png",
+          "alt": "Application writes to the primary; reads are spread across replicas kept in sync by streaming replication"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Why Read Replicas Exist",
+          "text": "1. Why Read Replicas Exist"
+        },
+        {
+          "type": "paragraph",
+          "content": "The core idea is a division of labor. A primary database accepts every write and is the single authority on what the data actually is. One or more replicas continuously receive a stream of the changes happening on the primary and apply them locally, ending up with a copy of the same data a short moment behind. The application then sends its write queries to the primary and spreads its read queries across the replicas."
+        },
+        {
+          "type": "paragraph",
+          "content": "This works because reads and writes have very different scaling needs. A write has to be durable and consistent, so it fundamentally has to go through a smaller number of places that can coordinate. A read just needs a copy of data that is accurate enough for the moment, and copies are cheap to make more of. Read replicas exploit that asymmetry directly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 Replicas Can Specialize, Not Just Duplicate",
+          "text": "1.1 Replicas Can Specialize, Not Just Duplicate"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is tempting to picture every replica as an identical, interchangeable copy, but a common and useful variation is giving different replicas different jobs. One replica might serve the search feature, another might exist purely so the analytics team can run slow, heavy reporting queries, and a third handles ordinary application reads. Each one still receives the same replication stream, but isolating workloads this way means one team running an expensive ad hoc query cannot slow down another team production traffic."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284212109-473406602.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284212109-473406602.png",
+          "alt": "Different replicas can be dedicated to different read workloads even though they all replicate from the same primary"
+        },
+        {
+          "type": "note",
+          "title": "Why this matters in practice",
+          "content": "A single shared replica pool means a badly written analytics query can starve real user traffic of read capacity. Dedicating a replica to isolate that workload is a cheap, effective fix that costs nothing more than the hardware for one more replica."
+        },
+        {
+          "type": "paragraph",
+          "content": "Specialization also simplifies capacity planning, since a dedicated analytics replica can be sized and scheduled around a known reporting workload instead of trying to guess how much headroom ordinary application traffic needs on top of unpredictable ad hoc queries."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Replication Lag and Why It Happens",
+          "text": "2. Replication Lag and Why It Happens"
+        },
+        {
+          "type": "paragraph",
+          "content": "Replicas do not receive writes instantly. The primary writes a change locally, sends a description of that change down a replication stream, and the replica has to receive it, apply it, and make it visible to readers. Every one of those steps takes a small but nonzero amount of time, and the total is called replication lag."
+        },
+        {
+          "type": "paragraph",
+          "content": "Lag is usually milliseconds under normal load, which is invisible to most users. It grows when the replica falls behind because it is doing other work, because the network between primary and replica is slow or congested, because a single huge write is being replayed, or because the replica is on weaker hardware than the primary. A replica that is meaningfully behind is serving reads that reflect the past, and the application has to be built with that possibility in mind rather than assuming every replica is always current."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284213756-863862065.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284213756-863862065.png",
+          "alt": "A write acknowledged on the primary has not necessarily reached a replica yet, so an immediate read from that replica can return a stale value"
+        },
+        {
+          "type": "paragraph",
+          "content": "A useful mental model is that a replica is never actually caught up, it is only ever caught up as of a moment ago. Treating that gap as a fact of life to design around, rather than a bug to eliminate, is what separates systems that handle lag gracefully from ones that break in surprising ways the first time a replica falls a few seconds behind."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Cascaded Replication",
+          "text": "2.1 Cascaded Replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every replica added to a primary adds a small amount of load to it, since the primary has to serve the replication stream to each one individually. At some scale this becomes its own bottleneck, and the fix is letting some replicas stream from another replica instead of directly from the primary, forming a small tree rather than a flat fan-out."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030016-899148682.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030016-899148682.png",
+          "alt": "A cascaded replica reads the replication stream from another replica instead of adding load directly to the primary"
+        },
+        {
+          "type": "paragraph",
+          "content": "The trade-off is an extra hop of lag for anything at the end of the chain, since a cascaded replica is only ever as fresh as the replica it reads from. This is the right shape for large fleets of replicas spread across regions, where a single regional replica pulls from the primary once and then fans out locally to many same-region replicas."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Logical Versus Physical Replication",
+          "text": "2.2 Logical Versus Physical Replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "Physical replication ships low-level, byte-oriented changes to the database files themselves, which is efficient and simple but generally requires the replica to be running the same database version and the same overall structure as the primary. Logical replication instead ships a higher-level description of each row change, which costs a bit more overhead but allows replicating between different versions, replicating only a subset of tables, or feeding the change stream into a completely different kind of system, such as a search index or a data warehouse."
+        },
+        {
+          "type": "paragraph",
+          "content": "This distinction matters for anything beyond plain read scaling. A replica meant purely to absorb read queries is usually served fine by physical replication. A pipeline that needs to feed database changes into an analytics warehouse or a cache invalidation system typically needs logical replication, or a similar change-data-capture mechanism, specifically because it needs to interpret what changed, not just receive an opaque byte stream."
+        },
+        {
+          "type": "note",
+          "title": "Where this connects",
+          "content": "The same change stream that feeds a logical replica is the mechanism behind change-data-capture pipelines, which is worth remembering if you ever need to keep a cache or a search index in sync with a database without querying it directly."
+        },
+        {
+          "type": "paragraph",
+          "content": "Choosing between them is rarely a difficult decision in practice: default to physical replication for straightforward read scaling, and only reach for logical replication once a concrete downstream need, like a search index or a warehouse pipeline, actually requires interpreting individual row changes rather than just holding a copy of the data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Read Your Own Writes Problem",
+          "text": "3. The Read Your Own Writes Problem"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most common bug caused by replication lag has a name because it happens so often: a user updates their profile, the write commits on the primary, the page immediately reloads and reads from a replica that has not caught up yet, and the user sees their own change appear to have been lost. Nothing is actually broken, the write is safely stored, but the experience looks like data loss and it erodes trust fast."
+        },
+        {
+          "type": "paragraph",
+          "content": "There are a few standard fixes, and picking the right one depends on how strict the guarantee needs to be. The simplest is routing a user back to the primary for a short window right after they write, long enough for replication to typically catch up. A more precise version tracks a replication position or timestamp with the write and only reads from a replica once it confirms it has reached at least that position. The most conservative option is simply reading anything that was just written directly from the primary rather than a replica at all, at the cost of some of the read scaling benefit for that specific access pattern."
+        },
+        {
+          "type": "note",
+          "title": "This is an application decision, not a database one",
+          "content": "The database will happily keep serving slightly stale reads from a replica forever. Deciding which reads are sensitive enough to need a fresher source, and routing accordingly, is work the application layer has to do deliberately."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Sticky Sessions as a Simpler Fix",
+          "text": "3.1 Sticky Sessions as a Simpler Fix"
+        },
+        {
+          "type": "paragraph",
+          "content": "A lighter-weight alternative to precise replication-position tracking is simply pinning a given user session to the primary, or to one specific replica, for a short window after any write. Every read that user makes in the next few seconds goes to the same server that definitely has their latest change, and after that window passes they fall back to the normal pool of replicas."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is not as precise as tracking an exact replication position, since it is really just betting that a short fixed window is almost always enough time for lag to resolve, but it is far simpler to implement and is good enough for the vast majority of products where the read-your-own-writes guarantee only needs to hold for the user who just made the change, not for every other user watching a shared view."
+        },
+        {
+          "type": "note",
+          "title": "Where this falls short",
+          "content": "Sticky sessions do not help when a second user needs to see the first user change immediately, for example a live chat message. That case genuinely needs either a fresher read path or a push-based update, not just session stickiness."
+        },
+        {
+          "type": "paragraph",
+          "content": "Choosing between sticky sessions and precise position tracking really comes down to how many features on the product actually need the stronger guarantee. Most teams start with sticky sessions because it costs almost nothing to add, and only build the more precise tracking for the specific handful of flows where a user visibly re-reading their own write is a real problem."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Routing Reads to Replicas",
+          "text": "4. Routing Reads to Replicas"
+        },
+        {
+          "type": "paragraph",
+          "content": "Something in the stack has to decide, for every single query, whether it goes to the primary or to a replica. There are two broad places to put that decision. The first is inside the application itself, usually through the data access layer, where a read-only transaction is detected and automatically routed to a replica pool while anything else goes to the primary."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030017-195269778.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030017-195269778.png",
+          "alt": "A routing layer inspects whether the current transaction is read only and picks a primary or a replica accordingly"
+        },
+        {
+          "type": "code",
+          "content": "public class ReadWriteRoutingDataSource extends AbstractRoutingDataSource {\n\n    @Override\n    protected Object determineCurrentLookupKey() {\n        boolean readOnly = TransactionSynchronizationManager.isCurrentTransactionReadOnly();\n        return readOnly ? pickReplica() : \"primary\";\n    }\n\n    private String pickReplica() {\n        List<String> replicas = replicaRegistry.healthyReplicas();\n        if (replicas.isEmpty()) {\n            return \"primary\";\n        }\n        int index = ThreadLocalRandom.current().nextInt(replicas.size());\n        return replicas.get(index);\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "public class ReadWriteRoutingDataSource extends AbstractRoutingDataSource {\n\n    @Override\n    protected Object determineCurrentLookupKey() {\n        boolean readOnly = TransactionSynchronizationManager.isCurrentTransactionReadOnly();\n        return readOnly ? pickReplica() : \"primary\";\n    }\n\n    private String pickReplica() {\n        List<String> replicas = replicaRegistry.healthyReplicas();\n        if (replicas.isEmpty()) {\n            return \"primary\";\n        }\n        int index = ThreadLocalRandom.current().nextInt(replicas.size());\n        return replicas.get(index);\n    }\n}"
+          },
+          "codes": {
+            "java": "public class ReadWriteRoutingDataSource extends AbstractRoutingDataSource {\n\n    @Override\n    protected Object determineCurrentLookupKey() {\n        boolean readOnly = TransactionSynchronizationManager.isCurrentTransactionReadOnly();\n        return readOnly ? pickReplica() : \"primary\";\n    }\n\n    private String pickReplica() {\n        List<String> replicas = replicaRegistry.healthyReplicas();\n        if (replicas.isEmpty()) {\n            return \"primary\";\n        }\n        int index = ThreadLocalRandom.current().nextInt(replicas.size());\n        return replicas.get(index);\n    }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The second place is a dedicated proxy sitting between the application and the database cluster, which parses or is told which queries are reads and forwards them to whichever replica currently has the most spare capacity and the least lag. A proxy centralizes the routing logic so every service that talks to the database benefits from it without each one reimplementing the same rules, which matters a great deal once more than one application shares a database cluster."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Weighted and Lag-Aware Routing",
+          "text": "4.1 Weighted and Lag-Aware Routing"
+        },
+        {
+          "type": "paragraph",
+          "content": "Simple round robin routing treats every replica as equally good, which breaks down the moment one replica falls behind or is running on weaker hardware. A better routing layer weights its choices by real signals: a replica with lower current lag and lower current load gets more of the traffic, and a replica whose lag has crossed an unhealthy threshold gets paused out of the pool entirely until it recovers."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284218811-693691940.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284218811-693691940.png",
+          "alt": "A routing layer can shift traffic away from a lagging replica instead of treating every replica as equally fresh"
+        },
+        {
+          "type": "paragraph",
+          "content": "This turns replica health into a continuous input to routing rather than a binary up or down decision, which matters because a replica that is technically still responding but seriously behind is often worse to route to than one that is cleanly marked unavailable, since a client has no way to tell it received a stale answer instead of an error."
+        },
+        {
+          "type": "paragraph",
+          "content": "This same weighting logic is exactly what a connection pooler or proxy layer is well positioned to own centrally, so every service talking to the database benefits from lag-aware routing without reimplementing it, rather than each application team tracking replica health independently."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Synchronous Versus Asynchronous Replication",
+          "text": "5. Synchronous Versus Asynchronous Replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "Asynchronous replication is the default almost everywhere because it is what makes read replicas fast to write to in the first place. The primary commits a write and reports success without waiting for any replica to confirm it received the change, so write latency is unaffected by how many replicas exist or how far away they are."
+        },
+        {
+          "type": "paragraph",
+          "content": "Synchronous replication flips that trade off. The primary waits for at least one replica to confirm it has durably received the change before reporting the write as successful, which guarantees that acknowledged write survives a primary failure but adds the replica round trip to every single write, and that cost grows with distance. Most systems use asynchronous replication for general read scaling and reserve synchronous replication, if they use it at all, for a small number of nearby replicas specifically kept for failover safety rather than for absorbing read traffic."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Same Zone Versus Cross Zone Replicas",
+          "text": "5.1 Same Zone Versus Cross Zone Replicas"
+        },
+        {
+          "type": "paragraph",
+          "content": "A replica in the same data center or availability zone as the primary sees changes almost immediately, since the network path is short and fast, and it is the natural choice for pure read-capacity scaling where freshness matters. A replica placed in a different availability zone or region trades a bit more lag for real resilience: it survives an outage that takes down the entire zone the primary lives in, which a same-zone replica cannot do no matter how many of them you add."
+        },
+        {
+          "type": "paragraph",
+          "content": "Most production setups use both for different reasons at once, a few same-zone replicas for low-latency read scaling day to day, and at least one cross-zone or cross-region replica specifically kept as a disaster recovery target, sized for safety rather than for shaving milliseconds off read latency."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth pricing out the cross-zone data transfer cost specifically, since cloud providers commonly charge for traffic crossing zone or region boundaries and a continuously streaming replication link runs that cost around the clock, not just during occasional bursts."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Failover: Promoting a Replica",
+          "text": "6. Failover: Promoting a Replica"
+        },
+        {
+          "type": "paragraph",
+          "content": "A primary is a single point of failure unless something is watching it and ready to act. Failover is the process of detecting that the primary is unreachable or unhealthy, choosing the best replica to take over, promoting that replica into the new primary role, and redirecting the application to it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030019-923804256.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030019-923804256.png",
+          "alt": "Failover promotes the healthiest, least-lagged replica into the primary role and repoints application connections"
+        },
+        {
+          "type": "paragraph",
+          "content": "Picking which replica to promote matters. The replica with the least replication lag has the freshest data and loses the least amount of recent writes, so most orchestration systems specifically track lag per replica and prefer the lowest one as the promotion candidate rather than picking arbitrarily. Any writes that reached the old primary but never made it to the promoted replica are gone, which is the real cost that asynchronous replication is trading against write latency."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Split-Brain: The Failure Mode Behind the Failure Mode",
+          "text": "6.1 Split-Brain: The Failure Mode Behind the Failure Mode"
+        },
+        {
+          "type": "paragraph",
+          "content": "The dangerous failure is not the primary going down, it is a network partition that makes the primary unreachable from the orchestrator while the primary is actually still up and still accepting writes from whichever clients can still reach it. If the orchestrator promotes a replica in that moment, the cluster now has two servers both believing they are the primary and both accepting writes, and the two copies of the data silently diverge."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284222042-113423455.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284222042-113423455.png",
+          "alt": "A network partition can leave the old primary still serving writes at the same time a replica gets promoted, producing two divergent primaries"
+        },
+        {
+          "type": "paragraph",
+          "content": "Guarding against this is called fencing, and it means making absolutely sure the old primary cannot keep accepting writes before a new one is promoted, for example by forcibly cutting its network access or power rather than merely trying to notify it. Real orchestration systems treat this as the central hard problem of failover, not an edge case, precisely because the naive version of automatic failover makes split-brain more likely, not less."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Monitoring Replica Lag",
+          "text": "7. Monitoring Replica Lag"
+        },
+        {
+          "type": "paragraph",
+          "content": "Because lag is the whole risk surface of this pattern, it needs a number you can watch, not just a feeling that things seem fine. Every mainstream database exposes some way to check how far behind a replica is, typically either in bytes of unapplied replication data or in a straightforward number of seconds behind the primary."
+        },
+        {
+          "type": "paragraph",
+          "content": "A healthy setup alerts before lag becomes a user-visible problem, not after. A common approach is a warning threshold around a few seconds and a harder alert if lag climbs into the range of tens of seconds, alongside automatically routing traffic away from a replica whose lag has grown too large rather than leaving it in the read pool serving increasingly stale data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Checking Lag Directly",
+          "text": "7.1 Checking Lag Directly"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every mainstream database exposes replication lag through a query or a status command, and reaching for it directly is often faster than opening a dashboard when something feels off."
+        },
+        {
+          "type": "code",
+          "content": "-- PostgreSQL: seconds of replication lag per replica\nSELECT client_addr,\n       EXTRACT(EPOCH FROM (now() - replay_lag)) AS lag_seconds\nFROM pg_stat_replication;",
+          "code": {
+            "language": "sql",
+            "content": "-- PostgreSQL: seconds of replication lag per replica\nSELECT client_addr,\n       EXTRACT(EPOCH FROM (now() - replay_lag)) AS lag_seconds\nFROM pg_stat_replication;"
+          },
+          "codes": {
+            "sql": "-- PostgreSQL: seconds of replication lag per replica\nSELECT client_addr,\n       EXTRACT(EPOCH FROM (now() - replay_lag)) AS lag_seconds\nFROM pg_stat_replication;"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Running this kind of check on a schedule, rather than only when something already feels slow, is what turns replica lag from a mystery into a number on a graph with a known normal range and a known alert threshold."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Capacity Planning: A Worked Example",
+          "text": "7.2 Capacity Planning: A Worked Example"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say a primary currently handles eleven thousand queries per second, and measurement shows the mix is roughly ten thousand reads and one thousand writes per second. A single database server of the same size the primary is running on has been measured to comfortably handle about four thousand queries per second before latency starts to degrade."
+        },
+        {
+          "type": "paragraph",
+          "content": "Splitting that ten thousand reads per second across replicas rated at four thousand each means three replicas provide twelve thousand read capacity, comfortably covering the current ten thousand with headroom for growth, while the primary now only has to absorb the one thousand writes per second plus whatever small overhead comes from feeding the replication stream to three replicas instead of one. This is the kind of back-of-envelope math that turns a vague plan for replicas into a specific number worth writing down in a design document."
+        },
+        {
+          "type": "paragraph",
+          "content": "Numbers like these should be revisited as traffic grows, not calculated once and forgotten. A team that checks this math quarterly catches the point where a fourth replica is needed well before users notice degraded read latency, rather than reacting to it after the fact."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Common Anti-Patterns",
+          "text": "8. Common Anti-Patterns"
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming every replica is always caught up and routing every read to whichever replica is least loaded with no regard for its lag.\",\"Sending a read immediately after a write to a random replica with no read-your-own-writes handling at all.\",\"Scaling replicas without ever checking whether the primary itself, which still absorbs one hundred percent of writes, has become the actual bottleneck.\",\"Treating a synchronous replica as a free extra read source when it was provisioned purely for failover safety and sized accordingly.\"]",
+          "items": [
+            "Assuming every replica is always caught up and routing every read to whichever replica is least loaded with no regard for its lag.",
+            "Sending a read immediately after a write to a random replica with no read-your-own-writes handling at all.",
+            "Scaling replicas without ever checking whether the primary itself, which still absorbs one hundred percent of writes, has become the actual bottleneck.",
+            "Treating a synchronous replica as a free extra read source when it was provisioned purely for failover safety and sized accordingly."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 When Replicas Are Not the Right Fix",
+          "text": "8.1 When Replicas Are Not the Right Fix"
+        },
+        {
+          "type": "paragraph",
+          "content": "Read replicas are a strong tool for one specific bottleneck: raw read query volume against a dataset that already fits comfortably on one machine, just needing more read throughput than one server provides. They do nothing for a dataset that has grown too large to fit well on a single machine, and they do nothing for write throughput, since every replica still has to apply the exact same stream of writes the primary does."
+        },
+        {
+          "type": "paragraph",
+          "content": "When the actual bottleneck is total data size or write volume, the right next step is partitioning the data itself, commonly called sharding, so that different machines each own a different slice of the data rather than every machine owning a full copy of all of it. Reaching for more replicas when the real problem is write volume is a common wasted effort, since it adds hardware cost without moving the number that is actually the constraint."
+        },
+        {
+          "type": "paragraph",
+          "content": "A useful gut check is asking whether adding a tenth replica would actually fix the problem. If the honest answer is no because the primary itself is maxed out on writes or the dataset no longer fits comfortably on one machine, that is the clearest signal the bottleneck has moved past what read replicas were ever designed to solve."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Real-World Examples",
+          "text": "9. Real-World Examples"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"System\",\"Mechanism\"],\"rows\":[[\"PostgreSQL\",\"Streaming replication ships the write-ahead log to replicas continuously, with an optional synchronous mode for specific replicas\"],[\"MySQL\",\"Binary log replication, historically statement or row based, read by replicas to reapply changes\"],[\"Managed cloud databases\",\"One-click read replica provisioning that handles the replication stream and exposes a separate read endpoint automatically\"],[\"MongoDB\",\"Replica sets replicate an operation log, with automatic election of a new primary on failure\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 Multi-Region Read Replicas",
+          "text": "9.1 Multi-Region Read Replicas"
+        },
+        {
+          "type": "paragraph",
+          "content": "Placing a replica physically closer to users in another region cuts read latency for that region dramatically, since a round trip across an ocean can cost more time than the entire rest of a request. This is one of the strongest reasons to add replicas beyond pure capacity: even a lightly loaded primary still benefits from a nearby replica if its users are far away."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030194-417871241.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396030194-417871241.png",
+          "alt": "Cross-region replicas primarily buy lower read latency for distant users, at the cost of more replication lag on the long link"
+        },
+        {
+          "type": "note",
+          "title": "The trade-off does not disappear",
+          "content": "A cross-region link is slower and less reliable than a same-region one, so a cross-region replica typically runs with more lag than a local one. This is usually an acceptable trade for the latency win, but it is still a trade, not a free upgrade."
+        },
+        {
+          "type": "paragraph",
+          "content": "Multi-region replicas also change the failover conversation, since promoting a distant replica after a regional outage can mean users elsewhere suddenly experience higher write latency to the newly promoted primary. This is a deliberate trade a team decides on in advance, not something to discover for the first time during an actual incident."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. HLD Interview: How to Talk About This",
+          "text": "10. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "Read replicas come up constantly in system design interviews because almost every real system is read-heavy, and naming them alone is not enough to look strong. What separates a shallow answer from a solid one is acknowledging replication lag up front, naming read-your-own-writes as the concrete failure mode it causes, and describing an actual mitigation rather than treating replicas as an unconditional win."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is also worth being explicit about what read replicas do not solve. They add read capacity, but every replica still has to store the entire dataset and still has to apply every single write, so they do nothing for write throughput and nothing for total storage size. When an interviewer pushes on write scaling specifically, that is the signal to bring up partitioning or sharding instead, not more replicas."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A replica multiplies your read capacity and your data storage cost together. It does nothing for your write capacity at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.1 A Common Follow-Up Question",
+          "text": "10.1 A Common Follow-Up Question"
+        },
+        {
+          "type": "paragraph",
+          "content": "A frequent follow-up is what happens to in-flight reads during failover, while the new primary is being promoted and connections are being repointed. The honest answer is a short window, typically a handful of seconds, where writes fail outright and reads may still succeed against surviving replicas. Naming that window explicitly, and describing retry behavior on the client side during it, reads as a more complete answer than implying failover is instantaneous."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "Key Takeaways",
+          "text": "Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"Read replicas scale reads by copying data to extra servers; all writes still go through one primary.\",\"Replication lag is the fundamental cost of this pattern and is usually asynchronous by default.\",\"Read-your-own-writes is the most common bug this pattern introduces and needs a deliberate fix.\",\"Routing happens either in the application data layer or in a dedicated proxy sitting in front of the cluster.\",\"Failover promotes the least-lagged replica and loses whatever writes had not yet replicated.\",\"Replicas do not help write throughput or total storage; that is what partitioning and sharding are for.\"]",
+          "items": [
+            "Read replicas scale reads by copying data to extra servers; all writes still go through one primary.",
+            "Replication lag is the fundamental cost of this pattern and is usually asynchronous by default.",
+            "Read-your-own-writes is the most common bug this pattern introduces and needs a deliberate fix.",
+            "Routing happens either in the application data layer or in a dedicated proxy sitting in front of the cluster.",
+            "Failover promotes the least-lagged replica and loses whatever writes had not yet replicated.",
+            "Replicas do not help write throughput or total storage; that is what partitioning and sharding are for."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

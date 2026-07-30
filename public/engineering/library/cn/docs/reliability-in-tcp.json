@@ -1,0 +1,333 @@
+{
+  "title": "Reliability in TCP",
+  "slug": "reliability-in-tcp",
+  "content": [
+    {
+      "id": "reliability-in-tcp",
+      "title": "Reliability in TCP",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "When you download a file, load a webpage, or send an email, you expect every single byte to show up, in the right order, with nothing missing and nothing duplicated. That expectation feels obvious, almost boring, until you look at what TCP is actually built on top of."
+        },
+        {
+          "type": "paragraph",
+          "content": "The IP network underneath TCP makes no promises at all. Packets can get lost in a congested router, arrive twice because of a retry somewhere along the path, or show up in a completely different order than they were sent. TCP's entire job, from top to bottom, is to take that shaky, unpredictable foundation and turn it into something an application can trust completely. This topic is about exactly how it pulls that off."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013250078-912271877.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013250078-912271877.png",
+          "alt": "TCP builds a reliable guarantee on top of an unreliable IP network"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Promise, and Why It Is Hard to Keep",
+          "text": "1. The Promise, and Why It Is Hard to Keep"
+        },
+        {
+          "type": "paragraph",
+          "content": "Strip TCP down to one sentence and it reads like this: every byte you send will arrive, in the order you sent it, or you will be told the delivery failed. Not most bytes, not usually in order, not probably delivered. Every byte, correctly ordered, guaranteed, or an explicit failure. That is a remarkably strong promise for software to make about a physical network of cables, routers, and radio links spread across the entire planet."
+        },
+        {
+          "type": "paragraph",
+          "content": "The reason it is hard to keep is that IP, the layer directly underneath TCP, offers none of these guarantees. IP is a best effort delivery system. It tries to get each packet where it is going, but if a router is overloaded and drops a packet, IP shrugs and moves on. If a slow retry causes the same packet to be sent twice, IP does not notice or care. If packets take different paths through the network and arrive out of sequence, IP delivers them exactly as they arrive, with no reordering included."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Guarantee\",\"IP, the network underneath\",\"TCP, built on top of IP\"],\"rows\":[[\"Delivery\",\"Best effort only, packets can simply vanish\",\"Guaranteed, or the sender is told it failed\"],[\"Order\",\"None, packets can arrive in any order\",\"Correct order, always, on arrival at the application\"],[\"Duplicates\",\"Not detected or removed\",\"Detected and silently discarded\"],[\"Feedback to sender\",\"None at all\",\"Continuous acknowledgments\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013251908-182738587.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013251908-182738587.png",
+          "alt": "IP can lose, duplicate, or reorder packets with no guarantees at all"
+        },
+        {
+          "type": "paragraph",
+          "content": "So TCP is not just moving data, it is compensating, continuously and automatically, for a foundation that was deliberately kept simple and unreliable. The rest of this topic walks through the small set of mechanisms, sequence numbers, acknowledgments, timers, and retransmission, that together turn that shaky foundation into a rock solid guarantee."
+        },
+        {
+          "type": "note",
+          "title": "Registered mail, not just any mail",
+          "content": "Dropping a letter in a regular postbox is IP: fast, simple, and offering no proof of delivery. Sending something registered, where the receiving end signs for it and you get a tracking number, is TCP. The underlying trucks and sorting offices have not changed, what changed is the tracking and confirmation wrapped around them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Sequence Numbers: Giving Every Byte an Address",
+          "text": "2. Sequence Numbers: Giving Every Byte an Address"
+        },
+        {
+          "type": "paragraph",
+          "content": "The first piece of the solution is deceptively simple: number everything. When data is handed to TCP to send, every single byte in that stream gets a sequence number, an ever increasing count starting from an agreed point at the beginning of the connection. That number travels along with the data inside each segment sent over the network."
+        },
+        {
+          "type": "paragraph",
+          "content": "This one idea quietly solves two problems at once. Because every byte has a known position in the stream, the receiving side can always figure out exactly where a chunk of arriving data belongs, even if it shows up completely out of order relative to how it was sent. And because the numbering is continuous, a gap is immediately visible: if the receiver has bytes 1 through 100 and then bytes 201 through 300 arrive, it knows instantly that something covering 101 through 200 is still missing."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013253605-87546923.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013253605-87546923.png",
+          "alt": "Sequence numbers let the receiver reorder data and detect missing pieces"
+        },
+        {
+          "type": "paragraph",
+          "content": "Think of it less like labeling boxes in a shipment and more like numbering the pages of a book before mailing them separately. However the pages arrive, whatever order the mail carrier delivers them in, you can always put them back in the right order just by reading the page numbers. And if page 14 never shows up, you know precisely what is missing, not just that something feels wrong."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Acknowledgments: The Receiver Talks Back",
+          "text": "3. Acknowledgments: The Receiver Talks Back"
+        },
+        {
+          "type": "paragraph",
+          "content": "Numbering data solves the ordering and gap detection problem, but it does not by itself tell the sender anything. The sender still has no idea whether what it sent actually made it across. That is the job of the second mechanism: acknowledgments, usually shortened to ACKs."
+        },
+        {
+          "type": "paragraph",
+          "content": "As the receiver successfully gets data, it continuously reports back to the sender exactly how much it has received so far, using the same sequence numbering scheme. An acknowledgment is not a vague thumbs up, it is precise: it effectively says everything up to this exact byte has arrived safely. This turns TCP from a system that just sends data and hopes for the best into a genuine two way conversation."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013255337-580614170.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013255337-580614170.png",
+          "alt": "The receiver sends acknowledgments back confirming what has arrived"
+        },
+        {
+          "type": "paragraph",
+          "content": "Without this feedback, the sender would be sending data into a void, hoping it landed. With it, the sender always has a real, continuously updated picture of what the other side actually has, which is the only honest way to know the difference between data that arrived and data that might be lost somewhere in transit."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The Feedback Loop: Data Out, Acknowledgments Back",
+          "text": "4. The Feedback Loop: Data Out, Acknowledgments Back"
+        },
+        {
+          "type": "paragraph",
+          "content": "Put sequence numbers and acknowledgments together and a pattern emerges: data flows continuously in one direction, from sender to receiver, while acknowledgments flow continuously back in the other direction, from receiver to sender. Neither side stops talking. Data keeps going out, confirmations keep coming back, for as long as the connection is transferring anything."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is not two separate, unrelated things happening on the same wire. It is a single, closed feedback loop, and that loop is what makes the rest of TCP's reliability possible. Every mechanism described from here on, timers, retransmission, duplicate detection, exists because this loop is running underneath it, constantly telling the sender what has and has not been confirmed."
+        },
+        {
+          "type": "list",
+          "content": "[\"Sender to receiver: the actual data, continuously, as long as there is more to send\",\"Receiver to sender: acknowledgments, continuously, confirming exactly what has arrived so far\"]",
+          "items": [
+            "Sender to receiver: the actual data, continuously, as long as there is more to send",
+            "Receiver to sender: acknowledgments, continuously, confirming exactly what has arrived so far"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013256826-491163969.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013256826-491163969.png",
+          "alt": "Data flows one way while acknowledgments flow back the other way in a continuous loop"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Timeouts and Retransmission: When Silence Means Loss",
+          "text": "5. Timeouts and Retransmission: When Silence Means Loss"
+        },
+        {
+          "type": "paragraph",
+          "content": "The feedback loop works beautifully when acknowledgments actually come back. The harder question is what happens when one does not. TCP's answer is a timer. Every time the sender transmits a piece of data, it starts a clock running for that specific piece."
+        },
+        {
+          "type": "paragraph",
+          "content": "If the acknowledgment for that data arrives before the clock runs out, the timer is simply cancelled and everything moves on normally. But if the timer expires with no acknowledgment in hand, the sender draws the only reasonable conclusion available to it: that data probably never arrived, so it sends it again. Automatically. No application code anywhere has to notice the loss, decide to retry, or resend anything itself."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013258639-679270538.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013258639-679270538.png",
+          "alt": "A timer runs on every segment, triggering automatic retransmission if no acknowledgment arrives"
+        },
+        {
+          "type": "note",
+          "title": "Too eager, too soon, too late",
+          "content": "Set the timer too short and the sender starts firing off unnecessary retransmissions for data that was actually just slow, wasting bandwidth. Set it too long and a genuinely lost piece of data sits unconfirmed for ages before anything is done about it. Real TCP implementations constantly measure round trip time and adjust this timer on the fly, but the full mechanics of that tuning belong to the dedicated deep dive module, not here."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. A Worked Example: Five Pieces, One Retransmission",
+          "text": "6. A Worked Example: Five Pieces, One Retransmission"
+        },
+        {
+          "type": "paragraph",
+          "content": "All of this is easier to see in motion than in the abstract. Picture a small transfer of five numbered pieces of data, 1 through 5, sent one after another from sender to receiver."
+        },
+        {
+          "type": "paragraph",
+          "content": "Pieces 1, 2, and 3 travel across the network cleanly, and their acknowledgment comes back to the sender promptly, well within the timeout window. So far, everything is confirmed and healthy. Piece 4, however, runs into trouble along the way, maybe a busy router drops it, and its acknowledgment simply never shows up. The sender's timer for piece 4 keeps ticking, and when it finally expires with still no acknowledgment, the sender concludes piece 4 was lost and retransmits it, automatically."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Step\",\"What happens\",\"Result\"],\"rows\":[[\"1\",\"Sender transmits pieces 1, 2, 3, 4, 5\",\"All five pieces are now in flight\"],[\"2\",\"Acknowledgment for 1 through 3 arrives promptly\",\"Sender confirms pieces 1 to 3 are safely delivered\"],[\"3\",\"Timer for piece 4 expires with no acknowledgment\",\"Sender concludes piece 4 was lost\"],[\"4\",\"Sender retransmits piece 4\",\"A fresh copy of piece 4 is sent out\"],[\"5\",\"Acknowledgment for piece 4 finally arrives\",\"Transfer is now fully confirmed and complete\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013260294-827190758.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013260294-827190758.png",
+          "alt": "A worked example: piece 4 times out and is retransmitted while the rest complete normally"
+        },
+        {
+          "type": "paragraph",
+          "content": "This time the acknowledgment for piece 4 comes back, and the transfer finishes successfully, with every single piece confirmed as delivered. Notice that nothing about this required the application to do anything different. From the outside, all it saw was data going in on one end and the same data, complete and in order, coming out the other end."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Duplicate Detection: Catching the Extra Copy",
+          "text": "7. Duplicate Detection: Catching the Extra Copy"
+        },
+        {
+          "type": "paragraph",
+          "content": "The worked example above raises a natural question. What if the original piece 4 was not actually lost, just badly delayed, and it eventually shows up anyway, after the sender already retransmitted it? Now there are two identical copies of piece 4 traveling toward the receiver."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is exactly the kind of situation sequence numbers were built to handle. Because every retransmitted piece of data carries the same sequence number as the original, the receiver can immediately recognize a duplicate the moment it arrives: it has already seen data covering that exact range of bytes. Rather than processing the same data twice, or worse, appending it a second time and corrupting the stream, the receiver simply discards the extra copy and moves on."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013262090-53033644.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013262090-53033644.png",
+          "alt": "Sequence numbers let the receiver detect and discard a duplicate retransmitted piece"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is a small mechanism, but it matters enormously. Without it, every retransmission would risk quietly duplicating data inside the stream. With it, retransmission stays safe no matter how many times it happens, because duplicates are cheap and reliable to catch."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. The Full Loop: Send, Acknowledge, Timeout, Resend",
+          "text": "8. The Full Loop: Send, Acknowledge, Timeout, Resend"
+        },
+        {
+          "type": "paragraph",
+          "content": "Zoom back out and everything covered so far collapses into one continuously running cycle. Data is sent. The sender waits, timer running, for an acknowledgment. If the acknowledgment arrives, that piece of data is confirmed and the sender moves on to the next. If the timer expires first, the sender assumes loss and resends, restarting the wait."
+        },
+        {
+          "type": "paragraph",
+          "content": "This loop runs constantly, for every piece of data, for the entire lifetime of a TCP connection, with no gaps and no pauses. It is the same four steps, send, wait, confirm or resend, over and over, and it is precisely this repetition that turns an unreliable network into a reliable one. Nothing exotic is happening, just this simple cycle applied relentlessly and consistently to every byte that needs to get across."
+        },
+        {
+          "type": "list",
+          "content": "[\"Send: the sender transmits a piece of data and starts a timer\",\"Wait: the sender waits for an acknowledgment while the timer runs\",\"Confirm: if the acknowledgment arrives in time, that data is done, move to the next piece\",\"Resend: if the timer expires first, assume loss and retransmit automatically\"]",
+          "items": [
+            "Send: the sender transmits a piece of data and starts a timer",
+            "Wait: the sender waits for an acknowledgment while the timer runs",
+            "Confirm: if the acknowledgment arrives in time, that data is done, move to the next piece",
+            "Resend: if the timer expires first, assume loss and retransmit automatically"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013264356-614846499.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784013264356-614846499.png",
+          "alt": "The full cycle: send, wait, confirm or resend, repeating for the life of the connection"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Why This Matters, and What It Costs",
+          "text": "9. Why This Matters, and What It Costs"
+        },
+        {
+          "type": "paragraph",
+          "content": "Step back and consider what this buys you as someone building or using an application. When you download a file, load a webpage, or send an email over TCP, you never write code to detect a lost packet, decide when to give up waiting, or ask the other side to resend something specific. TCP handles every part of that silently, underneath your application, using exactly the mechanisms covered in this topic. All your code ever sees is a clean, complete, correctly ordered stream of bytes arriving."
+        },
+        {
+          "type": "paragraph",
+          "content": "That reliability is not free, though, and it is worth being honest about the cost. Tracking sequence numbers, generating a constant stream of acknowledgments, running timers on outstanding data, and occasionally resending it all takes real work and adds real overhead compared to simply firing packets out with no bookkeeping at all. This is exactly why TCP tends to carry more overhead and can be slower under certain conditions than UDP, which skips all of this and offers no reliability guarantees whatsoever."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"TCP\",\"UDP\"],\"rows\":[[\"Delivery guarantee\",\"Every byte, or the sender learns it failed\",\"No guarantee at all\"],[\"Ordering\",\"Always correct on arrival\",\"Not guaranteed\"],[\"Extra work per segment\",\"Sequence numbers, acknowledgments, timers\",\"None\"],[\"Typical use case\",\"File transfer, web pages, email\",\"Live video, gaming, DNS lookups\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Reliability is a deliberate tradeoff",
+          "content": "None of this overhead is accidental or wasteful, it is a deliberate design choice. TCP trades some speed and some extra bytes on the wire for an ironclad guarantee that applications can build on without worrying about data loss themselves. For traffic where a missed or late piece of data barely matters, a live video frame, a game position update, that tradeoff often is not worth it, which is exactly why UDP exists as the other option."
+        },
+        {
+          "type": "note",
+          "title": "Where the full mechanics live",
+          "content": "This topic deliberately stayed at the conceptual level: what sequence numbers, acknowledgments, timeouts, and retransmission are for, and why they exist. The exact arithmetic of sequence numbers, how acknowledgment numbers are calculated, and the sliding window mechanism that lets multiple pieces of data stay in flight at once, all get their own dedicated, full depth treatment in the TCP Deep Dive module later in this course."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Common Mistakes and Key Takeaways",
+          "text": "10. Common Mistakes and Key Takeaways"
+        },
+        {
+          "type": "paragraph",
+          "content": "A couple of misunderstandings come up constantly around TCP reliability, and it is worth clearing them up directly."
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming TCP reliability protects data everywhere in the system, not just within the connection itself. TCP guarantees recovery from loss, duplication, and reordering on the wire between sender and receiver, it says nothing about what happens after that, such as a receiving application crashing after the data arrives but before it gets processed\",\"Assuming acknowledgments and retransmission are something application code has to implement. They are handled entirely inside the TCP layer itself, transparently, for every connection, with no involvement from the application beyond simply using TCP\",\"Assuming a single acknowledgment means the entire transfer is safe. Each acknowledgment only confirms the specific bytes it covers, delivery is only fully confirmed once every byte in the stream has been acknowledged\",\"Assuming reliable means instant. Reliability and speed are different qualities entirely, TCP can guarantee correctness while still being slower than an approach like UDP that does not bother providing any guarantees at all\"]",
+          "items": [
+            "Assuming TCP reliability protects data everywhere in the system, not just within the connection itself. TCP guarantees recovery from loss, duplication, and reordering on the wire between sender and receiver, it says nothing about what happens after that, such as a receiving application crashing after the data arrives but before it gets processed",
+            "Assuming acknowledgments and retransmission are something application code has to implement. They are handled entirely inside the TCP layer itself, transparently, for every connection, with no involvement from the application beyond simply using TCP",
+            "Assuming a single acknowledgment means the entire transfer is safe. Each acknowledgment only confirms the specific bytes it covers, delivery is only fully confirmed once every byte in the stream has been acknowledged",
+            "Assuming reliable means instant. Reliability and speed are different qualities entirely, TCP can guarantee correctness while still being slower than an approach like UDP that does not bother providing any guarantees at all"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "With those cleared up, here is the whole picture in one place."
+        },
+        {
+          "type": "list",
+          "content": "[\"TCP promises that every byte arrives, in order, or the sender is told delivery failed, even though IP underneath gives no guarantees at all\",\"Sequence numbers give every byte a position, letting the receiver reorder data correctly and detect exactly what is missing\",\"Acknowledgments are the receiver's continuous feedback, telling the sender precisely what has safely arrived\",\"Data flows one way and acknowledgments flow back the other, forming one continuous feedback loop for the life of the connection\",\"A timer runs on every piece of data sent, and a missing acknowledgment before it expires triggers an automatic retransmission\",\"Sequence numbers also let the receiver recognize and discard duplicate data caused by retransmission\",\"Applications using TCP never write code to detect loss or request a resend, the reliability is transparent and automatic\",\"All this tracking, acknowledging, and potential resending is real overhead, which is exactly why TCP can be slower than UDP\",\"The exact byte level mechanics, sequence number arithmetic, and sliding window live in the dedicated TCP Deep Dive module\"]",
+          "items": [
+            "TCP promises that every byte arrives, in order, or the sender is told delivery failed, even though IP underneath gives no guarantees at all",
+            "Sequence numbers give every byte a position, letting the receiver reorder data correctly and detect exactly what is missing",
+            "Acknowledgments are the receiver's continuous feedback, telling the sender precisely what has safely arrived",
+            "Data flows one way and acknowledgments flow back the other, forming one continuous feedback loop for the life of the connection",
+            "A timer runs on every piece of data sent, and a missing acknowledgment before it expires triggers an automatic retransmission",
+            "Sequence numbers also let the receiver recognize and discard duplicate data caused by retransmission",
+            "Applications using TCP never write code to detect loss or request a resend, the reliability is transparent and automatic",
+            "All this tracking, acknowledging, and potential resending is real overhead, which is exactly why TCP can be slower than UDP",
+            "The exact byte level mechanics, sequence number arithmetic, and sliding window live in the dedicated TCP Deep Dive module"
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

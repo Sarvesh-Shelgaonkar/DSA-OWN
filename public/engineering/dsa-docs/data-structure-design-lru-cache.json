@@ -1,0 +1,556 @@
+{
+  "slug": "data-structure-design-lru-cache",
+  "content": [
+    {
+      "id": "introduction",
+      "title": "Introduction",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A&nbsp;<strong>Least Recently Used (LRU) Cache</strong> is a fixed capacity data structure that stores key value pairs and, when it runs out of room, throws away the entry that has gone the longest without being touched. It is one of the most frequently asked data structure design problems in interviews because it forces you to combine two very different data structures to hit a strict performance target.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "An LRU cache exposes exactly two operations:",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>get(key):</strong>&nbsp;return the value associated with <code>key</code> if it exists, otherwise return <code>-1</code> (or a sentinel meaning \"not found\"). A successful <code>get</code> also marks that key as the most recently used entry.",
+            "<strong>put(key, value):</strong>&nbsp;insert a new key value pair, or update the value if the key already exists. Either way the key becomes the most recently used entry. If inserting a brand new key would push the cache over its capacity, the least recently used entry is evicted first."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "The name describes the eviction policy precisely: when the cache is full and a new item needs room, the item removed is not the oldest by insertion time, and not the smallest or largest by value, it is the item that was <strong>least recently used</strong>, meaning the longest time has passed since it was last read or written.",
+          "items": []
+        },
+        {
+          "type": "image",
+          "items": [],
+          "url": "/engineering/dsa-media/1785406865009-307563423.png",
+          "caption": "A hash map for O(1) lookup combined with a doubly linked list that tracks recency order, the two pillars of an LRU cache.",
+          "content": "/engineering/dsa-media/1785406865009-307563423.png",
+          "text": "/engineering/dsa-media/1785406865009-307563423.png",
+          "alt": "Introduction"
+        },
+        {
+          "type": "text",
+          "text": "This topic walks through why the naive approaches fail, the hash map plus doubly linked list design that professional implementations use, a full worked trace of the data structure evolving operation by operation, a complete from scratch C++ implementation, and the mistakes that most commonly trip people up in an interview setting.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "1-the-hard-constraint-both-operations-must-be-o1",
+      "title": "1. The Hard Constraint: Both Operations Must Be O(1)",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "The reason LRU Cache is a genuinely hard design problem, rather than a simple exercise, is a single unforgiving requirement stated in almost every version of the problem: <strong>both get and put must run in O(1) time</strong>, regardless of how many items are currently in the cache.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "That requirement quietly rules out every data structure you would reach for first. It is worth walking through why each obvious candidate fails, because understanding the failure is what motivates the real solution.",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "Why a plain array or vector fails",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "Suppose you store entries in a plain array or <code>std::vector</code>, ordered from least recently used to most recently used. A <code>get</code> would need to scan the array to find the key (O(n)), and then, to mark it as most recently used, you would need to remove it from its current position and reinsert it at the end, which means shifting every element after it (O(n)). Eviction from the front is also O(n) once you account for the shift needed to close the gap. None of this comes close to O(1).",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "Why a plain hash map alone fails",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "A hash map gives you O(1) lookup and O(1) insertion by key, which solves half the problem. What it does not give you is any sense of <strong>order</strong>. A standard hash map has no concept of \"which key was touched longest ago.\" You could attach a timestamp to every value and scan all entries to find the minimum when you need to evict, but that scan is O(n), and it defeats the purpose. A hash map alone can tell you what is in the cache, never what to remove next.",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "Why a sorted structure (e.g. an ordered map / balanced BST) is not good enough either",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "An ordered map keyed by last access time looks tempting because it keeps entries sorted by recency automatically. The problem is that a balanced tree based ordered map gives you O(log n) operations, not O(1). It is a legitimate, correct solution, and worth mentioning if it comes up, but it does not meet the strict O(1) bar that the LRU Cache problem sets.",
+          "items": []
+        },
+        {
+          "type": "table",
+          "items": [],
+          "url": "",
+          "caption": "",
+          "text": "",
+          "content": "{\"headers\":[\"Approach\",\"get\",\"put\",\"Track recency in O(1)?\"],\"rows\":[[\"Plain array / vector\",\"O(n)\",\"O(n)\",\"No, shifting is O(n)\"],[\"Hash map only\",\"O(1)\",\"O(1)\",\"No, no ordering information at all\"],[\"Ordered map / balanced BST\",\"O(log n)\",\"O(log n)\",\"Yes, but not O(1)\"],[\"Hash map + doubly linked list\",\"O(1)\",\"O(1)\",\"Yes, exactly O(1)\"]]}"
+        },
+        {
+          "type": "callout",
+          "text": "The requirement \"O(1) for both get and put\" is the entire reason this problem exists as a design exercise. It forces you to realize that no single textbook data structure gives you both fast key lookup and fast reordering, so you have to combine two of them.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "2-the-core-idea-hash-map-plus-doubly-linked-list",
+      "title": "2. The Core Idea: Hash Map Plus Doubly Linked List",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "The standard solution combines exactly two data structures, each responsible for one half of the requirement.",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>A hash map</strong> (<code>unordered_map</code> in C++, <code>HashMap</code> in Java, a plain object or <code>Map</code> in JavaScript) gives O(1) lookup: given a key, immediately find where its data lives.",
+            "<strong>A doubly linked list</strong> keeps every entry ordered by recency, most recently used at one end and least recently used at the other. Because it is doubly linked, moving a node to the front, or removing a node from anywhere in the list, is O(1) once you already have a pointer to that node."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "The critical detail that makes this combination work is what the hash map actually stores. It does not map <code>key -&gt; value</code>. It maps <code>key -&gt; pointer to the linked list node that holds that key's value</code>. Given a key, the map hands you the exact node in O(1). From that node you can read its value, unlink it from its current position in the list in O(1), and relink it at the front in O(1). No scanning is ever required.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "Put differently: the linked list is the source of truth for <strong>order</strong>, and the hash map is a fast index into that list so you never have to walk it to find anything.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "3-why-a-doubly-linked-list-specifically",
+      "title": "3. Why a Doubly Linked List Specifically, Not a Singly Linked List",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "It is tempting to assume any linked list will do, since linked lists already support O(1) insertion at a known position. That intuition is not quite right, and the distinction between singly and doubly linked is exactly where the design earns its keep.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "When a node needs to be removed from the middle of a linked list (which is what happens every time an already cached key is touched again, since that node has to be unlinked from wherever it currently sits and moved to the front), the removal step requires relinking the node's <strong>previous</strong> neighbor directly to its <strong>next</strong> neighbor. That relink is only possible in O(1) if you already have a direct pointer to the previous node.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "In a <strong>singly linked list</strong>, each node only knows its <code>next</code> pointer, never its <code>prev</code>. To remove an arbitrary node you would need to start from the head and walk forward until you find the node whose <code>next</code> points at the one you want to remove, purely to update that pointer. That walk is O(n) in the worst case, which breaks the O(1) requirement immediately.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "In a <strong>doubly linked list</strong>, every node stores both <code>prev</code> and <code>next</code>. Given only a pointer to the node itself (which is exactly what the hash map hands you), you can read <code>node-&gt;prev</code> and <code>node-&gt;next</code> directly and relink them to each other in a fixed, constant number of pointer assignments. No traversal is ever needed.",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "// Removing an arbitrary node from a doubly linked list is O(1)\n// because both neighbors are reachable directly from the node.\nNode* prevNode = node->prev;\nNode* nextNode = node->next;\nprevNode->next = nextNode;\nnextNode->prev = prevNode;\n// node is now fully unlinked, no traversal was needed"
+          }
+        },
+        {
+          "type": "callout",
+          "text": "This is the single most important design insight in the whole problem: O(1) removal of an arbitrary node needs a direct pointer to its previous neighbor, and only a doubly linked list stores that pointer. A singly linked list can insert at a known position in O(1), but it cannot delete an arbitrary interior node in O(1).",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "4-the-map-stores-node-pointers-not-values",
+      "title": "4. The Map Stores Node Pointers, Not Values",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A subtle but essential point: the hash map in this design is declared as something like <code>unordered_map&lt;int, Node*&gt;</code>, mapping each key directly to the address of its node in the linked list, rather than <code>unordered_map&lt;int, int&gt;</code> mapping key to value.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "If the map only stored the value, a <code>get(key)</code> could return the value fine, but there would be no way to find <strong>where that key lives in the linked list</strong> in order to move it to the front. You would be back to scanning the list, which is O(n).",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "By storing a pointer to the node, both operations become simple two-step recipes:",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>get(key):</strong>&nbsp;look up <code>key</code> in the map to get the node pointer in O(1). If it does not exist, return not found. If it exists, read <code>node-&gt;value</code>, unlink the node from its current position in O(1), and relink it directly after the head sentinel (the most recently used slot) in O(1). Return <code>node-&gt;value</code>.",
+            "<strong>put(key, value):</strong>&nbsp;if <code>key</code> already exists in the map, update <code>node-&gt;value</code>, then unlink and relink the node at the front exactly like <code>get</code> does. If <code>key</code> is new and the cache is at capacity, remove the node right before the tail sentinel (the least recently used entry), and just as important, erase that evicted key from the map too. Then create a brand new node, insert it at the front, and add its pointer to the map."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "Every one of those steps, the map lookup, the map insertion, the map erase, the unlink, and the relink, is a constant time operation, which is exactly why the combined structure achieves O(1) for both public methods.",
+          "items": []
+        },
+        {
+          "type": "image",
+          "items": [],
+          "url": "/engineering/dsa-media/1785406865011-795219205.png",
+          "caption": "Evicting the least recently used entry means reading tail.prev directly and unlinking it, with no traversal required.",
+          "content": "/engineering/dsa-media/1785406865011-795219205.png",
+          "text": "/engineering/dsa-media/1785406865011-795219205.png",
+          "alt": "The Map Stores Node Pointers, Not Values"
+        },
+        {
+          "type": "text",
+          "text": "Notice that eviction always targets the node right before the tail sentinel, never a node found by searching. Because the linked list is kept in strict recency order at all times (every access moves its node to the front), the least recently used entry is guaranteed to always be sitting exactly one hop before the tail sentinel, ready to be read and removed in O(1).",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "5-a-worked-trace-capacity-2",
+      "title": "5. A Worked Trace: Capacity 2",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Nothing clarifies this design faster than tracing a small example by hand. Consider an LRU cache built with capacity 2, and the following sequence of calls: <code>put(1,1)</code>, <code>put(2,2)</code>, <code>get(1)</code>, <code>put(3,3)</code>, <code>get(2)</code>.",
+          "items": []
+        },
+        {
+          "type": "image",
+          "items": [],
+          "url": "/engineering/dsa-media/1785406865012-89415261.png",
+          "caption": "Step by step evolution of the linked list order and hash map contents across five operations on a capacity-2 LRU cache.",
+          "content": "/engineering/dsa-media/1785406865012-89415261.png",
+          "text": "/engineering/dsa-media/1785406865012-89415261.png",
+          "alt": "A Worked Trace: Capacity 2"
+        },
+        {
+          "type": "text",
+          "text": "Written out in prose, with the list drawn from most recently used (front, right after the head sentinel) to least recently used (back, right before the tail sentinel):",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>put(1, 1):</strong>&nbsp;the cache is empty, so key 1 is simply inserted. List: <code>[1]</code>. Map: <code>{1 -&gt; Node(1)}</code>.",
+            "<strong>put(2, 2):</strong>&nbsp;key 2 is new and the cache has room (size 2 of capacity 2 after this insert). It is inserted at the front. List: <code>[2, 1]</code>. Map: <code>{1 -&gt; Node(1), 2 -&gt; Node(2)}</code>.",
+            "<strong>get(1):</strong>&nbsp;key 1 exists, so its value (1) is returned, and node 1 is moved to the front since it was just accessed. List: <code>[1, 2]</code>. Map unchanged in content, only the list order changed: <code>{1 -&gt; Node(1), 2 -&gt; Node(2)}</code>.",
+            "<strong>put(3, 3):</strong>&nbsp;key 3 is new, and the cache is already at capacity 2. Before inserting, the least recently used entry must be evicted, which is the node right before the tail sentinel, key 2. Key 2 is unlinked from the list and, critically, also erased from the map. Then key 3 is inserted at the front. List: <code>[3, 1]</code>. Map: <code>{1 -&gt; Node(1), 3 -&gt; Node(3)}</code>.",
+            "<strong>get(2):</strong>&nbsp;key 2 is no longer in the map, since it was evicted in the previous step, so this returns not found (<code>-1</code>). The list and map are unchanged: List: <code>[3, 1]</code>, Map: <code>{1 -&gt; Node(1), 3 -&gt; Node(3)}</code>."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "Notice that key 2 was evicted even though it was inserted before key 1 was ever touched again by <code>get</code>. Eviction order in an LRU cache tracks <strong>access recency</strong>, not insertion order, which is exactly why the <code>get(1)</code> call in step three mattered: it saved key 1 from being the next eviction candidate.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "6-sentinel-head-and-tail-nodes",
+      "title": "6. Sentinel Head and Tail Nodes",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A hand rolled doubly linked list for this problem is almost always built with two extra \"fake\" nodes that never hold real cache data: a <strong>head sentinel</strong> and a <strong>tail sentinel</strong>. Every real node sits somewhere between them. The head sentinel's <code>next</code> always points at the current most recently used real node (or directly at the tail sentinel if the cache is empty), and the tail sentinel's <code>prev</code> always points at the current least recently used real node.",
+          "items": []
+        },
+        {
+          "type": "image",
+          "items": [],
+          "url": "/engineering/dsa-media/1785406865012-944994232.png",
+          "caption": "Sentinel head and tail nodes bracket the real entries so every node, including the first and last real one, always has a valid, non-null neighbor on both sides.",
+          "content": "/engineering/dsa-media/1785406865012-944994232.png",
+          "text": "/engineering/dsa-media/1785406865012-944994232.png",
+          "alt": "Sentinel Head and Tail Nodes"
+        },
+        {
+          "type": "text",
+          "text": "The entire reason to bother with sentinels is to eliminate special case code. Without them, inserting into an empty list, removing the only node in the list, inserting at the very front, and removing the very last node would each need their own <code>if</code> branch checking for null pointers. With sentinels in place, every real node, even the first or last one actually holding data, always has a non-null <code>prev</code> and a non-null <code>next</code> to work with. The insert-at-front and remove-node operations become two small, uniform helper functions that never need to check for edge cases, because the \"edges\" of the list are always the sentinels themselves, never <code>nullptr</code>.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "This is a general pattern worth internalizing beyond this one problem: whenever a data structure has to support insertion or deletion at its boundaries, dummy nodes at those boundaries tend to make the code shorter and far less bug prone, at the cost of a small constant amount of extra memory for the two sentinels.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "7-from-scratch-c-implementation",
+      "title": "7. From Scratch C++ Implementation",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Below is a complete, self contained C++ implementation using a hand rolled doubly linked list with sentinel head and tail nodes, plus an <code>unordered_map&lt;int, Node*&gt;</code> for O(1) lookup. It intentionally avoids <code>std::list</code> so every pointer relink is visible.",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "class LRUCache {\n    struct Node {\n        int key, value;\n        Node* prev;\n        Node* next;\n        Node(int k, int v) : key(k), value(v), prev(nullptr), next(nullptr) {}\n    };\n\n    int capacity;\n    unordered_map<int, Node*> map;   // key -> node pointer, O(1) lookup\n    Node* head;                      // sentinel, head->next is the MRU real node\n    Node* tail;                      // sentinel, tail->prev is the LRU real node\n\n    // Unlink an existing node from wherever it currently sits. O(1).\n    void removeNode(Node* node) {\n        node->prev->next = node->next;\n        node->next->prev = node->prev;\n    }\n\n    // Insert a node right after the head sentinel, making it MRU. O(1).\n    void insertAtFront(Node* node) {\n        node->next = head->next;\n        node->prev = head;\n        head->next->prev = node;\n        head->next = node;\n    }\n\npublic:\n    LRUCache(int cap) : capacity(cap) {\n        head = new Node(-1, -1);\n        tail = new Node(-1, -1);\n        head->next = tail;\n        tail->prev = head;\n    }\n\n    int get(int key) {\n        if (map.find(key) == map.end()) {\n            return -1;                      // not found\n        }\n        Node* node = map[key];\n        removeNode(node);\n        insertAtFront(node);                // mark as most recently used\n        return node->value;\n    }\n\n    void put(int key, int value) {\n        if (map.find(key) != map.end()) {\n            Node* node = map[key];\n            node->value = value;            // update existing value\n            removeNode(node);\n            insertAtFront(node);            // mark as most recently used\n            return;\n        }\n\n        if ((int)map.size() == capacity) {\n            Node* lru = tail->prev;         // node right before tail sentinel\n            removeNode(lru);\n            map.erase(lru->key);            // critical: also erase from the map\n            delete lru;\n        }\n\n        Node* fresh = new Node(key, value);\n        insertAtFront(fresh);\n        map[key] = fresh;\n    }\n\n    ~LRUCache() {\n        Node* cur = head;\n        while (cur) {\n            Node* next = cur->next;\n            delete cur;\n            cur = next;\n        }\n    }\n};"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Walk through how this code reproduces the worked trace from the previous section. <code>put(1,1)</code> and <code>put(2,2)</code> each hit the \"new key\" branch and call <code>insertAtFront</code>, building the list <code>head &lt;-&gt; 2 &lt;-&gt; 1 &lt;-&gt; tail</code>. <code>get(1)</code> finds key 1 in the map, calls <code>removeNode</code> to unlink it from its current position, then <code>insertAtFront</code> to place it right after head, producing <code>head &lt;-&gt; 1 &lt;-&gt; 2 &lt;-&gt; tail</code>. <code>put(3,3)</code> sees <code>map.size() == capacity</code>, reads <code>tail->prev</code> which is node 2, removes and deletes it, erases key 2 from the map, then inserts node 3 at the front.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "8-complexity-analysis",
+      "title": "8. Complexity Analysis",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "With the hash map plus doubly linked list design, every operation the public API exposes is O(1), which was the entire design goal from section 1.",
+          "items": []
+        },
+        {
+          "type": "table",
+          "items": [],
+          "url": "",
+          "caption": "",
+          "text": "",
+          "content": "{\"headers\":[\"Operation\",\"Steps involved\",\"Time\",\"Space\"],\"rows\":[[\"get(key)\",\"map lookup, removeNode, insertAtFront\",\"O(1)\",\"-\"],[\"put(key, value), key exists\",\"map lookup, update value, removeNode, insertAtFront\",\"O(1)\",\"-\"],[\"put(key, value), new key, room available\",\"map insert, create node, insertAtFront\",\"O(1)\",\"O(1) per call\"],[\"put(key, value), new key, at capacity\",\"read tail.prev, removeNode, map erase, delete, create node, insertAtFront, map insert\",\"O(1)\",\"O(1) per call\"],[\"Overall cache\",\"holds at most capacity entries\",\"O(1) per call\",\"O(capacity) total\"]]}"
+        },
+        {
+          "type": "text",
+          "text": "The overall space used by the cache is O(capacity): one hash map entry and one linked list node per cached key, plus the two constant size sentinel nodes. No operation ever needs to traverse the list or rehash more than a constant number of buckets, which is what keeps every call O(1) regardless of how many total operations have been performed over the cache's lifetime.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "9-the-tempting-but-insufficient-shortcut",
+      "title": "9. The Tempting but Insufficient Shortcut",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A common first instinct, especially under interview pressure, is to reach for a single higher level container and hope it is fast enough. Two versions of this show up often.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "The first is using an ordered associative container, such as C++'s <code>std::map</code> or Java's <code>TreeMap</code>, keyed by last access timestamp, and reading the minimum entry to know what to evict. This is <strong>correct</strong>, it does produce the right answer, but every operation costs O(log n) because these containers are backed by balanced binary search trees. It satisfies \"get and put should be fast\" in a loose sense, but not the strict O(1) requirement the problem states.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "The second is keeping a plain array or <code>vector</code> of key value pairs and, on every access, searching for the key linearly and then shifting elements to move it to the \"most recent\" end. This also produces correct results, but both the search and the shift are O(n).",
+          "items": []
+        },
+        {
+          "type": "callout",
+          "text": "Neither shortcut is wrong in the sense of producing incorrect output. They are wrong for this specific problem because the problem explicitly asks for O(1), and interviewers will almost always push back and ask \"can you do both operations in O(1)?\" the moment they see O(log n) or O(n) in your solution. Recognizing that gap yourself, before being asked, is a strong signal.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "10-common-mistakes",
+      "title": "10. Common Mistakes",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "These are the mistakes that most frequently show up when candidates implement LRU Cache under time pressure, roughly in order of how often they appear.",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>Only moving a node to the front on put, not on get.</strong>&nbsp;LRU tracks recency of <strong>access</strong>, and a <code>get</code> is an access just as much as a <code>put</code> is. Forgetting to call <code>removeNode</code> plus <code>insertAtFront</code> inside <code>get</code> means the eviction order silently degrades into something closer to insertion order, and the bug usually only surfaces on specific test sequences, making it easy to miss in a quick manual check.",
+            "<strong>Evicting the node from the linked list but forgetting to erase it from the map.</strong>&nbsp;This leaves a stale, dangling entry in the hash map that still points at freed or reused memory. A subsequent <code>get</code> on the evicted key can then return garbage, or in a garbage collected language silently return a value that should no longer exist, instead of correctly reporting not found.",
+            "<strong>Off by one errors when checking capacity.</strong>&nbsp;A common bug is checking <code>map.size() &gt; capacity</code> after inserting a new node, rather than <code>map.size() == capacity</code> before inserting one. Checking after the fact means the cache briefly holds one more entry than its capacity, and getting the comparison operator wrong (<code>&gt;</code> versus <code>&gt;=</code>) shifts the effective capacity by one in either direction.",
+            "<strong>Evicting before checking whether the key already exists.</strong>&nbsp;If <code>put</code> is called on a key that is already cached, that call must never trigger an eviction, since it is not adding a new entry, only updating one. Checking capacity before checking \"does this key already exist\" can cause an unnecessary, incorrect eviction of some other key.",
+            "<strong>Using a singly linked list, or std::list with iterators stored incorrectly, and being surprised removal is not O(1).</strong>&nbsp;As covered in section 3, deletion of an arbitrary node needs a direct handle on the previous node. If using <code>std::list</code> instead of hand rolling nodes, the map must store the <strong>iterator</strong> returned by <code>list::insert</code>, not an index or a copy of the value, since <code>std::list</code> iterators remain valid after other insertions and deletions and support O(1) erase given an iterator.",
+            "<strong>Forgetting the sentinel nodes and then mishandling null pointer edge cases.</strong>&nbsp;Without a head and tail sentinel, code has to special case an empty list, a single node list, removing the very first node, and removing the very last node separately. It is easy to get one of these branches wrong, particularly the transition from a one node list to an empty list."
+          ]
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "11-problem-patterns",
+      "title": "11. Problem Patterns",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "LRU Cache is both a standalone interview staple and a stepping stone to a family of harder cache design problems that build directly on the same map plus linked list idea.",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "Medium&nbsp;LRU Cache (LC 146): the canonical version of this exact problem, implement get and put in O(1).",
+            "Medium&nbsp;Design a data structure that supports insert, delete, and getRandom in O(1) (LC 380): a different pairing of hash map with an array, useful for contrasting what changes when the required operation is random access instead of recency tracking.",
+            "Medium&nbsp;All O`one Data Structure (LC 432): extends the linked list idea to a doubly linked list of buckets, one bucket per distinct count, to support increment, decrement, and both max and min key queries in O(1).",
+            "Hard&nbsp;LFU Cache (LC 460): the meaningfully harder sibling of this problem, covered in its own topic. Where LRU only needs to track recency of access with a single ordering, LFU needs to track <strong>frequency</strong> of access as the primary eviction criterion and recency only as a tiebreaker, which requires a second layer of bucketing on top of the map plus linked list idea used here."
+          ]
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "12-interview-checklist",
+      "title": "12. Interview Checklist",
+      "blocks": [
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "Can you state, before writing any code, why a plain array and a plain hash map each individually fail to give O(1) for both operations?",
+            "Can you explain precisely why the linked list needs to be doubly linked, in terms of what pointer is needed to relink around a removed node in O(1)?",
+            "Do you know what the hash map actually stores, a pointer to a linked list node, not the cached value directly, and why that distinction matters?",
+            "Can you implement insertAtFront and removeNode as two small, reusable helper functions, and explain why sentinel head and tail nodes remove the need for null checks in both?",
+            "Can you trace get and put by hand on a small example, capacity 2 or 3, and get the list order and map contents right at every step, including an eviction?",
+            "Do you remember to move a node to the front inside get, not just inside put, since LRU tracks access recency, not just writes?",
+            "Do you remember to erase the evicted key from the map, not just unlink its node from the list?",
+            "Can you state the final complexity, O(1) time per call and O(capacity) total space, and justify why each individual step inside get and put is O(1)?",
+            "Do you know that LFU Cache is a harder variant that adds frequency tracking on top of this same foundation?"
+          ]
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    }
+  ],
+  "description": "Learn how combining a hash map with a doubly linked list achieves O(1) get and put for a Least Recently Used cache",
+  "isPremium": false,
+  "order": 0,
+  "patternId": "696a49ca9f270f2334e4593d",
+  "sections": [
+    {
+      "id": "introduction",
+      "title": "Introduction"
+    },
+    {
+      "id": "1-the-hard-constraint-both-operations-must-be-o1",
+      "title": "1. The Hard Constraint: Both Operations Must Be O(1)"
+    },
+    {
+      "id": "2-the-core-idea-hash-map-plus-doubly-linked-list",
+      "title": "2. The Core Idea: Hash Map Plus Doubly Linked List"
+    },
+    {
+      "id": "3-why-a-doubly-linked-list-specifically",
+      "title": "3. Why a Doubly Linked List Specifically, Not a Singly Linked List"
+    },
+    {
+      "id": "4-the-map-stores-node-pointers-not-values",
+      "title": "4. The Map Stores Node Pointers, Not Values"
+    },
+    {
+      "id": "5-a-worked-trace-capacity-2",
+      "title": "5. A Worked Trace: Capacity 2"
+    },
+    {
+      "id": "6-sentinel-head-and-tail-nodes",
+      "title": "6. Sentinel Head and Tail Nodes"
+    },
+    {
+      "id": "7-from-scratch-c-implementation",
+      "title": "7. From Scratch C++ Implementation"
+    },
+    {
+      "id": "8-complexity-analysis",
+      "title": "8. Complexity Analysis"
+    },
+    {
+      "id": "9-the-tempting-but-insufficient-shortcut",
+      "title": "9. The Tempting but Insufficient Shortcut"
+    },
+    {
+      "id": "10-common-mistakes",
+      "title": "10. Common Mistakes"
+    },
+    {
+      "id": "11-problem-patterns",
+      "title": "11. Problem Patterns"
+    },
+    {
+      "id": "12-interview-checklist",
+      "title": "12. Interview Checklist"
+    }
+  ],
+  "tags": [],
+  "title": "Introduction to LRU Cache"
+}

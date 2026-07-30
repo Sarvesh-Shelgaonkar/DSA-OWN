@@ -1,0 +1,306 @@
+{
+  "title": "Thrashing",
+  "slug": "thrashing",
+  "content": [
+    {
+      "id": "thrashing",
+      "title": "Thrashing",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "Thrashing is the moment virtual memory's elegant illusion collapses under its own weight. A system that is thrashing looks, from the outside, like the busiest machine in the building: the disk light never stops blinking, every process is technically alive, and every activity indicator is pegged. And yet almost nothing useful is actually getting done."
+        },
+        {
+          "type": "paragraph",
+          "content": "This chapter closes out the Memory Management module by asking what happens when demand paging, virtual memory, and swapping are all pushed past the point they can support. It walks through the precise definition of thrashing, the feedback loop that makes it self reinforcing, the working set model used to reason about it, a worked numeric example, and the practical fixes real operating systems use to pull a system back from the edge."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969313-929159303.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969313-929159303.png",
+          "alt": "thrashing",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969313-929159303.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What Thrashing Really Means",
+          "text": "1. What Thrashing Really Means"
+        },
+        {
+          "type": "paragraph",
+          "content": "A system is thrashing when it spends more time paging, servicing page faults and moving data in and out of memory, than it spends actually executing process instructions. The machine is not idle. It is working extremely hard. It is simply working on the wrong thing: shuffling pages between RAM and disk instead of running the code those pages exist to support."
+        },
+        {
+          "type": "paragraph",
+          "content": "The signature symptom is genuinely counterintuitive. CPU utilization paradoxically drops even though the system appears extremely busy. Every process looks ready or running, the disk queue is constantly backed up, and yet the fraction of time the CPU spends executing real instructions falls toward zero, because almost every process is blocked waiting for a page to be fetched from disk before it can take even one more step."
+        },
+        {
+          "type": "paragraph",
+          "content": "It helps to be precise about the boundary here. Some amount of paging is completely normal and healthy, that is the entire point of demand paging, loading only what is actually touched. Thrashing is not the presence of page faults, it is the point where paging activity dominates the system so completely that useful execution becomes the exception rather than the rule."
+        },
+        {
+          "type": "note",
+          "title": "In one sentence",
+          "content": "Thrashing is a state where the operating system is working extremely hard and accomplishing almost nothing, because nearly every CPU cycle goes toward resolving page faults instead of running real instructions."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969314-476403704.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969314-476403704.png",
+          "alt": "What Thrashing Really Means",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969314-476403704.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Vicious Cycle: How Thrashing Feeds Itself",
+          "text": "2. The Vicious Cycle: How Thrashing Feeds Itself"
+        },
+        {
+          "type": "paragraph",
+          "content": "Thrashing does not appear out of nowhere, it builds through a specific, mechanical sequence. Too many processes are competing for too little physical RAM, which means each individual process ends up with too few frames actually available to it, fewer than its genuinely active working set needs to stay resident. The pages it needs get evicted almost as soon as they are loaded, simply to make room for whatever else is being scheduled."
+        },
+        {
+          "type": "paragraph",
+          "content": "Because those evicted pages are still genuinely needed, the very next access to one of them triggers a page fault, almost immediately after it was paged out. Multiply that across every process competing for the same limited RAM, and the page fault rate climbs sharply. Processes spend most of their time blocked, sitting in a queue waiting for the disk, rather than making forward progress."
+        },
+        {
+          "type": "heading3",
+          "content": "The trap: mistaking the cause for a cure",
+          "text": "The trap: mistaking the cause for a cure"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is where the cycle turns genuinely vicious. The operating system, watching its own metrics, sees CPU utilization dropping, because processes keep blocking on page faults. A naive scheduler can misread that low utilization as a signal that the CPU is starved for work and needs more processes admitted to keep it busy. Admitting more processes is exactly the wrong move, it shrinks the frames available to every existing process even further, drives the fault rate up even more, and pushes utilization down further still, reinforcing the very signal that triggered the mistake in the first place."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969314-602883226.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969314-602883226.png",
+          "alt": "The trap: mistaking the cause for a cure",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969314-602883226.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Degree of Multiprogramming vs CPU Utilization",
+          "text": "3. Degree of Multiprogramming vs CPU Utilization"
+        },
+        {
+          "type": "paragraph",
+          "content": "The degree of multiprogramming is simply how many processes are running, or competing to run, at the same time. There is a well known relationship between that number and CPU utilization, and its shape is what makes thrashing predictable rather than mysterious. As processes are added from a low starting point, utilization rises, because there is now more work available to fill any idle gaps left when one process blocks on I O."
+        },
+        {
+          "type": "paragraph",
+          "content": "That rise does not continue forever. It climbs up to a peak, the point where the system has exactly enough concurrent work to keep the CPU busy without starving any process of the frames its working set needs. Push past that peak by adding still more processes, and utilization does not gently level off, it drops sharply. Frames per process fall below what each working set requires, faulting takes over, and the curve falls off a genuine cliff rather than sliding down a gentle slope."
+        },
+        {
+          "type": "paragraph",
+          "content": "That peak is the sweet spot a well tuned system tries to stay at. Schedulers and admission control policies exist precisely to hold the degree of multiprogramming near that peak, close enough to keep the CPU fed with work, but never so far past it that frames per process collapse and the cliff begins."
+        },
+        {
+          "type": "note",
+          "title": "The peak moves",
+          "content": "The peak position is not a fixed number. It shifts with how much RAM is installed, how large each process's working set is, and how fast the disk or SSD backing the page faults can respond. There is no single universal correct degree of multiprogramming, only the one that matches the hardware actually in front of it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969314-482641649.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969314-482641649.png",
+          "alt": "Degree of Multiprogramming vs CPU Utilization",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969314-482641649.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The Working Set Model",
+          "text": "4. The Working Set Model"
+        },
+        {
+          "type": "paragraph",
+          "content": "The working set model is the standard conceptual tool operating systems use to reason about, and prevent, thrashing. A process's working set is the specific set of pages it has actively referenced within a given recent time window. That window represents what the process genuinely needs resident in RAM at that moment to run efficiently, without constantly faulting on pages it is about to touch again."
+        },
+        {
+          "type": "paragraph",
+          "content": "The model turns thrashing from a vague symptom into a countable quantity. If the sum of every currently running process's working set size exceeds the total available physical RAM, thrashing becomes essentially inevitable, there simply are not enough frames to hold what every process genuinely needs at once, no matter how cleverly any single replacement algorithm tries to juggle them."
+        },
+        {
+          "type": "note",
+          "title": "Choosing the window size",
+          "content": "The reference window used to measure a working set, often written as Delta, has a real tradeoff. Too small a window underestimates what a process truly needs and misses pages it will touch again very soon. Too large a window overestimates its needs and wastes RAM holding pages the process is not actually using anymore. Picking Delta well is part of what makes the working set model effective in practice."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-938115844.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-938115844.png",
+          "alt": "The Working Set Model",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-938115844.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Worked Example: When Thrashing Becomes Guaranteed",
+          "text": "5. Worked Example: When Thrashing Becomes Guaranteed"
+        },
+        {
+          "type": "paragraph",
+          "content": "Numbers make the working set model concrete. Suppose four processes are each running with a working set of roughly 30 frames, a reasonable footprint for their genuinely active pages. Together they need about 120 frames to all run comfortably at once. Now suppose the system only has 100 physical frames available in total."
+        },
+        {
+          "type": "paragraph",
+          "content": "That shortfall of about 20 frames is not a minor inconvenience, it makes thrashing essentially guaranteed. Some combination of these four processes will always be short of the frames its working set actually needs, so pages that are genuinely still in use keep getting evicted to make room for another process's equally genuine needs, and the evicted pages fault back in almost immediately. There is no clever scheduling trick that resolves a genuine shortage of physical frames, the math simply does not fit."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Process\",\"Working set size\",\"Running total demand\"],\"rows\":[[\"Process A\",\"30 frames\",\"30 frames\"],[\"Process B\",\"30 frames\",\"60 frames\"],[\"Process C\",\"30 frames\",\"90 frames\"],[\"Process D\",\"30 frames\",\"120 frames\"]]}"
+        },
+        {
+          "type": "heading3",
+          "content": "What actually has to change",
+          "text": "What actually has to change"
+        },
+        {
+          "type": "paragraph",
+          "content": "Only a few kinds of changes actually close a gap like this. Run fewer processes concurrently, for example three instead of four, so total demand drops to about 90 frames, comfortably under the 100 available. Add more physical RAM, raising the available frame count past 120 so all four processes fit at once. Or reduce each process's working set need directly, through better locality of reference or a smaller memory footprint, so four processes together need 100 frames or fewer. Any one of these three changes, done seriously enough, closes the shortfall."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-848793068.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-848793068.png",
+          "alt": "What actually has to change",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-848793068.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Local vs Global Replacement: Containing the Damage",
+          "text": "6. Local vs Global Replacement: Containing the Damage"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once frames are scarce, which page gets evicted to make room for a new one matters just as much as how many frames exist in total. Local replacement restricts a process to only evicting its own pages when it needs a frame. If one process starts thrashing under this policy, it can only cannibalize its own working set, it cannot reach into another process and steal frames that process is actively using."
+        },
+        {
+          "type": "paragraph",
+          "content": "Global replacement allows evicting any process's page, regardless of which process owns the frame. That flexibility can be more efficient overall, frames flow toward whichever process needs them most at a given moment instead of sitting locked to a fixed owner. The risk is exactly the contagion local replacement was designed to prevent, one thrashing process under a global policy can steal frames from otherwise healthy processes, dragging them down into thrashing too."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Policy\",\"Who a process can evict from\",\"Main tradeoff\"],\"rows\":[[\"Local replacement\",\"Only its own pages\",\"Contains thrashing to the one offending process, at the cost of some flexibility\"],[\"Global replacement\",\"Any process's pages, regardless of owner\",\"Can be more efficient overall, but risks one thrashing process spreading damage to healthy ones\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-813432929.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-813432929.png",
+          "alt": "Local vs Global Replacement: Containing the Damage",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-813432929.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Practical Fixes and Mitigations",
+          "text": "7. Practical Fixes and Mitigations"
+        },
+        {
+          "type": "paragraph",
+          "content": "None of this is purely theoretical, real operating systems actively watch for thrashing and respond to it. The most direct fix is reducing the degree of multiprogramming, literally running fewer processes at once, so each one that remains gets a large enough share of RAM to hold its working set without constant faulting."
+        },
+        {
+          "type": "paragraph",
+          "content": "A second fix addresses the root cause even more directly: add more physical RAM. If the machine simply has more frames available, working sets that used to compete for scarce space can all fit comfortably, and the pressure that caused thrashing disappears without needing to remove any process at all."
+        },
+        {
+          "type": "paragraph",
+          "content": "The third fix is detection driven. The operating system can actively track each process's working set, or use the closely related Page Fault Frequency approach, watching the rate of faults per unit time, to catch early thrashing before it fully takes hold. Once detected, the OS can automatically suspend one or more processes, swapping them out entirely, until pressure eases. This is exactly where the Swapping chapter's mechanism earns its keep, it is the actual tool used to relieve memory pressure once thrashing has been identified."
+        },
+        {
+          "type": "list",
+          "content": "[\"Reduce the degree of multiprogramming so every remaining process gets enough frames for its working set\",\"Add more physical RAM to relieve the pressure at its root cause\",\"Detect early thrashing with the working set model or Page Fault Frequency, then suspend and swap out processes until pressure eases\"]",
+          "items": [
+            "Reduce the degree of multiprogramming so every remaining process gets enough frames for its working set",
+            "Add more physical RAM to relieve the pressure at its root cause",
+            "Detect early thrashing with the working set model or Page Fault Frequency, then suspend and swap out processes until pressure eases"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-94297417.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-94297417.png",
+          "alt": "Practical Fixes and Mitigations",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969315-94297417.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Detection Signals, Fixes, and Common Mistakes",
+          "text": "8. Detection Signals, Fixes, and Common Mistakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice, thrashing announces itself through a specific combination of signals rather than any single metric on its own. CPU utilization drops while disk activity spikes at the same time, that pairing together is what separates thrashing from ordinary idle time. The page fault rate climbs steeply, and process response times degrade noticeably even though the reported CPU load looks low, which is exactly the kind of reading that misleads a naive scheduler into admitting more work."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Detection signal\",\"What is actually happening\",\"Corresponding fix\"],\"rows\":[[\"CPU utilization falling while disk activity spikes\",\"Processes are blocked on page faults instead of executing\",\"Reduce the degree of multiprogramming, or add physical RAM\"],[\"Page fault rate climbing steeply per process\",\"Working sets no longer fit in the frames each process actually has\",\"Apply the working set model or Page Fault Frequency to detect it early\"],[\"Response times degrading despite low reported CPU load\",\"The low load reading is misleading, the system is saturated on disk, not idle\",\"Suspend and swap out one or more processes until pressure eases\"]]}"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Common mistake\",\"Why it is wrong\"],\"rows\":[[\"Admitting more processes because CPU utilization looks low\",\"This is precisely the trap that makes thrashing self reinforcing, it shrinks frames per process further and drives utilization down even more\"],[\"Treating any page fault activity as thrashing\",\"The degree and rate matter enormously, not just the fact that faults are happening at all, some paging is normal and healthy\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969316-46051117.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969316-46051117.png",
+          "alt": "Detection Signals, Fixes, and Common Mistakes",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969316-46051117.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Closing: The Conclusion of the Memory Management Module",
+          "text": "9. Closing: The Conclusion of the Memory Management Module"
+        },
+        {
+          "type": "paragraph",
+          "content": "Virtual memory, demand paging, page faults, and swapping are all genuinely powerful ideas. Together they let every process believe it owns far more memory than the machine physically has, loading only what is actually touched, and relieving pressure by moving data to disk when RAM runs short. Thrashing is what happens when that entire illusion is pushed past the physical RAM actually available to back it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Pushed too far, without enough physical RAM behind it, the illusion does not fail gracefully. It collapses into a system that is technically running, every process still exists, the scheduler is still working, but one that is accomplishing almost nothing, because nearly all of its effort goes into paging rather than computing. That is the cautionary note this whole module has been building toward."
+        },
+        {
+          "type": "note",
+          "title": "The module in one line",
+          "content": "Virtual memory, demand paging, page faults, and swapping all work together to create a genuinely useful illusion of abundant memory. Thrashing is the reminder that the illusion has a real limit, set by physical RAM, and that pushing past it turns a clever trick into a system that is busy accomplishing nothing."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969316-564546408.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969316-564546408.png",
+          "alt": "Closing: The Conclusion of the Memory Management Module",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408969316-564546408.png"
+        }
+      ]
+    }
+  ]
+}

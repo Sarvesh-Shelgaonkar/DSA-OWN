@@ -1,0 +1,448 @@
+{
+  "slug": "hyperloglog",
+  "title": "HyperLogLog",
+  "content": [
+    {
+      "id": "hyperloglog",
+      "title": "HyperLogLog",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Say you run a website and someone asks a simple sounding question: how many unique visitors did we get today. Not page views, not requests, actual distinct people. If your site gets a few hundred visits a day, this is trivial. If it gets a hundred million, this question gets surprisingly expensive to answer well."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306498536-527935121.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306498536-527935121.png",
+          "alt": "A hash set that stores every item grows without bound, while a HyperLogLog structure stays a fixed tiny size",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306498536-527935121.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>HyperLogLog</strong> is a probabilistic data structure built for exactly this problem: counting the number of distinct elements in a massive stream, using a tiny, fixed amount of memory, and accepting a small, well understood amount of error in exchange."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Problem: Counting Distinct Items at Scale",
+          "text": "1. The Problem: Counting Distinct Items at Scale"
+        },
+        {
+          "type": "paragraph",
+          "content": "The naive way to count unique visitors is to keep a set of every visitor ID you have ever seen. When a new request comes in, check if the ID is already in the set. If not, add it and bump your count by one. This works, and it gives you a perfectly exact answer."
+        },
+        {
+          "type": "paragraph",
+          "content": "The problem shows up at scale. If you have a hundred million unique visitors in a day, that set needs to hold a hundred million IDs. Do this across many different counters, unique visitors per page, per country, per hour, and the memory bill multiplies fast."
+        },
+        {
+          "type": "note",
+          "title": "The real cost",
+          "content": "It is not just the visitor IDs themselves. A hash set also carries per entry overhead in most languages, pointers, bucket metadata, load factor padding. That overhead often outweighs the actual data being stored."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Why an Exact Count Needs a Hash Set That Grows Forever",
+          "text": "2. Why an Exact Count Needs a Hash Set That Grows Forever"
+        },
+        {
+          "type": "paragraph",
+          "content": "There is no way around it: if you want a perfectly exact distinct count, you must remember every distinct item you have already counted. Otherwise you cannot tell a repeat visitor from a new one, and you would double count or miss people entirely."
+        },
+        {
+          "type": "paragraph",
+          "content": "That requirement alone forces memory usage to grow linearly with the number of unique items. A set holding a billion unique IDs, at even a modest 20 bytes each once you include hashing and bookkeeping overhead, needs tens of gigabytes. Do that for many separate counters running at once, and you are looking at a serious chunk of your infrastructure budget spent purely on remembering who you already counted."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Memory at 1 billion unique items\"],\"rows\":[[\"Exact hash set\",\"Tens of gigabytes\"],[\"HyperLogLog\",\"About 12 kilobytes\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most businesses do not actually need the exact number down to the last visitor. Knowing you had approximately 4.2 million unique visitors, off by a percent or two, is just as useful for almost every decision you would make with that number. That gap between what is needed and what an exact count costs is exactly where HyperLogLog lives."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Core Trick: Leading Zeros as a Signal",
+          "text": "3. The Core Trick: Leading Zeros as a Signal"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is the clever idea underneath HyperLogLog. Take an element, run it through a good hash function, and look at the resulting bits as a long string of zeros and ones. Now count how many leading zero bits appear at the start of that hash, before the first 1 bit shows up."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524936-901071239.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524936-901071239.png",
+          "alt": "An element is hashed and the resulting binary value is examined for its leading zero bits",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524936-901071239.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A single fair coin flip has a 50 percent chance of landing on a bit that is 0. A good hash function behaves the same way, each bit of its output is effectively an independent coin flip. So the chance a hash starts with exactly one leading zero is one in two. The chance it starts with two leading zeros is one in four. Ten leading zeros in a row is one in a thousand and twenty four."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Why a Long Run of Zeros Is a Signal, Not Noise",
+          "text": "3.1 Why a Long Run of Zeros Is a Signal, Not Noise"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the part that makes the whole structure work. Seeing a long run of leading zeros in a single hash is rare. But the more distinct elements you hash, the more chances you get for one of them to produce that rare, long run purely by chance."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306502237-592386788.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306502237-592386788.png",
+          "alt": "A longer run of leading zeros only tends to appear once you have hashed many distinct items",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306502237-592386788.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "If you have only hashed a handful of items, seeing a run of ten leading zeros would be a shock. If you have hashed a million items, seeing a run of that length becomes almost expected. So the length of the longest run of leading zeros you have observed, across every item you have hashed, becomes a rough dial for how many distinct items you have actually seen."
+        },
+        {
+          "type": "blockQuote",
+          "content": "The longest run of leading zeros you have observed roughly doubles every time the number of distinct items you have seen doubles. That relationship is the entire foundation HyperLogLog is built on."
+        },
+        {
+          "type": "note",
+          "title": "Just one hash is a bad estimator",
+          "content": "A single longest run gives an extremely noisy estimate on its own. One lucky or unlucky hash swings the answer wildly. This is exactly the problem the bucketing trick in the next section solves."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Improving Accuracy: Splitting Into Many Buckets",
+          "text": "4. Improving Accuracy: Splitting Into Many Buckets"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead of tracking one single longest run across the entire stream, HyperLogLog splits the work across many independent buckets, often called registers. It uses a small slice of each hash, say the first few bits, to decide which bucket an element belongs to. The rest of the hash bits are used to compute the leading zero run for that element."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306504046-710000127.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306504046-710000127.png",
+          "alt": "The first few bits of an element hash pick which bucket it is routed to",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306504046-710000127.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every bucket keeps only one number: the longest run of leading zeros seen among all the elements routed into it so far. When a new element lands in a bucket, HyperLogLog compares its run length to whatever is already stored there and keeps whichever is larger."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Averaging Across Buckets",
+          "text": "4.1 Averaging Across Buckets"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306505574-521900017.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306505574-521900017.png",
+          "alt": "Each bucket keeps only the largest leading zero run it has seen, updating whenever a bigger run arrives",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306505574-521900017.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once every bucket has its own longest run recorded, HyperLogLog combines all of those per bucket estimates into a single final answer. Rather than a plain average, it uses a harmonic mean, which is far less sensitive to a single bucket that got an unusually lucky, oversized run."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306507244-259169036.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306507244-259169036.png",
+          "alt": "The per bucket maximum values are combined with a harmonic mean into one cardinality estimate",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306507244-259169036.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the same idea statisticians call stochastic averaging. Instead of trusting one noisy measurement, you take many smaller, independent measurements and average them down into something far more stable than any single one of them alone."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 The Standard Error and Bucket Count Trade-off",
+          "text": "4.2 The Standard Error and Bucket Count Trade-off"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306508790-645934389.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306508790-645934389.png",
+          "alt": "Fewer buckets give a faster but noisier estimate, more buckets give a slower but tighter one",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306508790-645934389.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "More buckets means more independent samples feeding the average, which means a tighter, more reliable estimate. Fewer buckets means less memory used, but a noisier answer. The standard error of a HyperLogLog estimate works out to roughly <code>1.04 divided by the square root of the number of buckets</code>."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Bucket count\",\"Approximate standard error\"],\"rows\":[[\"1,024 buckets\",\"Around 3 percent\"],[\"2,048 buckets\",\"Around 2 percent\"],[\"16,384 buckets\",\"Under 1 percent\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Real implementations, including the one inside Redis, typically settle around a few thousand to sixteen thousand buckets, landing standard error somewhere between roughly 2 percent and under 1 percent, while still keeping the entire structure well under a few kilobytes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. The Memory Win at Real Scale",
+          "text": "5. The Memory Win at Real Scale"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306510719-464853473.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306510719-464853473.png",
+          "alt": "Counting a billion unique items needs tens of gigabytes with a hash set, versus about 12 kilobytes with HyperLogLog",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306510719-464853473.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the headline result that makes HyperLogLog worth knowing. Whether you are counting a thousand unique items or a hundred billion, the structure stays the same fixed size, because it never stores the items themselves, only the per bucket longest run values."
+        },
+        {
+          "type": "paragraph",
+          "content": "A HyperLogLog sized with 16,384 buckets, each needing only a handful of bits to store a run length, fits comfortably in around 12 kilobytes. That single structure can estimate cardinalities into the hundreds of billions, at under 1 percent standard error, while a hash set attempting the same exact count would need gigabytes upon gigabytes."
+        },
+        {
+          "type": "note",
+          "title": "Fixed size regardless of content",
+          "content": "A HyperLogLog counting 10 unique items and one counting 10 billion unique items take up exactly the same amount of memory. Only the accuracy characteristics matter, not the actual cardinality being counted."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Real-World Usage: Redis and Analytics Systems",
+          "text": "6. Real-World Usage: Redis and Analytics Systems"
+        },
+        {
+          "type": "paragraph",
+          "content": "Redis ships HyperLogLog as a built-in data type, exposed through three commands: <code>PFADD</code> to add elements, <code>PFCOUNT</code> to read the estimated cardinality, and <code>PFMERGE</code> to combine multiple HyperLogLog structures into one without losing accuracy."
+        },
+        {
+          "type": "code",
+          "content": "PFADD visitors:2026-07-08 user123 user456 user789\nPFCOUNT visitors:2026-07-08\n# returns an estimated count of distinct users added so far",
+          "code": {
+            "language": "bash",
+            "content": "PFADD visitors:2026-07-08 user123 user456 user789\nPFCOUNT visitors:2026-07-08\n# returns an estimated count of distinct users added so far"
+          },
+          "codes": {
+            "bash": "PFADD visitors:2026-07-08 user123 user456 user789\nPFCOUNT visitors:2026-07-08\n# returns an estimated count of distinct users added so far"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Beyond Redis, this same idea shows up throughout analytics infrastructure. Systems counting unique users per campaign, unique search queries per day, or unique devices hitting an API all reach for an approximate counter like HyperLogLog rather than paying the cost of an exact count they do not actually need."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Merging Counts Across Servers with PFMERGE",
+          "text": "6.1 Merging Counts Across Servers with PFMERGE"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306513207-237523190.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306513207-237523190.png",
+          "alt": "Multiple servers each keep their own HyperLogLog structure, merged together with PFMERGE into one combined estimate",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306513207-237523190.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is where HyperLogLog becomes especially useful in a distributed system. If unique visitors are being tracked separately on several web servers, each server can keep its own local HyperLogLog structure. Periodically, or on demand, those structures get merged with <code>PFMERGE</code>, and the result is exactly as accurate as if a single machine had watched the entire combined stream."
+        },
+        {
+          "type": "code",
+          "content": "PFADD visitors:2026-07-08:serverA userA1 userA2 userA3\nPFADD visitors:2026-07-08:serverB userB1 userA1 userB2\nPFMERGE visitors:2026-07-08:total visitors:2026-07-08:serverA visitors:2026-07-08:serverB\nPFCOUNT visitors:2026-07-08:total",
+          "code": {
+            "language": "bash",
+            "content": "PFADD visitors:2026-07-08:serverA userA1 userA2 userA3\nPFADD visitors:2026-07-08:serverB userB1 userA1 userB2\nPFMERGE visitors:2026-07-08:total visitors:2026-07-08:serverA visitors:2026-07-08:serverB\nPFCOUNT visitors:2026-07-08:total"
+          },
+          "codes": {
+            "bash": "PFADD visitors:2026-07-08:serverA userA1 userA2 userA3\nPFADD visitors:2026-07-08:serverB userB1 userA1 userB2\nPFMERGE visitors:2026-07-08:total visitors:2026-07-08:serverA visitors:2026-07-08:serverB\nPFCOUNT visitors:2026-07-08:total"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Merging is exact, not lossy",
+          "content": "Merging two HyperLogLog structures is done by taking the maximum value in each corresponding bucket. This does not add extra error on top of what each structure already carries, the merged result has the same accuracy characteristics as a single structure built from the combined stream directly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Worked Example: Daily Unique Visitors Across Servers",
+          "text": "7. Worked Example: Daily Unique Visitors Across Servers"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306515004-635848392.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306515004-635848392.png",
+          "alt": "Two web servers each add their local visitor IDs into the same shared HyperLogLog key, and one PFCOUNT reads the combined estimate",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306515004-635848392.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say your site runs behind two web servers, and you want a single accurate count of unique visitors for the day, without routing every request through one central server just to maintain an exact set."
+        },
+        {
+          "type": "list",
+          "content": "[\"Server A sees a request from user123 and runs <code>PFADD visitors:day serverA_user123</code>.\",\"Server B sees a request from the same underlying user, hashed differently or not, but referring to the same visitor ID, and runs <code>PFADD visitors:day user123</code> against the same shared key.\",\"Both servers write into the same Redis key directly, so no merge step is even needed if they share one key.\",\"At the end of the day, a single <code>PFCOUNT visitors:day</code> call returns the estimated unique visitor count across both servers.\"]",
+          "items": [
+            "Server A sees a request from user123 and runs <code>PFADD visitors:day serverA_user123</code>.",
+            "Server B sees a request from the same underlying user, hashed differently or not, but referring to the same visitor ID, and runs <code>PFADD visitors:day user123</code> against the same shared key.",
+            "Both servers write into the same Redis key directly, so no merge step is even needed if they share one key.",
+            "At the end of the day, a single <code>PFCOUNT visitors:day</code> call returns the estimated unique visitor count across both servers."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "content": "If instead each server kept its own separate HyperLogLog key throughout the day, perhaps to avoid a shared Redis key becoming a bottleneck under heavy write load, the two structures get combined at the end of the day with a single <code>PFMERGE</code> call, giving the same combined answer without either server needing to know about the other in real time."
+        },
+        {
+          "type": "example-box",
+          "title": "Sanity check the numbers",
+          "text": "Two servers each report roughly 2.1 million unique visitors for the day, with meaningful overlap between them since many users hit both servers over time. After PFMERGE, PFCOUNT reports approximately 3.4 million combined unique visitors, accurate to within about 1 percent, computed from a structure that never grew past a few kilobytes on either server."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Implementation: A Simplified Estimator",
+          "text": "8. Implementation: A Simplified Estimator"
+        },
+        {
+          "type": "paragraph",
+          "content": "Production HyperLogLog implementations include several corrections beyond the simple version described so far, small range corrections when few buckets have been touched, and large range corrections as buckets approach saturation. Stripped down to the core idea though, a simplified estimator looks like this."
+        },
+        {
+          "type": "code",
+          "content": "import math\n\nNUM_BUCKETS = 16          # m = 2^b, toy example uses a small power of two\nALPHA = 0.673              # correction constant for m = 16\n\ndef bucket_and_rank(item):\n    h = hash(item) & 0xFFFFFFFF\n    bucket = h & (NUM_BUCKETS - 1)      # last few bits choose the bucket\n    remaining = h >> 4\n    rank = 1\n    while remaining & 1 == 0 and rank <= 32:\n        rank += 1\n        remaining >>= 1\n    return bucket, rank\n\ndef add(buckets, item):\n    b, r = bucket_and_rank(item)\n    buckets[b] = max(buckets[b], r)\n\ndef estimate(buckets):\n    m = len(buckets)\n    harmonic_sum = sum(2 ** -b for b in buckets)\n    raw_estimate = ALPHA * (m ** 2) / harmonic_sum\n    return raw_estimate",
+          "code": {
+            "language": "python",
+            "content": "import math\n\nNUM_BUCKETS = 16          # m = 2^b, toy example uses a small power of two\nALPHA = 0.673              # correction constant for m = 16\n\ndef bucket_and_rank(item):\n    h = hash(item) & 0xFFFFFFFF\n    bucket = h & (NUM_BUCKETS - 1)      # last few bits choose the bucket\n    remaining = h >> 4\n    rank = 1\n    while remaining & 1 == 0 and rank <= 32:\n        rank += 1\n        remaining >>= 1\n    return bucket, rank\n\ndef add(buckets, item):\n    b, r = bucket_and_rank(item)\n    buckets[b] = max(buckets[b], r)\n\ndef estimate(buckets):\n    m = len(buckets)\n    harmonic_sum = sum(2 ** -b for b in buckets)\n    raw_estimate = ALPHA * (m ** 2) / harmonic_sum\n    return raw_estimate"
+          },
+          "codes": {
+            "python": "import math\n\nNUM_BUCKETS = 16          # m = 2^b, toy example uses a small power of two\nALPHA = 0.673              # correction constant for m = 16\n\ndef bucket_and_rank(item):\n    h = hash(item) & 0xFFFFFFFF\n    bucket = h & (NUM_BUCKETS - 1)      # last few bits choose the bucket\n    remaining = h >> 4\n    rank = 1\n    while remaining & 1 == 0 and rank <= 32:\n        rank += 1\n        remaining >>= 1\n    return bucket, rank\n\ndef add(buckets, item):\n    b, r = bucket_and_rank(item)\n    buckets[b] = max(buckets[b], r)\n\ndef estimate(buckets):\n    m = len(buckets)\n    harmonic_sum = sum(2 ** -b for b in buckets)\n    raw_estimate = ALPHA * (m ** 2) / harmonic_sum\n    return raw_estimate"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Each bucket stores a small integer, the longest run length seen so far. Adding an item routes it to a bucket using a few bits of its hash, computes the run length from the remaining bits, and updates the bucket if the new run is longer. Estimating simply combines every bucket into one number using the harmonic mean formula shown above."
+        },
+        {
+          "type": "note",
+          "title": "Where the real algorithm adds more",
+          "content": "Real HyperLogLog implementations apply a small range correction when very few buckets are non zero, since the harmonic mean alone underestimates badly in that regime, and a large range correction for extremely large cardinalities approaching the limits of the hash space. Redis and most production libraries handle this internally, you rarely need to implement it yourself."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Common Mistakes",
+          "text": "9. Common Mistakes"
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming PFCOUNT returns an exact number. It is always an estimate, treat the reported value as approximate, not authoritative.\",\"Using too few buckets for a workload where accuracy actually matters, then being surprised the error is larger than expected.\",\"Forgetting that merging HyperLogLog structures with different bucket counts is not meaningful, they need matching configuration to merge correctly.\",\"Reaching for HyperLogLog when you actually need to list or enumerate the unique items themselves, it can only tell you how many, never which ones.\"]",
+          "items": [
+            "Assuming PFCOUNT returns an exact number. It is always an estimate, treat the reported value as approximate, not authoritative.",
+            "Using too few buckets for a workload where accuracy actually matters, then being surprised the error is larger than expected.",
+            "Forgetting that merging HyperLogLog structures with different bucket counts is not meaningful, they need matching configuration to merge correctly.",
+            "Reaching for HyperLogLog when you actually need to list or enumerate the unique items themselves, it can only tell you how many, never which ones."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "It only answers how many, never which",
+          "content": "HyperLogLog throws away the actual items entirely, that is exactly where its memory savings come from. If your feature needs to know which specific users were unique visitors, not just the count, a HyperLogLog cannot help you, you need a different structure entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. HLD Interview: How to Talk About This",
+          "text": "10. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "A strong answer opens with the actual trade being made: giving up perfect accuracy for a massive, fixed reduction in memory. Naming the leading zero bit trick and explaining why a long run is a rare, meaningful signal shows you understand the mechanism, not just the headline result."
+        },
+        {
+          "type": "paragraph",
+          "content": "Being able to explain why one hash alone is a bad estimator, and why splitting into buckets and averaging fixes that, demonstrates you understand the actual engineering insight, not just that HyperLogLog exists and is memory efficient."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306517057-791316072.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306517057-791316072.png",
+          "alt": "Exact counting gives perfect accuracy at huge memory cost, HyperLogLog trades a small error for a tiny fixed footprint",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306517057-791316072.png"
+        },
+        {
+          "type": "blockQuote",
+          "content": "The right question is never \"can I count this exactly\", it is \"do I need to\". Most dashboards, most analytics, most product decisions are fine with an answer that is off by one or two percent."
+        },
+        {
+          "type": "paragraph",
+          "content": "A natural follow-up question is when you would not reach for HyperLogLog. If you need the exact count for something like a billing calculation, or you need to know the actual identities of the unique items, not just their number, HyperLogLog is the wrong tool, and being able to say that clearly is part of a strong answer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "Key Takeaways",
+          "text": "Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"HyperLogLog estimates the number of distinct elements in a massive stream using a tiny, fixed amount of memory.\",\"The core trick: a long run of leading zero bits in a hash is a rare event, and its rarity is a signal for how many distinct items have been seen.\",\"Splitting work across many buckets and averaging with a harmonic mean turns one noisy signal into a stable, accurate estimate.\",\"Standard error depends on bucket count, more buckets means a tighter estimate at the cost of a little more memory.\",\"A structure sized for well under 1 percent error can count into the hundreds of billions while staying around 12 kilobytes.\",\"Redis exposes this directly through PFADD, PFCOUNT, and PFMERGE, including merging counts collected independently across many servers.\"]",
+          "items": [
+            "HyperLogLog estimates the number of distinct elements in a massive stream using a tiny, fixed amount of memory.",
+            "The core trick: a long run of leading zero bits in a hash is a rare event, and its rarity is a signal for how many distinct items have been seen.",
+            "Splitting work across many buckets and averaging with a harmonic mean turns one noisy signal into a stable, accurate estimate.",
+            "Standard error depends on bucket count, more buckets means a tighter estimate at the cost of a little more memory.",
+            "A structure sized for well under 1 percent error can count into the hundreds of billions while staying around 12 kilobytes.",
+            "Redis exposes this directly through PFADD, PFCOUNT, and PFMERGE, including merging counts collected independently across many servers."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The bigger idea worth carrying forward: whenever an exact answer would be prohibitively expensive to maintain at scale, ask whether an approximate one, with a known, bounded error, would actually be good enough. HyperLogLog is one of the cleanest examples of that trade paying off."
+        }
+      ]
+    }
+  ]
+}

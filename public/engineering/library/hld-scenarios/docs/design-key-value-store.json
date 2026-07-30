@@ -1,0 +1,867 @@
+{
+  "problemId": "p-design-key-value-store",
+  "title": "Design Key-Value Store",
+  "slug": "design-key-value-store",
+  "sections": [
+    {
+      "id": "content",
+      "title": "Content"
+    }
+  ],
+  "content": [
+    {
+      "id": "content",
+      "title": "Content",
+      "blocks": [
+        {
+          "type": "heading1",
+          "text": "1. Problem Statement",
+          "content": "1. Problem Statement",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "<div style=\"border:2px solid #5b5fc7;border-radius:14px;padding:18px 22px;background:rgba(91,95,199,0.07);margin:4px 0 8px 0;\"><p style=\"margin:0 0 12px 0;\">Ask any large engineering organization what sits underneath their session store, their shopping cart, or their user-preferences service, and there is a decent chance the answer is a distributed key-value store: something built in the spirit of Amazon's Dynamo or Apache Cassandra. It has a deceptively small API, usually just <strong>get</strong> and <strong>put</strong> keyed by a single identifier, but underneath that simplicity is one of the richest problems in all of distributed systems: how do you keep data available and fast across a fleet of machines, any of which can fail at any moment, without ever losing a write or serving obviously wrong data?</p><p style=\"margin:0 0 12px 0;\">This is not a question about clever query languages or complex joins. There are no joins here at all. It is a question about <strong>partitioning</strong> (which machine owns which piece of the keyspace), <strong>replication</strong> (how many copies of each piece of data exist, and where), and <strong>failure handling</strong> (what happens the instant one of those machines goes quiet). Get those three things right and the rest of the system nearly falls into place.</p><img src=\"https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228247544-232199546.png\" alt=\"A high-level architecture diagram showing a client talking to a coordinator, which hashes the key onto a consistent hash ring and routes to three replica storage nodes that gossip with each other and run anti-entropy repair\" style=\"width:100%;border-radius:8px;margin:4px 0 14px 0;\" /><p style=\"margin:0 0 12px 0;\">We are going to design a distributed, horizontally-scalable key-value store that supports simple get and put operations, tolerates individual node failures without losing data, and lets the operator tune how strongly consistent versus how available the system behaves, because as we will see, you genuinely cannot have maximum amounts of both at the same time.</p></div>",
+          "content": "<div style=\"border:2px solid #5b5fc7;border-radius:14px;padding:18px 22px;background:rgba(91,95,199,0.07);margin:4px 0 8px 0;\"><p style=\"margin:0 0 12px 0;\">Ask any large engineering organization what sits underneath their session store, their shopping cart, or their user-preferences service, and there is a decent chance the answer is a distributed key-value store: something built in the spirit of Amazon's Dynamo or Apache Cassandra. It has a deceptively small API, usually just <strong>get</strong> and <strong>put</strong> keyed by a single identifier, but underneath that simplicity is one of the richest problems in all of distributed systems: how do you keep data available and fast across a fleet of machines, any of which can fail at any moment, without ever losing a write or serving obviously wrong data?</p><p style=\"margin:0 0 12px 0;\">This is not a question about clever query languages or complex joins. There are no joins here at all. It is a question about <strong>partitioning</strong> (which machine owns which piece of the keyspace), <strong>replication</strong> (how many copies of each piece of data exist, and where), and <strong>failure handling</strong> (what happens the instant one of those machines goes quiet). Get those three things right and the rest of the system nearly falls into place.</p><img src=\"https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228247544-232199546.png\" alt=\"A high-level architecture diagram showing a client talking to a coordinator, which hashes the key onto a consistent hash ring and routes to three replica storage nodes that gossip with each other and run anti-entropy repair\" style=\"width:100%;border-radius:8px;margin:4px 0 14px 0;\" /><p style=\"margin:0 0 12px 0;\">We are going to design a distributed, horizontally-scalable key-value store that supports simple get and put operations, tolerates individual node failures without losing data, and lets the operator tune how strongly consistent versus how available the system behaves, because as we will see, you genuinely cannot have maximum amounts of both at the same time.</p></div>"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "2. Functional Requirements",
+          "content": "2. Functional Requirements",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Put:</strong> store a value under a given key, replicated across multiple nodes for durability.\",\"<strong>Get:</strong> retrieve the value stored under a given key.\",\"<strong>Delete:</strong> remove a key and its value.\",\"<strong>Automatic partitioning:</strong> keys are automatically distributed across all nodes in the cluster without manual sharding by the client.\",\"<strong>Elastic membership:</strong> nodes can join or leave the cluster, and the system rebalances data without a full outage.\"]",
+          "items": [
+            "<strong>Put:</strong> store a value under a given key, replicated across multiple nodes for durability.",
+            "<strong>Get:</strong> retrieve the value stored under a given key.",
+            "<strong>Delete:</strong> remove a key and its value.",
+            "<strong>Automatic partitioning:</strong> keys are automatically distributed across all nodes in the cluster without manual sharding by the client.",
+            "<strong>Elastic membership:</strong> nodes can join or leave the cluster, and the system rebalances data without a full outage."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice how short this list is. That brevity is the whole point of a key-value store: <strong>the API surface is intentionally tiny so that the underlying engine can focus entirely on being fast, available, and resilient</strong>, rather than on expressive query capability.",
+          "content": "Notice how short this list is. That brevity is the whole point of a key-value store: <strong>the API surface is intentionally tiny so that the underlying engine can focus entirely on being fast, available, and resilient</strong>, rather than on expressive query capability."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "3. Non-Functional Requirements",
+          "content": "3. Non-Functional Requirements",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>High availability:</strong> the cluster should keep serving both reads and writes even while some nodes are down.\",\"<strong>Horizontal scalability:</strong> adding nodes should linearly increase capacity and throughput, without a central bottleneck.\",\"<strong>Tunable consistency:</strong> different applications built on top of this store have different needs, so consistency strength should be a per-operation dial, not a fixed global setting.\",\"<strong>Low latency:</strong> single-digit-millisecond reads and writes for the common case.\",\"<strong>Durability:</strong> an acknowledged write should not be lost, even if the node that first received it crashes moments later.\"]",
+          "items": [
+            "<strong>High availability:</strong> the cluster should keep serving both reads and writes even while some nodes are down.",
+            "<strong>Horizontal scalability:</strong> adding nodes should linearly increase capacity and throughput, without a central bottleneck.",
+            "<strong>Tunable consistency:</strong> different applications built on top of this store have different needs, so consistency strength should be a per-operation dial, not a fixed global setting.",
+            "<strong>Low latency:</strong> single-digit-millisecond reads and writes for the common case.",
+            "<strong>Durability:</strong> an acknowledged write should not be lost, even if the node that first received it crashes moments later."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Requirement\",\"Target\"],\"rows\":[[\"Read/write latency (p99)\",\"Under 10ms\"],[\"Availability\",\"99.99% (about 52 minutes of downtime a year)\"],[\"Replication factor\",\"3 (configurable)\"],[\"Write throughput per node\",\"~10,000/sec\"],[\"Cluster size\",\"Tens to hundreds of nodes\"]]}",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "4. Clarifying Questions",
+          "content": "4. Clarifying Questions",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"Does the system need to support range queries (scanning keys in order), or is it strictly single-key lookups?\",\"What consistency model should the default configuration favor: strong or eventual?\",\"How large can a single value be, and does the system need to support values in the megabyte range?\",\"Should the system support multi-datacenter replication, or is a single-region cluster sufficient?\",\"Is there a need for transactions across multiple keys, or is every operation scoped to exactly one key?\"]",
+          "items": [
+            "Does the system need to support range queries (scanning keys in order), or is it strictly single-key lookups?",
+            "What consistency model should the default configuration favor: strong or eventual?",
+            "How large can a single value be, and does the system need to support values in the megabyte range?",
+            "Should the system support multi-datacenter replication, or is a single-region cluster sufficient?",
+            "Is there a need for transactions across multiple keys, or is every operation scoped to exactly one key?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "5. Assumptions & Constraints",
+          "content": "5. Assumptions & Constraints",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"Operations are single-key only; there are no multi-key transactions.\",\"Values are relatively small, under a few hundred kilobytes, which is the sweet spot this kind of store is built for.\",\"The replication factor N is 3 by default, with W (write quorum) and R (read quorum) independently configurable per keyspace.\",\"The system runs within a single region for this design, with multi-region replication noted as a future extension.\",\"Conflict resolution defaults to last-write-wins for simplicity, with vector clocks available as an opt-in for applications that need to detect and resolve concurrent writes themselves.\"]",
+          "items": [
+            "Operations are single-key only; there are no multi-key transactions.",
+            "Values are relatively small, under a few hundred kilobytes, which is the sweet spot this kind of store is built for.",
+            "The replication factor N is 3 by default, with W (write quorum) and R (read quorum) independently configurable per keyspace.",
+            "The system runs within a single region for this design, with multi-region replication noted as a future extension.",
+            "Conflict resolution defaults to last-write-wins for simplicity, with vector clocks available as an opt-in for applications that need to detect and resolve concurrent writes themselves."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "6. Capacity Estimation",
+          "content": "6. Capacity Estimation",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "6.1 Traffic Estimates",
+          "content": "6.1 Traffic Estimates",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Consider a cluster backing a mid-size application with <strong>50 million keys</strong> and a combined read-plus-write rate of <strong>100,000 operations per second</strong> at peak, split roughly 70 percent reads and 30 percent writes. That works out to about 70,000 reads per second and 30,000 writes per second. Spread across a cluster of, say, <strong>20 nodes</strong>, each node needs to sustain roughly 100,000 divided by 20, which is <strong>5,000 operations per second</strong>, well within reach of a single well-tuned node handling in-memory-plus-SSTable storage.",
+          "content": "Consider a cluster backing a mid-size application with <strong>50 million keys</strong> and a combined read-plus-write rate of <strong>100,000 operations per second</strong> at peak, split roughly 70 percent reads and 30 percent writes. That works out to about 70,000 reads per second and 30,000 writes per second. Spread across a cluster of, say, <strong>20 nodes</strong>, each node needs to sustain roughly 100,000 divided by 20, which is <strong>5,000 operations per second</strong>, well within reach of a single well-tuned node handling in-memory-plus-SSTable storage."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228255996-204052245.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228255996-204052245.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228255996-204052245.png",
+          "alt": "A split showing roughly 70 percent of traffic being reads and 30 percent being writes"
+        },
+        {
+          "type": "heading2",
+          "text": "6.2 Storage Estimates",
+          "content": "6.2 Storage Estimates",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "If the average key-value pair is 1KB, 50 million keys is <strong>50GB of logical data</strong>. With a replication factor of 3, the actual physical storage requirement triples to <strong>150GB total across the cluster</strong>, or about 150GB divided by 20 nodes, which is <strong>7.5GB per node</strong>, comfortably fitting on a single machine's disk with plenty of headroom for growth.",
+          "content": "If the average key-value pair is 1KB, 50 million keys is <strong>50GB of logical data</strong>. With a replication factor of 3, the actual physical storage requirement triples to <strong>150GB total across the cluster</strong>, or about 150GB divided by 20 nodes, which is <strong>7.5GB per node</strong>, comfortably fitting on a single machine's disk with plenty of headroom for growth."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Metric\",\"Estimate\"],\"rows\":[[\"Total keys\",\"50 million\"],[\"Peak operations/sec\",\"100,000 (70k reads, 30k writes)\"],[\"Cluster size\",\"20 nodes\"],[\"Per-node throughput\",\"~5,000 ops/sec\"],[\"Logical storage\",\"50GB\"],[\"Physical storage (3x replication)\",\"150GB total, ~7.5GB/node\"]]}",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "7. High-Level Architecture",
+          "content": "7. High-Level Architecture",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Every request, whether a get or a put, starts at a <strong>coordinator</strong>, which in this design is not a special, separate machine but simply whichever storage node the client happens to talk to first (any node can act as coordinator for any key, which is important for avoiding a single point of failure). The coordinator hashes the key to figure out which nodes on the ring own that key's data, forwards the request to the appropriate replicas, and waits for enough of them to respond before answering the client.",
+          "content": "Every request, whether a get or a put, starts at a <strong>coordinator</strong>, which in this design is not a special, separate machine but simply whichever storage node the client happens to talk to first (any node can act as coordinator for any key, which is important for avoiding a single point of failure). The coordinator hashes the key to figure out which nodes on the ring own that key's data, forwards the request to the appropriate replicas, and waits for enough of them to respond before answering the client."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228247544-232199546.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228247544-232199546.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228247544-232199546.png",
+          "alt": "A comprehensive architecture diagram showing a client talking to a coordinator, hashing the key onto a consistent hash ring, routing to three replica storage nodes that gossip with each other and run anti-entropy repair"
+        },
+        {
+          "type": "paragraph",
+          "text": "Zooming into what happens during a single write, the request coordinator fans the write out to all N replicas simultaneously and only needs W of them to acknowledge before telling the client the write succeeded, which is the core mechanism behind the quorum model discussed in depth in section 18.",
+          "content": "Zooming into what happens during a single write, the request coordinator fans the write out to all N replicas simultaneously and only needs W of them to acknowledge before telling the client the write succeeded, which is the core mechanism behind the quorum model discussed in depth in section 18."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228249986-751089897.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228249986-751089897.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228249986-751089897.png",
+          "alt": "A microservices-style zoom showing the client driver talking to a request coordinator, which writes to three replica nodes and waits for a write quorum of two acknowledgements, with a gossip membership service tracking node health in the background"
+        },
+        {
+          "type": "paragraph",
+          "text": "Underlying the whole routing story is the consistent hash ring itself, which deserves its own close look.",
+          "content": "Underlying the whole routing story is the consistent hash ring itself, which deserves its own close look."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228252147-728127033.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228252147-728127033.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228252147-728127033.png",
+          "alt": "A zoomed-in view of the hash ring showing several virtual nodes placed around it, with a key hashing to a position and being assigned to the next virtual node found walking clockwise"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "8. Core Components",
+          "content": "8. Core Components",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "8.1 Coordinator",
+          "content": "8.1 Coordinator",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Not a dedicated service, but a role any storage node can play for any given request. It looks up which nodes own a key via the hash ring, forwards the operation, and aggregates responses. Making every node capable of coordinating avoids concentrating load or risk onto a small set of gateway machines.",
+          "content": "Not a dedicated service, but a role any storage node can play for any given request. It looks up which nodes own a key via the hash ring, forwards the operation, and aggregates responses. Making every node capable of coordinating avoids concentrating load or risk onto a small set of gateway machines."
+        },
+        {
+          "type": "heading2",
+          "text": "8.2 Storage Node",
+          "content": "8.2 Storage Node",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Owns a contiguous range of the hash ring and holds the actual data for the keys that map into that range, using an internal storage engine (discussed in section 10) optimized for fast writes and reasonably fast point lookups.",
+          "content": "Owns a contiguous range of the hash ring and holds the actual data for the keys that map into that range, using an internal storage engine (discussed in section 10) optimized for fast writes and reasonably fast point lookups."
+        },
+        {
+          "type": "heading2",
+          "text": "8.3 Gossip Membership Service",
+          "content": "8.3 Gossip Membership Service",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Each node periodically exchanges a small amount of state (who is alive, who is suspected down, current ring layout) with a few random peers, and that state spreads through the cluster exponentially fast without ever needing a single central membership authority.",
+          "content": "Each node periodically exchanges a small amount of state (who is alive, who is suspected down, current ring layout) with a few random peers, and that state spreads through the cluster exponentially fast without ever needing a single central membership authority."
+        },
+        {
+          "type": "heading2",
+          "text": "8.4 Anti-Entropy Repair Process",
+          "content": "8.4 Anti-Entropy Repair Process",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Runs continuously in the background, comparing what different replicas of the same data actually hold and reconciling any drift, catching the cases that hinted handoff alone does not cover.",
+          "content": "Runs continuously in the background, comparing what different replicas of the same data actually hold and reconciling any drift, catching the cases that hinted handoff alone does not cover."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "9. API Design",
+          "content": "9. API Design",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"put(key, value, consistencyLevel) writes a value under a key, waiting for the requested write quorum before returning.\",\"get(key, consistencyLevel) reads the value under a key, waiting for the requested read quorum and resolving any version conflicts among the replicas that responded.\",\"delete(key) removes a key, implemented internally as a special tombstone write rather than an immediate physical delete, so the deletion itself can replicate correctly.\"]",
+          "items": [
+            "put(key, value, consistencyLevel) writes a value under a key, waiting for the requested write quorum before returning.",
+            "get(key, consistencyLevel) reads the value under a key, waiting for the requested read quorum and resolving any version conflicts among the replicas that responded.",
+            "delete(key) removes a key, implemented internally as a special tombstone write rather than an immediate physical delete, so the deletion itself can replicate correctly."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Why deletes are tombstones, not immediate removals",
+          "text": "If a node deletes a key locally and immediately forgets it ever existed, a later anti-entropy repair comparing it against a replica that still has the old value could mistake that old value for \"missing data\" and resurrect it. Writing a tombstone, a special marker meaning \"this key was deleted at time T\", and only physically removing it after enough time has passed for the deletion to have replicated everywhere, avoids that resurrection bug entirely.",
+          "content": "If a node deletes a key locally and immediately forgets it ever existed, a later anti-entropy repair comparing it against a replica that still has the old value could mistake that old value for \"missing data\" and resurrect it. Writing a tombstone, a special marker meaning \"this key was deleted at time T\", and only physically removing it after enough time has passed for the deletion to have replicated everywhere, avoids that resurrection bug entirely.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "10. Database Design",
+          "content": "10. Database Design",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Internally, each storage node organizes its data the way most modern key-value engines do: an in-memory <strong>memtable</strong> absorbs writes first, since writing to memory is essentially free, and periodically flushes to an immutable, sorted <strong>SSTable</strong> on disk once it fills up. A background compaction process periodically merges older SSTables together, discarding overwritten and tombstoned data along the way.",
+          "content": "Internally, each storage node organizes its data the way most modern key-value engines do: an in-memory <strong>memtable</strong> absorbs writes first, since writing to memory is essentially free, and periodically flushes to an immutable, sorted <strong>SSTable</strong> on disk once it fills up. A background compaction process periodically merges older SSTables together, discarding overwritten and tombstoned data along the way."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228257582-798580556.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228257582-798580556.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228257582-798580556.png",
+          "alt": "A diagram showing writes landing in an in-memory memtable, flushing to on-disk SSTables when full, with a background compaction process merging them over time"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228286318-181835627.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228286318-181835627.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228286318-181835627.png",
+          "alt": "An entity relationship style diagram showing a keyspace divided into partitions, each partition replicated onto multiple nodes with a defined role"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "11. Data Modeling Decisions",
+          "content": "11. Data Modeling Decisions",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The single most important structural decision in this entire system is <strong>how data gets spread across nodes</strong>, and the answer is consistent hashing. Imagine mapping every node, and every key, onto points on a circle using a hash function. A key belongs to whichever node is the first one encountered walking clockwise from the key's position. The elegant part is what happens when a node joins or leaves: only the keys between the new node and its immediate neighbor need to move, not the entire keyspace, which is a dramatic improvement over naive modulo-based hashing, where adding a single node would reshuffle almost everything.",
+          "content": "The single most important structural decision in this entire system is <strong>how data gets spread across nodes</strong>, and the answer is consistent hashing. Imagine mapping every node, and every key, onto points on a circle using a hash function. A key belongs to whichever node is the first one encountered walking clockwise from the key's position. The elegant part is what happens when a node joins or leaves: only the keys between the new node and its immediate neighbor need to move, not the entire keyspace, which is a dramatic improvement over naive modulo-based hashing, where adding a single node would reshuffle almost everything."
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice, each physical node is represented by many <strong>virtual nodes</strong> scattered around the ring rather than a single point, which smooths out load distribution (without virtual nodes, an unlucky hash placement could leave one physical node responsible for a much larger arc of the ring than its peers) and makes rebalancing after a node join or leave spread evenly across many existing nodes instead of dumping all the migrated load onto one unlucky neighbor.",
+          "content": "In practice, each physical node is represented by many <strong>virtual nodes</strong> scattered around the ring rather than a single point, which smooths out load distribution (without virtual nodes, an unlucky hash placement could leave one physical node responsible for a much larger arc of the ring than its peers) and makes rebalancing after a node join or leave spread evenly across many existing nodes instead of dumping all the migrated load onto one unlucky neighbor."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "12. High-Level Data Flow",
+          "content": "12. High-Level Data Flow",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "12.1 Write Flow",
+          "content": "12.1 Write Flow",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228261342-44925929.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228261342-44925929.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228261342-44925929.png",
+          "alt": "A sequence diagram showing a client sending a put to a coordinator, which writes to three replica nodes and returns success once a write quorum of two acknowledgements is met"
+        },
+        {
+          "type": "heading2",
+          "text": "12.2 Read Flow",
+          "content": "12.2 Read Flow",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228262938-751726633.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228262938-751726633.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228262938-751726633.png",
+          "alt": "A sequence diagram showing a client sending a get to a coordinator, which reads from two replica nodes and returns the value once a read quorum is met"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "13. Detailed Workflows",
+          "content": "13. Detailed Workflows",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The interesting workflows in this system are the ones where something goes slightly wrong, since the happy path (write to N nodes, read from N nodes, everyone agrees) is almost too simple to be worth walking through.",
+          "content": "The interesting workflows in this system are the ones where something goes slightly wrong, since the happy path (write to N nodes, read from N nodes, everyone agrees) is almost too simple to be worth walking through."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228264593-392934166.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228264593-392934166.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228264593-392934166.png",
+          "alt": "A worked-example sequence diagram: a coordinator writes to node 1 and node 3 successfully, but node 2 is temporarily down, so node 1 stores a hint on node 2's behalf, and delivers it once node 2 recovers"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a write with N equals 3 landing while <strong>Node 2</strong> is momentarily unreachable, perhaps mid-restart after a routine deploy. The coordinator successfully writes to Node 1 and Node 3, easily satisfying a write quorum of W equals 2, and returns success to the client immediately, since two out of three replicas is enough. Rather than simply giving up on Node 2 entirely, Node 1 stores a small <strong>hint</strong>, essentially a note saying \"this write belongs to Node 2, please deliver it once it is back.\" A few minutes later, when Node 2 rejoins the cluster and its gossip heartbeat is seen again, Node 1 delivers the queued hint, and Node 2 catches up to full consistency without ever needing an expensive full repair.",
+          "content": "Picture a write with N equals 3 landing while <strong>Node 2</strong> is momentarily unreachable, perhaps mid-restart after a routine deploy. The coordinator successfully writes to Node 1 and Node 3, easily satisfying a write quorum of W equals 2, and returns success to the client immediately, since two out of three replicas is enough. Rather than simply giving up on Node 2 entirely, Node 1 stores a small <strong>hint</strong>, essentially a note saying \"this write belongs to Node 2, please deliver it once it is back.\" A few minutes later, when Node 2 rejoins the cluster and its gossip heartbeat is seen again, Node 1 delivers the queued hint, and Node 2 catches up to full consistency without ever needing an expensive full repair."
+        },
+        {
+          "type": "paragraph",
+          "text": "If Node 2 stays down long enough that the hint itself expires before delivery, that is exactly what the background anti-entropy repair process (using Merkle trees, discussed in section 20) is there to catch, comparing replicas at a coarser granularity and reconciling anything that hinted handoff missed.",
+          "content": "If Node 2 stays down long enough that the hint itself expires before delivery, that is exactly what the background anti-entropy repair process (using Merkle trees, discussed in section 20) is there to catch, comparing replicas at a coarser granularity and reconciling anything that hinted handoff missed."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "14. Caching Strategy",
+          "content": "14. Caching Strategy",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The memtable itself already functions as a natural, always-warm cache for the most recently written data, since any read for a key still sitting in the memtable is served straight from memory without touching disk at all. Beyond that, application teams building on top of this store are encouraged to add their own read-through cache layer in front of it for extremely hot, read-heavy keys, the same way one might in front of a traditional database, since a distributed key-value store optimized for durability and availability is not automatically the fastest possible read path for a single wildly popular key.",
+          "content": "The memtable itself already functions as a natural, always-warm cache for the most recently written data, since any read for a key still sitting in the memtable is served straight from memory without touching disk at all. Beyond that, application teams building on top of this store are encouraged to add their own read-through cache layer in front of it for extremely hot, read-heavy keys, the same way one might in front of a traditional database, since a distributed key-value store optimized for durability and availability is not automatically the fastest possible read path for a single wildly popular key."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "15. Message Queues & Async Processing",
+          "content": "15. Message Queues & Async Processing",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Gossip itself is a lightweight, continuous, asynchronous background process, not something any client request waits on. Anti-entropy repair likewise runs as a scheduled background job per node, comparing Merkle tree hashes of its data against a peer's and only transferring the specific key ranges that actually differ, rather than a full, expensive data dump between every pair of replicas.",
+          "content": "Gossip itself is a lightweight, continuous, asynchronous background process, not something any client request waits on. Anti-entropy repair likewise runs as a scheduled background job per node, comparing Merkle tree hashes of its data against a peer's and only transferring the specific key ranges that actually differ, rather than a full, expensive data dump between every pair of replicas."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "16. Load Balancing Strategy",
+          "content": "16. Load Balancing Strategy",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228272612-138550162.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228272612-138550162.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228272612-138550162.png",
+          "alt": "A diagram showing client drivers spreading requests across a pool of coordinator-capable nodes"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because any node can coordinate any request, load balancing largely happens for free: a smart client driver can maintain its own view of the ring and either talk directly to a replica that actually owns the key (skipping an extra network hop entirely) or round-robin across the cluster if it prefers simplicity over that optimization.",
+          "content": "Because any node can coordinate any request, load balancing largely happens for free: a smart client driver can maintain its own view of the ring and either talk directly to a replica that actually owns the key (skipping an extra network hop entirely) or round-robin across the cluster if it prefers simplicity over that optimization."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "17. Scaling Strategy",
+          "content": "17. Scaling Strategy",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013269-671827754.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013269-671827754.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013269-671827754.png",
+          "alt": "A flowchart showing a decision to add a node to the ring once load per node crosses a target threshold"
+        },
+        {
+          "type": "paragraph",
+          "text": "Scaling this system is, almost by design, just a matter of adding more nodes to the ring. Consistent hashing ensures that adding one new node only requires migrating roughly 1 divided by (number of nodes) of the total data, a small, bounded amount of rebalancing rather than a disruptive full reshuffle.",
+          "content": "Scaling this system is, almost by design, just a matter of adding more nodes to the ring. Consistent hashing ensures that adding one new node only requires migrating roughly 1 divided by (number of nodes) of the total data, a small, bounded amount of rebalancing rather than a disruptive full reshuffle."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "18. Database Scaling",
+          "content": "18. Database Scaling",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228259142-778174549.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228259142-778174549.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228259142-778174549.png",
+          "alt": "A diagram showing an N equals 3, W equals 2, R equals 2 configuration satisfying the W plus R greater than N rule, guaranteeing strongly consistent reads"
+        },
+        {
+          "type": "paragraph",
+          "text": "Replication in this system is governed by three numbers: <strong>N</strong>, how many replicas of each piece of data exist; <strong>W</strong>, how many replicas must acknowledge a write before it is considered successful; and <strong>R</strong>, how many replicas must respond to a read before it is returned to the client. With N equals 3, W equals 2, and R equals 2, the classic rule <strong>W plus R greater than N</strong> holds (2 plus 2 equals 4, which is greater than 3), which mathematically guarantees that any read quorum and any write quorum share at least one overlapping replica, meaning a read is guaranteed to see the most recent successful write. Tune W and R lower (say W equals 1, R equals 1) and you get lower latency and higher availability at the cost of that overlap guarantee, which is the tunable consistency knob mentioned back in the non-functional requirements.",
+          "content": "Replication in this system is governed by three numbers: <strong>N</strong>, how many replicas of each piece of data exist; <strong>W</strong>, how many replicas must acknowledge a write before it is considered successful; and <strong>R</strong>, how many replicas must respond to a read before it is returned to the client. With N equals 3, W equals 2, and R equals 2, the classic rule <strong>W plus R greater than N</strong> holds (2 plus 2 equals 4, which is greater than 3), which mathematically guarantees that any read quorum and any write quorum share at least one overlapping replica, meaning a read is guaranteed to see the most recent successful write. Tune W and R lower (say W equals 1, R equals 1) and you get lower latency and higher availability at the cost of that overlap guarantee, which is the tunable consistency knob mentioned back in the non-functional requirements."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228276079-640290753.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228276079-640290753.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228276079-640290753.png",
+          "alt": "A diagram showing the node that owns a key, with its replicas placed on the next nodes clockwise around the ring"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "19. Consistency & Availability",
+          "content": "19. Consistency & Availability",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228277666-367970630.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228277666-367970630.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228277666-367970630.png",
+          "alt": "A CAP theorem diagram showing this system choosing availability with partition tolerance, achieving tunable consistency rather than strict consistency"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is the textbook CAP theorem teaching example. <strong>Partition tolerance is not optional</strong>, a network will partition eventually no matter how good the infrastructure is, so the real choice is between consistency and availability during that partition. This design defaults to <strong>AP (available, partition tolerant)</strong> with tunable consistency layered on top through the W and R quorum knobs from the previous section, rather than forcing a single global CP or AP choice. An application that genuinely needs strong consistency can set W and R high enough to guarantee overlap; an application that prizes low latency above all else can set them low and accept a small, well-understood risk of reading slightly stale data.",
+          "content": "This is the textbook CAP theorem teaching example. <strong>Partition tolerance is not optional</strong>, a network will partition eventually no matter how good the infrastructure is, so the real choice is between consistency and availability during that partition. This design defaults to <strong>AP (available, partition tolerant)</strong> with tunable consistency layered on top through the W and R quorum knobs from the previous section, rather than forcing a single global CP or AP choice. An application that genuinely needs strong consistency can set W and R high enough to guarantee overlap; an application that prizes low latency above all else can set them low and accept a small, well-understood risk of reading slightly stale data."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "20. Reliability & Fault Tolerance",
+          "content": "20. Reliability & Fault Tolerance",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228270635-338247812.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228270635-338247812.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228270635-338247812.png",
+          "alt": "A Merkle tree diagram showing a root hash built from left and right subtree hashes, which are themselves built from leaf hashes over ranges of keys"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228279260-387821748.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228279260-387821748.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228279260-387821748.png",
+          "alt": "A node with data and two replicas, with traffic shifting to a replica if the primary node fails"
+        },
+        {
+          "type": "paragraph",
+          "text": "Hinted handoff (section 13) handles brief outages gracefully. Longer outages or genuinely lost hints are caught by <strong>anti-entropy repair</strong>, which uses a Merkle tree, a hash tree where each parent node's hash is derived from its children's hashes, to compare two replicas efficiently: if two replicas' root hashes match, their data is identical and no further comparison is needed at all; if they differ, the mismatch can be narrowed down to the specific subtree, and eventually the specific key range, that actually differs, without ever needing to compare every single key directly.",
+          "content": "Hinted handoff (section 13) handles brief outages gracefully. Longer outages or genuinely lost hints are caught by <strong>anti-entropy repair</strong>, which uses a Merkle tree, a hash tree where each parent node's hash is derived from its children's hashes, to compare two replicas efficiently: if two replicas' root hashes match, their data is identical and no further comparison is needed at all; if they differ, the mismatch can be narrowed down to the specific subtree, and eventually the specific key range, that actually differs, without ever needing to compare every single key directly."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "21. Security Considerations",
+          "content": "21. Security Considerations",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Client-to-node and node-to-node traffic should run over TLS, since gossip and replication traffic carries the actual data being stored. Authentication should be enforced at the client-driver level with per-keyspace credentials, and authorization should scope which keyspaces a given credential can read from or write to, since a multi-tenant deployment of this store might host unrelated teams' data on the same physical cluster.",
+          "content": "Client-to-node and node-to-node traffic should run over TLS, since gossip and replication traffic carries the actual data being stored. Authentication should be enforced at the client-driver level with per-keyspace credentials, and authorization should scope which keyspaces a given credential can read from or write to, since a multi-tenant deployment of this store might host unrelated teams' data on the same physical cluster."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "22. Monitoring & Observability",
+          "content": "22. Monitoring & Observability",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The metrics that matter most here are <strong>per-node latency percentiles</strong> (a single slow node drags down every quorum operation that touches it), <strong>hinted handoff queue depth</strong> (a growing queue signals a node has been down longer than expected), <strong>gossip convergence time</strong> (how quickly the cluster agrees on membership changes), and <strong>repair lag</strong> (how far behind the anti-entropy process has fallen). A sudden divergence between two replicas' data, caught by monitoring the repair process's findings, is often the earliest signal that something is subtly wrong somewhere in the write path.",
+          "content": "The metrics that matter most here are <strong>per-node latency percentiles</strong> (a single slow node drags down every quorum operation that touches it), <strong>hinted handoff queue depth</strong> (a growing queue signals a node has been down longer than expected), <strong>gossip convergence time</strong> (how quickly the cluster agrees on membership changes), and <strong>repair lag</strong> (how far behind the anti-entropy process has fallen). A sudden divergence between two replicas' data, caught by monitoring the repair process's findings, is often the earliest signal that something is subtly wrong somewhere in the write path."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "23. Bottlenecks & Single Points of Failure",
+          "content": "23. Bottlenecks & Single Points of Failure",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228280995-622475580.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228280995-622475580.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228280995-622475580.png",
+          "alt": "A map of two bottlenecks: a coordinator overwhelmed by fan-out writes, fixed by letting any node coordinate to spread the load, and a few extremely hot keys, fixed by client-side caching in front of the store"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because any node can coordinate, there is no single fixed gateway to become a bottleneck the way there would be in a system with dedicated coordinator machines. The more realistic pressure point is a small number of extremely hot keys landing on the same handful of physical nodes, since consistent hashing guarantees even distribution of the keyspace but says nothing about even distribution of access frequency.",
+          "content": "Because any node can coordinate, there is no single fixed gateway to become a bottleneck the way there would be in a system with dedicated coordinator machines. The more realistic pressure point is a small number of extremely hot keys landing on the same handful of physical nodes, since consistent hashing guarantees even distribution of the keyspace but says nothing about even distribution of access frequency."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "24. Trade-Offs",
+          "content": "24. Trade-Offs",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228266566-566782619.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228266566-566782619.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228266566-566782619.png",
+          "alt": "A comparison of last-write-wins conflict resolution using timestamps versus vector clocks tracking causal history"
+        },
+        {
+          "type": "paragraph",
+          "text": "When two writes to the same key happen concurrently on different replicas (both unaware of each other, which is entirely possible in a distributed system with no single writer lock), something has to decide which one wins. <strong>Last-write-wins</strong>, simply comparing timestamps and keeping the newer one, is simple to implement and reason about, but it can silently discard a legitimate concurrent write if clocks are even slightly skewed. <strong>Vector clocks</strong> track the causal history of a value across replicas precisely enough to detect true concurrency (as opposed to one write happening-before another), but push the actual conflict-resolution decision up to the application, which now has to know how to merge two conflicting versions of its own data.",
+          "content": "When two writes to the same key happen concurrently on different replicas (both unaware of each other, which is entirely possible in a distributed system with no single writer lock), something has to decide which one wins. <strong>Last-write-wins</strong>, simply comparing timestamps and keeping the newer one, is simple to implement and reason about, but it can silently discard a legitimate concurrent write if clocks are even slightly skewed. <strong>Vector clocks</strong> track the causal history of a value across replicas precisely enough to detect true concurrency (as opposed to one write happening-before another), but push the actual conflict-resolution decision up to the application, which now has to know how to merge two conflicting versions of its own data."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228268266-541850865.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228268266-541850865.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228268266-541850865.png",
+          "alt": "A gossip protocol diagram showing nodes exchanging heartbeats with a few random peers, with state spreading indirectly to nodes not directly contacted"
+        },
+        {
+          "type": "paragraph",
+          "text": "The choice of <strong>gossip over a centralized membership service</strong> is itself a trade-off: gossip has no single point of failure and scales gracefully as the cluster grows, at the cost of membership changes taking a small, bounded amount of time to fully propagate, rather than being instantly consistent everywhere the moment they happen.",
+          "content": "The choice of <strong>gossip over a centralized membership service</strong> is itself a trade-off: gossip has no single point of failure and scales gracefully as the cluster grows, at the cost of membership changes taking a small, bounded amount of time to fully propagate, rather than being instantly consistent everywhere the moment they happen."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "25. Cost Optimization",
+          "content": "25. Cost Optimization",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228282600-440437979.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228282600-440437979.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228282600-440437979.png",
+          "alt": "A cost breakdown dominated by disk storage multiplied by the replication factor, plus compute for the coordinator and node processes"
+        },
+        {
+          "type": "paragraph",
+          "text": "Replication is the dominant cost driver, since a replication factor of 3 means paying for three times the raw storage of the logical data. Tiering older, cold key ranges onto cheaper storage classes, and compacting SSTables aggressively to reclaim space from tombstoned and overwritten data, are the two most effective levers for controlling that cost without touching the replication factor itself, which exists for durability reasons that should not be compromised lightly.",
+          "content": "Replication is the dominant cost driver, since a replication factor of 3 means paying for three times the raw storage of the logical data. Tiering older, cold key ranges onto cheaper storage classes, and compacting SSTables aggressively to reclaim space from tombstoned and overwritten data, are the two most effective levers for controlling that cost without touching the replication factor itself, which exists for durability reasons that should not be compromised lightly."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "26. Edge Cases",
+          "content": "26. Edge Cases",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"A network partition splits the cluster into two halves, each still able to talk to a quorum of its own local nodes but not the other half, requiring the operator to decide in advance how the system should behave during a true split-brain scenario.\",\"A node rejoins the cluster after being down long enough that its hinted handoff queue elsewhere has already expired, requiring a full anti-entropy repair to catch it back up rather than a quick hint replay.\",\"A client writes with a low consistency level (W equals 1) and then immediately reads with a low consistency level (R equals 1) from a different replica that has not yet received that write, legitimately reading stale data, which the client needs to be prepared for given the consistency level it chose.\",\"Clock skew between nodes causes last-write-wins conflict resolution to pick the \\\"wrong\\\" (chronologically earlier but timestamp-later) write.\"]",
+          "items": [
+            "A network partition splits the cluster into two halves, each still able to talk to a quorum of its own local nodes but not the other half, requiring the operator to decide in advance how the system should behave during a true split-brain scenario.",
+            "A node rejoins the cluster after being down long enough that its hinted handoff queue elsewhere has already expired, requiring a full anti-entropy repair to catch it back up rather than a quick hint replay.",
+            "A client writes with a low consistency level (W equals 1) and then immediately reads with a low consistency level (R equals 1) from a different replica that has not yet received that write, legitimately reading stale data, which the client needs to be prepared for given the consistency level it chose.",
+            "Clock skew between nodes causes last-write-wins conflict resolution to pick the \"wrong\" (chronologically earlier but timestamp-later) write."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "27. Production Considerations",
+          "content": "27. Production Considerations",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228284550-573676644.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228284550-573676644.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785228284550-573676644.png",
+          "alt": "A canary deployment flowchart rolling new node software to one canary node first, promoting to a full rolling upgrade if healthy or halting if unhealthy"
+        },
+        {
+          "type": "paragraph",
+          "text": "Upgrading the storage engine itself needs a careful <strong>rolling upgrade</strong>: one node at a time, verified healthy via gossip and repair metrics before moving to the next, since taking down too many nodes simultaneously risks dropping below the write or read quorum for some slice of the keyspace. A canary node running the new version first, watched closely before the rest of the fleet follows, catches most regressions before they become cluster-wide.",
+          "content": "Upgrading the storage engine itself needs a careful <strong>rolling upgrade</strong>: one node at a time, verified healthy via gossip and repair metrics before moving to the next, since taking down too many nodes simultaneously risks dropping below the write or read quorum for some slice of the keyspace. A canary node running the new version first, watched closely before the rest of the fleet follows, catches most regressions before they become cluster-wide."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "28. Future Improvements",
+          "content": "28. Future Improvements",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"Multi-datacenter replication, extending the same quorum ideas across regions with datacenter-aware quorum placement.\",\"Range queries and secondary indexes, layered carefully on top of the existing single-key model without compromising its simplicity.\",\"Automatic conflict resolution strategies beyond plain last-write-wins, such as CRDTs for specific well-understood data types like counters and sets.\",\"Tiered storage that automatically moves cold data to cheaper backends without any change to the client-facing API.\"]",
+          "items": [
+            "Multi-datacenter replication, extending the same quorum ideas across regions with datacenter-aware quorum placement.",
+            "Range queries and secondary indexes, layered carefully on top of the existing single-key model without compromising its simplicity.",
+            "Automatic conflict resolution strategies beyond plain last-write-wins, such as CRDTs for specific well-understood data types like counters and sets.",
+            "Tiered storage that automatically moves cold data to cheaper backends without any change to the client-facing API."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "29. Follow-Up Questions",
+          "content": "29. Follow-Up Questions",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"How would you extend this design to support secondary indexes, given the base model only supports lookup by primary key?\",\"What changes if the system needs to support multi-key transactions with atomicity guarantees across keys that may live on different nodes?\",\"How would you detect and handle a true network split, where two halves of the cluster each believe they still have quorum?\",\"How would per-datacenter quorum work if this cluster spanned three geographic regions instead of one?\"]",
+          "items": [
+            "How would you extend this design to support secondary indexes, given the base model only supports lookup by primary key?",
+            "What changes if the system needs to support multi-key transactions with atomicity guarantees across keys that may live on different nodes?",
+            "How would you detect and handle a true network split, where two halves of the cluster each believe they still have quorum?",
+            "How would per-datacenter quorum work if this cluster spanned three geographic regions instead of one?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "30. Final Architecture Diagram",
+          "content": "30. Final Architecture Diagram",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Bringing every mechanism together: a client driver talks to a coordinator, which resolves the key through the consistent hash ring to its replica set, writes fan out with hinted handoff covering any temporarily unreachable replica, gossip keeps every node aware of cluster membership, anti-entropy repair reconciles any drift in the background, and monitoring watches the whole thing.",
+          "content": "Bringing every mechanism together: a client driver talks to a coordinator, which resolves the key through the consistent hash ring to its replica set, writes fan out with hinted handoff covering any temporarily unreachable replica, gossip keeps every node aware of cluster membership, anti-entropy repair reconciles any drift in the background, and monitoring watches the whole thing."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013271-823004233.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013271-823004233.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396013271-823004233.png",
+          "alt": "A final, complete architecture diagram showing a client driver, coordinator, consistent hash ring, four storage nodes gossiping with each other, a hint store for hinted handoff, anti-entropy repair, and monitoring"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Complete Code Implementation",
+          "content": "Complete Code Implementation",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The following classes illustrate the core mechanisms discussed above: the consistent hash ring, the quorum-based write coordinator, and a simple vector clock.",
+          "content": "The following classes illustrate the core mechanisms discussed above: the consistent hash ring, the quorum-based write coordinator, and a simple vector clock."
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.security.MessageDigest;\nimport java.util.SortedMap;\nimport java.util.TreeMap;\n\n// A consistent hash ring mapping keys to nodes, using virtual nodes to\n// smooth out load distribution across physical machines.\npublic class ConsistentHashRing {\n    private final SortedMap<Long, String> ring = new TreeMap<>();\n    private final int virtualNodesPerPhysicalNode;\n\n    public ConsistentHashRing(int virtualNodesPerPhysicalNode) {\n        this.virtualNodesPerPhysicalNode = virtualNodesPerPhysicalNode;\n    }\n\n    public void addNode(String nodeId) {\n        for (int i = 0; i < virtualNodesPerPhysicalNode; i++) {\n            long position = hash(nodeId + \"#\" + i);\n            ring.put(position, nodeId);\n        }\n    }\n\n    public void removeNode(String nodeId) {\n        for (int i = 0; i < virtualNodesPerPhysicalNode; i++) {\n            ring.remove(hash(nodeId + \"#\" + i));\n        }\n    }\n\n    public String getOwner(String key) {\n        long position = hash(key);\n        SortedMap<Long, String> tail = ring.tailMap(position);\n        Long ownerKey = tail.isEmpty() ? ring.firstKey() : tail.firstKey();\n        return ring.get(ownerKey);\n    }\n\n    private long hash(String input) {\n        try {\n            MessageDigest md5 = MessageDigest.getInstance(\"MD5\");\n            byte[] digest = md5.digest(input.getBytes());\n            long value = 0;\n            for (int i = 0; i < 8; i++) {\n                value = (value << 8) | (digest[i] & 0xff);\n            }\n            return value;\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n}",
+            "python": "import hashlib\nfrom sortedcontainers import SortedDict\n\n# A consistent hash ring mapping keys to nodes, using virtual nodes to\n# smooth out load distribution across physical machines.\nclass ConsistentHashRing:\n    def __init__(self, virtual_nodes_per_physical_node):\n        self.ring = SortedDict()\n        self.virtual_nodes_per_physical_node = virtual_nodes_per_physical_node\n\n    def add_node(self, node_id):\n        for i in range(self.virtual_nodes_per_physical_node):\n            position = self._hash(f\"{node_id}#{i}\")\n            self.ring[position] = node_id\n\n    def remove_node(self, node_id):\n        for i in range(self.virtual_nodes_per_physical_node):\n            position = self._hash(f\"{node_id}#{i}\")\n            if position in self.ring:\n                del self.ring[position]\n\n    def get_owner(self, key):\n        position = self._hash(key)\n        keys = self.ring.keys()\n        idx = self.ring.bisect_left(position)\n        if idx == len(keys):\n            idx = 0\n        return self.ring[keys[idx]]\n\n    def _hash(self, value):\n        digest = hashlib.md5(value.encode()).digest()\n        return int.from_bytes(digest[:8], byteorder=\"big\")",
+            "cpp": "#include <map>\n#include <string>\n#include <openssl/md5.h>\nusing namespace std;\n\n// A consistent hash ring mapping keys to nodes, using virtual nodes to\n// smooth out load distribution across physical machines.\nclass ConsistentHashRing {\n    map<unsigned long long, string> ring;\n    int virtualNodesPerPhysicalNode;\n\n    unsigned long long hashValue(const string& input) {\n        unsigned char digest[MD5_DIGEST_LENGTH];\n        MD5((const unsigned char*)input.c_str(), input.size(), digest);\n        unsigned long long value = 0;\n        for (int i = 0; i < 8; i++) {\n            value = (value << 8) | digest[i];\n        }\n        return value;\n    }\n\npublic:\n    ConsistentHashRing(int virtualNodes) : virtualNodesPerPhysicalNode(virtualNodes) {}\n\n    void addNode(string nodeId) {\n        for (int i = 0; i < virtualNodesPerPhysicalNode; i++) {\n            ring[hashValue(nodeId + \"#\" + to_string(i))] = nodeId;\n        }\n    }\n\n    void removeNode(string nodeId) {\n        for (int i = 0; i < virtualNodesPerPhysicalNode; i++) {\n            ring.erase(hashValue(nodeId + \"#\" + to_string(i)));\n        }\n    }\n\n    string getOwner(string key) {\n        unsigned long long position = hashValue(key);\n        auto it = ring.lower_bound(position);\n        if (it == ring.end()) it = ring.begin();\n        return it->second;\n    }\n};"
+          },
+          "code": {
+            "language": "java",
+            "content": "import java.security.MessageDigest;\nimport java.util.SortedMap;\nimport java.util.TreeMap;\n\n// A consistent hash ring mapping keys to nodes, using virtual nodes to\n// smooth out load distribution across physical machines.\npublic class ConsistentHashRing {\n    private final SortedMap<Long, String> ring = new TreeMap<>();\n    private final int virtualNodesPerPhysicalNode;\n\n    public ConsistentHashRing(int virtualNodesPerPhysicalNode) {\n        this.virtualNodesPerPhysicalNode = virtualNodesPerPhysicalNode;\n    }\n\n    public void addNode(String nodeId) {\n        for (int i = 0; i < virtualNodesPerPhysicalNode; i++) {\n            long position = hash(nodeId + \"#\" + i);\n            ring.put(position, nodeId);\n        }\n    }\n\n    public void removeNode(String nodeId) {\n        for (int i = 0; i < virtualNodesPerPhysicalNode; i++) {\n            ring.remove(hash(nodeId + \"#\" + i));\n        }\n    }\n\n    public String getOwner(String key) {\n        long position = hash(key);\n        SortedMap<Long, String> tail = ring.tailMap(position);\n        Long ownerKey = tail.isEmpty() ? ring.firstKey() : tail.firstKey();\n        return ring.get(ownerKey);\n    }\n\n    private long hash(String input) {\n        try {\n            MessageDigest md5 = MessageDigest.getInstance(\"MD5\");\n            byte[] digest = md5.digest(input.getBytes());\n            long value = 0;\n            for (int i = 0; i < 8; i++) {\n                value = (value << 8) | (digest[i] & 0xff);\n            }\n            return value;\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n}"
+          },
+          "content": "import java.security.MessageDigest;\nimport java.util.SortedMap;\nimport java.util.TreeMap;\n\n// A consistent hash ring mapping keys to nodes, using virtual nodes to\n// smooth out load distribution across physical machines.\npublic class ConsistentHashRing {\n    private final SortedMap<Long, String> ring = new TreeMap<>();\n    private final int virtualNodesPerPhysicalNode;\n\n    public ConsistentHashRing(int virtualNodesPerPhysicalNode) {\n        this.virtualNodesPerPhysicalNode = virtualNodesPerPhysicalNode;\n    }\n\n    public void addNode(String nodeId) {\n        for (int i = 0; i < virtualNodesPerPhysicalNode; i++) {\n            long position = hash(nodeId + \"#\" + i);\n            ring.put(position, nodeId);\n        }\n    }\n\n    public void removeNode(String nodeId) {\n        for (int i = 0; i < virtualNodesPerPhysicalNode; i++) {\n            ring.remove(hash(nodeId + \"#\" + i));\n        }\n    }\n\n    public String getOwner(String key) {\n        long position = hash(key);\n        SortedMap<Long, String> tail = ring.tailMap(position);\n        Long ownerKey = tail.isEmpty() ? ring.firstKey() : tail.firstKey();\n        return ring.get(ownerKey);\n    }\n\n    private long hash(String input) {\n        try {\n            MessageDigest md5 = MessageDigest.getInstance(\"MD5\");\n            byte[] digest = md5.digest(input.getBytes());\n            long value = 0;\n            for (int i = 0; i < 8; i++) {\n                value = (value << 8) | (digest[i] & 0xff);\n            }\n            return value;\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n}",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The quorum coordinator implementing the write-quorum logic:",
+          "content": "The quorum coordinator implementing the write-quorum logic:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.util.List;\nimport java.util.concurrent.*;\n\n// Coordinates a write across N replicas, succeeding once W of them\n// acknowledge, without waiting for the remaining, slower replicas.\npublic class QuorumCoordinator {\n    private final int writeQuorum;\n\n    public QuorumCoordinator(int writeQuorum) {\n        this.writeQuorum = writeQuorum;\n    }\n\n    public boolean writeWithQuorum(List<StorageNode> replicas, String key, String value) throws InterruptedException {\n        ExecutorService pool = Executors.newFixedThreadPool(replicas.size());\n        CountDownLatch latch = new CountDownLatch(writeQuorum);\n        for (StorageNode replica : replicas) {\n            pool.submit(() -> {\n                boolean ok = replica.write(key, value);\n                if (ok) latch.countDown();\n            });\n        }\n        boolean metQuorum = latch.await(500, TimeUnit.MILLISECONDS);\n        pool.shutdown();\n        return metQuorum;\n    }\n\n    public interface StorageNode {\n        boolean write(String key, String value);\n    }\n}",
+            "cpp": "#include <chrono>\n#include <condition_variable>\n#include <mutex>\n#include <string>\n#include <thread>\n#include <vector>\n\nstruct StorageNode {\n    virtual bool write(const std::string& key, const std::string& value) = 0;\n    virtual ~StorageNode() = default;\n};\n\n// Coordinates a write across N replicas, succeeding once W of them\n// acknowledge, without waiting for the remaining, slower replicas.\nclass QuorumCoordinator {\npublic:\n    explicit QuorumCoordinator(int writeQuorum) : writeQuorum_(writeQuorum) {}\n\n    bool writeWithQuorum(const std::vector<StorageNode*>& replicas, const std::string& key, const std::string& value) {\n        std::mutex mu;\n        std::condition_variable cv;\n        int acked = 0;\n        bool quorumMet = false;\n\n        std::vector<std::thread> threads;\n        for (StorageNode* replica : replicas) {\n            threads.emplace_back([&, replica]() {\n                bool ok = replica->write(key, value);\n                if (ok) {\n                    std::lock_guard<std::mutex> lock(mu);\n                    acked++;\n                    if (acked >= writeQuorum_) { quorumMet = true; cv.notify_all(); }\n                }\n            });\n        }\n\n        {\n            std::unique_lock<std::mutex> lock(mu);\n            cv.wait_for(lock, std::chrono::milliseconds(500), [&] { return quorumMet; });\n        }\n        for (auto& t : threads) t.join();\n        return quorumMet;\n    }\n\nprivate:\n    int writeQuorum_;\n};\n",
+            "python": "import threading\nfrom concurrent.futures import ThreadPoolExecutor\nfrom typing import List, Protocol\n\n\nclass StorageNode(Protocol):\n    def write(self, key: str, value: str) -> bool: ...\n\n\n# Coordinates a write across N replicas, succeeding once W of them\n# acknowledge, without waiting for the remaining, slower replicas.\nclass QuorumCoordinator:\n    def __init__(self, write_quorum: int):\n        self._write_quorum = write_quorum\n\n    def write_with_quorum(self, replicas: List[StorageNode], key: str, value: str) -> bool:\n        acked = threading.Event()\n        count = 0\n        lock = threading.Lock()\n\n        def do_write(replica: StorageNode) -> None:\n            nonlocal count\n            ok = replica.write(key, value)\n            if ok:\n                with lock:\n                    count += 1\n                    if count >= self._write_quorum:\n                        acked.set()\n\n        with ThreadPoolExecutor(max_workers=len(replicas)) as pool:\n            for replica in replicas:\n                pool.submit(do_write, replica)\n            met_quorum = acked.wait(timeout=0.5)\n        return met_quorum\n"
+          },
+          "code": {
+            "language": "java",
+            "content": "import java.util.List;\nimport java.util.concurrent.*;\n\n// Coordinates a write across N replicas, succeeding once W of them\n// acknowledge, without waiting for the remaining, slower replicas.\npublic class QuorumCoordinator {\n    private final int writeQuorum;\n\n    public QuorumCoordinator(int writeQuorum) {\n        this.writeQuorum = writeQuorum;\n    }\n\n    public boolean writeWithQuorum(List<StorageNode> replicas, String key, String value) throws InterruptedException {\n        ExecutorService pool = Executors.newFixedThreadPool(replicas.size());\n        CountDownLatch latch = new CountDownLatch(writeQuorum);\n        for (StorageNode replica : replicas) {\n            pool.submit(() -> {\n                boolean ok = replica.write(key, value);\n                if (ok) latch.countDown();\n            });\n        }\n        boolean metQuorum = latch.await(500, TimeUnit.MILLISECONDS);\n        pool.shutdown();\n        return metQuorum;\n    }\n\n    public interface StorageNode {\n        boolean write(String key, String value);\n    }\n}"
+          },
+          "content": "import java.util.List;\nimport java.util.concurrent.*;\n\n// Coordinates a write across N replicas, succeeding once W of them\n// acknowledge, without waiting for the remaining, slower replicas.\npublic class QuorumCoordinator {\n    private final int writeQuorum;\n\n    public QuorumCoordinator(int writeQuorum) {\n        this.writeQuorum = writeQuorum;\n    }\n\n    public boolean writeWithQuorum(List<StorageNode> replicas, String key, String value) throws InterruptedException {\n        ExecutorService pool = Executors.newFixedThreadPool(replicas.size());\n        CountDownLatch latch = new CountDownLatch(writeQuorum);\n        for (StorageNode replica : replicas) {\n            pool.submit(() -> {\n                boolean ok = replica.write(key, value);\n                if (ok) latch.countDown();\n            });\n        }\n        boolean metQuorum = latch.await(500, TimeUnit.MILLISECONDS);\n        pool.shutdown();\n        return metQuorum;\n    }\n\n    public interface StorageNode {\n        boolean write(String key, String value);\n    }\n}",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A simple vector clock for detecting concurrent, conflicting writes:",
+          "content": "A simple vector clock for detecting concurrent, conflicting writes:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.util.HashMap;\nimport java.util.Map;\n\n// Tracks causal history per node so the system can distinguish \"this write\n// happened before that one\" from \"these two writes were truly concurrent.\"\npublic class VectorClock {\n    private final Map<String, Integer> versions = new HashMap<>();\n\n    public void increment(String nodeId) {\n        versions.merge(nodeId, 1, Integer::sum);\n    }\n\n    public boolean isConcurrentWith(VectorClock other) {\n        boolean thisHasGreater = false;\n        boolean otherHasGreater = false;\n        for (String nodeId : union(other)) {\n            int a = versions.getOrDefault(nodeId, 0);\n            int b = other.versions.getOrDefault(nodeId, 0);\n            if (a > b) thisHasGreater = true;\n            if (b > a) otherHasGreater = true;\n        }\n        return thisHasGreater && otherHasGreater;\n    }\n\n    private Iterable<String> union(VectorClock other) {\n        Map<String, Integer> merged = new HashMap<>(versions);\n        merged.putAll(other.versions);\n        return merged.keySet();\n    }\n}",
+            "cpp": "#include <map>\n#include <set>\n#include <string>\n\n// Tracks causal history per node so the system can distinguish \"this write\n// happened before that one\" from \"these two writes were truly concurrent.\"\nclass VectorClock {\npublic:\n    void increment(const std::string& nodeId) { versions_[nodeId]++; }\n\n    bool isConcurrentWith(const VectorClock& other) const {\n        bool thisHasGreater = false;\n        bool otherHasGreater = false;\n        std::set<std::string> allNodes;\n        for (auto& [k, v] : versions_) allNodes.insert(k);\n        for (auto& [k, v] : other.versions_) allNodes.insert(k);\n        for (auto& nodeId : allNodes) {\n            int a = versions_.count(nodeId) ? versions_.at(nodeId) : 0;\n            int b = other.versions_.count(nodeId) ? other.versions_.at(nodeId) : 0;\n            if (a > b) thisHasGreater = true;\n            if (b > a) otherHasGreater = true;\n        }\n        return thisHasGreater && otherHasGreater;\n    }\n\nprivate:\n    std::map<std::string, int> versions_;\n};\n",
+            "python": "from typing import Dict\n\n\n# Tracks causal history per node so the system can distinguish \"this write\n# happened before that one\" from \"these two writes were truly concurrent.\"\nclass VectorClock:\n    def __init__(self):\n        self._versions: Dict[str, int] = {}\n\n    def increment(self, node_id: str) -> None:\n        self._versions[node_id] = self._versions.get(node_id, 0) + 1\n\n    def is_concurrent_with(self, other: \"VectorClock\") -> bool:\n        this_has_greater = False\n        other_has_greater = False\n        for node_id in set(self._versions) | set(other._versions):\n            a = self._versions.get(node_id, 0)\n            b = other._versions.get(node_id, 0)\n            if a > b:\n                this_has_greater = True\n            if b > a:\n                other_has_greater = True\n        return this_has_greater and other_has_greater\n"
+          },
+          "code": {
+            "language": "java",
+            "content": "import java.util.HashMap;\nimport java.util.Map;\n\n// Tracks causal history per node so the system can distinguish \"this write\n// happened before that one\" from \"these two writes were truly concurrent.\"\npublic class VectorClock {\n    private final Map<String, Integer> versions = new HashMap<>();\n\n    public void increment(String nodeId) {\n        versions.merge(nodeId, 1, Integer::sum);\n    }\n\n    public boolean isConcurrentWith(VectorClock other) {\n        boolean thisHasGreater = false;\n        boolean otherHasGreater = false;\n        for (String nodeId : union(other)) {\n            int a = versions.getOrDefault(nodeId, 0);\n            int b = other.versions.getOrDefault(nodeId, 0);\n            if (a > b) thisHasGreater = true;\n            if (b > a) otherHasGreater = true;\n        }\n        return thisHasGreater && otherHasGreater;\n    }\n\n    private Iterable<String> union(VectorClock other) {\n        Map<String, Integer> merged = new HashMap<>(versions);\n        merged.putAll(other.versions);\n        return merged.keySet();\n    }\n}"
+          },
+          "content": "import java.util.HashMap;\nimport java.util.Map;\n\n// Tracks causal history per node so the system can distinguish \"this write\n// happened before that one\" from \"these two writes were truly concurrent.\"\npublic class VectorClock {\n    private final Map<String, Integer> versions = new HashMap<>();\n\n    public void increment(String nodeId) {\n        versions.merge(nodeId, 1, Integer::sum);\n    }\n\n    public boolean isConcurrentWith(VectorClock other) {\n        boolean thisHasGreater = false;\n        boolean otherHasGreater = false;\n        for (String nodeId : union(other)) {\n            int a = versions.getOrDefault(nodeId, 0);\n            int b = other.versions.getOrDefault(nodeId, 0);\n            if (a > b) thisHasGreater = true;\n            if (b > a) otherHasGreater = true;\n        }\n        return thisHasGreater && otherHasGreater;\n    }\n\n    private Iterable<String> union(VectorClock other) {\n        Map<String, Integer> merged = new HashMap<>(versions);\n        merged.putAll(other.versions);\n        return merged.keySet();\n    }\n}",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Deliverables Recap",
+          "content": "Deliverables Recap",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "This design covers consistent hashing for automatic, minimal-disruption partitioning, quorum-based replication with tunable W and R for a configurable consistency-versus-availability trade, gossip for decentralized membership tracking, hinted handoff for short outages and Merkle-tree-based anti-entropy repair for longer ones, and a clear-eyed discussion of the CAP theorem trade-offs this design deliberately makes, together forming a store that stays available and fast even as individual nodes come and go.",
+          "content": "This design covers consistent hashing for automatic, minimal-disruption partitioning, quorum-based replication with tunable W and R for a configurable consistency-versus-availability trade, gossip for decentralized membership tracking, hinted handoff for short outages and Merkle-tree-based anti-entropy repair for longer ones, and a clear-eyed discussion of the CAP theorem trade-offs this design deliberately makes, together forming a store that stays available and fast even as individual nodes come and go."
+        }
+      ]
+    }
+  ]
+}

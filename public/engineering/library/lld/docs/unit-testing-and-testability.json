@@ -1,0 +1,581 @@
+{
+  "slug": "unit-testing-and-testability",
+  "title": "Unit Testing and Testability",
+  "content": [
+    {
+      "id": "unit-testing-and-testability",
+      "title": "Unit Testing and Testability",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "A well layered request pipeline, middleware, request context, thin controllers, a business logic layer, buys you something concrete: every piece of it can be tested on its own, without the rest of the system running."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "That property has a name: <strong>testability</strong>. It does not happen automatically just because code works correctly. It is a design choice, and this topic is about what that choice actually looks like in practice."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Problem: Code That Resists Testing",
+          "text": "1. The Problem: Code That Resists Testing"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is a method that generates an invoice. It works fine in production. Writing a test for it is a different story."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "code",
+          "content": "class InvoiceService {\n\n    void generateInvoice(Order order) {\n        double total = order.getSubtotal() * 1.18; // tax baked in here\n\n        LocalDate issuedOn = LocalDate.now();       // hidden dependency: wall clock\n\n        EmailService emailService = new EmailService(); // hidden dependency: created internally\n        emailService.send(order.getCustomerEmail(),\n            \"Invoice for \" + total + \", issued \" + issuedOn);\n\n        FileUtils.writeToDisk(\"/invoices/\" + order.getId() + \".pdf\", total); // static, side effect\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "class InvoiceService {\n\n    void generateInvoice(Order order) {\n        double total = order.getSubtotal() * 1.18; // tax baked in here\n\n        LocalDate issuedOn = LocalDate.now();       // hidden dependency: wall clock\n\n        EmailService emailService = new EmailService(); // hidden dependency: created internally\n        emailService.send(order.getCustomerEmail(),\n            \"Invoice for \" + total + \", issued \" + issuedOn);\n\n        FileUtils.writeToDisk(\"/invoices/\" + order.getId() + \".pdf\", total); // static, side effect\n    }\n}"
+          },
+          "codes": {
+            "java": "class InvoiceService {\n\n    void generateInvoice(Order order) {\n        double total = order.getSubtotal() * 1.18; // tax baked in here\n\n        LocalDate issuedOn = LocalDate.now();       // hidden dependency: wall clock\n\n        EmailService emailService = new EmailService(); // hidden dependency: created internally\n        emailService.send(order.getCustomerEmail(),\n            \"Invoice for \" + total + \", issued \" + issuedOn);\n\n        FileUtils.writeToDisk(\"/invoices/\" + order.getId() + \".pdf\", total); // static, side effect\n    }\n}",
+            "python": "class InvoiceService:\n\n    def generate_invoice(self, order):\n        total = order.subtotal * 1.18          # tax baked in here\n\n        issued_on = date.today()               # hidden dependency: wall clock\n\n        email_service = EmailService()         # hidden dependency: created internally\n        email_service.send(\n            order.customer_email,\n            f\"Invoice for {total}, issued {issued_on}\",\n        )\n\n        FileUtils.write_to_disk(f\"/invoices/{order.id}.pdf\", total)  # static, side effect",
+            "cpp": "class InvoiceService {\npublic:\n    void generateInvoice(const Order& order) {\n        double total = order.subtotal() * 1.18;      // tax baked in here\n\n        auto issuedOn = std::chrono::system_clock::now();  // hidden dependency: wall clock\n\n        EmailService emailService;                   // hidden dependency: created internally\n        emailService.send(order.customerEmail(),\n            \"Invoice for \" + std::to_string(total) + \", issued \" + formatDate(issuedOn));\n\n        FileUtils::writeToDisk(\"/invoices/\" + order.id() + \".pdf\", total); // static, side effect\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "To test this method's tax calculation, a single number, you would also need to fake the system clock, intercept a real email being sent by a freshly constructed <code>EmailService</code>, and stop a PDF from actually being written to disk. All three are hidden dependencies the method creates for itself, invisible from its signature."
+        },
+        {
+          "type": "list",
+          "content": "[\"The wall clock is read directly inside the method, so the test's expected output depends on what day it happens to run.\",\"<code>new EmailService()</code> is created inside the method, so a test cannot substitute a fake without editing the method itself.\",\"A static <code>FileUtils</code> call performs a real disk write, a side effect a test has no way to intercept.\"]",
+          "items": [
+            "The wall clock is read directly inside the method, so the test's expected output depends on what day it happens to run.",
+            "<code>new EmailService()</code> is created inside the method, so a test cannot substitute a fake without editing the method itself.",
+            "A static <code>FileUtils</code> call performs a real disk write, a side effect a test has no way to intercept."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading1",
+          "content": "2. What Makes Code Hard to Test",
+          "text": "2. What Makes Code Hard to Test"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "Every problem in the example above is one instance of a general pattern."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong>Hidden dependencies</strong>: objects created with <code>new</code> inside a method, or reached through a static singleton, cannot be substituted from outside.\",\"<strong>Static and global mutable state</strong>: shared state that tests cannot isolate from each other, one test's changes can leak into the next.\",\"<strong>Side effects buried inside logic</strong>: a method that looks like a calculation but also sends an email or writes a file, forcing every test of the calculation to also handle the side effect.\",\"<strong>Doing too much in one function</strong>: more responsibilities means more setup required just to reach the one behavior a test actually cares about.\",\"<strong>Tight coupling to frameworks or infrastructure</strong>: code that only runs inside a live servlet container or against a real database connection cannot run in a fast, isolated test.\"]",
+          "items": [
+            "<strong>Hidden dependencies</strong>: objects created with <code>new</code> inside a method, or reached through a static singleton, cannot be substituted from outside.",
+            "<strong>Static and global mutable state</strong>: shared state that tests cannot isolate from each other, one test's changes can leak into the next.",
+            "<strong>Side effects buried inside logic</strong>: a method that looks like a calculation but also sends an email or writes a file, forcing every test of the calculation to also handle the side effect.",
+            "<strong>Doing too much in one function</strong>: more responsibilities means more setup required just to reach the one behavior a test actually cares about.",
+            "<strong>Tight coupling to frameworks or infrastructure</strong>: code that only runs inside a live servlet container or against a real database connection cannot run in a fast, isolated test."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "code",
+          "content": "class PricingEngine {\n    double applyDiscount(double amount) {\n        // A static singleton, invisible in the method signature,\n        // impossible to substitute without changing global state\n        return amount - DiscountConfig.getInstance().getFlatDiscount();\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "class PricingEngine {\n    double applyDiscount(double amount) {\n        // A static singleton, invisible in the method signature,\n        // impossible to substitute without changing global state\n        return amount - DiscountConfig.getInstance().getFlatDiscount();\n    }\n}"
+          },
+          "codes": {
+            "java": "class PricingEngine {\n    double applyDiscount(double amount) {\n        // A static singleton, invisible in the method signature,\n        // impossible to substitute without changing global state\n        return amount - DiscountConfig.getInstance().getFlatDiscount();\n    }\n}",
+            "python": "class PricingEngine:\n    def apply_discount(self, amount):\n        # A module level singleton, invisible in the method signature,\n        # impossible to substitute without changing global state\n        return amount - DiscountConfig.get_instance().flat_discount",
+            "cpp": "class PricingEngine {\npublic:\n    double applyDiscount(double amount) {\n        // A static singleton, invisible in the method signature,\n        // impossible to substitute without changing global state\n        return amount - DiscountConfig::getInstance().flatDiscount();\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "<code>DiscountConfig.getInstance()</code> is invisible to anyone reading the method's signature, and invisible to a test trying to control it."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading1",
+          "content": "3. What Makes Code Easy to Test",
+          "text": "3. What Makes Code Easy to Test"
+        },
+        {
+          "type": "paragraph",
+          "content": "The fixes mirror the problems directly, and they are not new ideas introduced just for testing. They are the same layering principles this series has been building toward all along."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading4",
+          "content": "Dependency Injection",
+          "text": "Dependency Injection"
+        },
+        {
+          "type": "paragraph",
+          "content": "Dependencies arrive as constructor or method parameters instead of being created internally. A test passes in a fake. Production code passes in the real thing. Neither the class nor its logic has to change."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading4",
+          "content": "Pure Functions Where Possible",
+          "text": "Pure Functions Where Possible"
+        },
+        {
+          "type": "paragraph",
+          "content": "A function with no side effects and no hidden inputs is the easiest thing in the codebase to test, call it, check the return value, nothing else to set up."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "code",
+          "content": "// Same input always produces the same output, no side effects at all\nclass PricingEngine {\n    double applyDiscount(double amount, double discountRate) {\n        return amount - (amount * discountRate);\n    }\n}\n\n// Trivial to test: no setup beyond the two numbers being passed in\nassertEquals(90.0, engine.applyDiscount(100.0, 0.10));",
+          "code": {
+            "language": "java",
+            "content": "// Same input always produces the same output, no side effects at all\nclass PricingEngine {\n    double applyDiscount(double amount, double discountRate) {\n        return amount - (amount * discountRate);\n    }\n}\n\n// Trivial to test: no setup beyond the two numbers being passed in\nassertEquals(90.0, engine.applyDiscount(100.0, 0.10));"
+          },
+          "codes": {
+            "java": "// Same input always produces the same output, no side effects at all\nclass PricingEngine {\n    double applyDiscount(double amount, double discountRate) {\n        return amount - (amount * discountRate);\n    }\n}\n\n// Trivial to test: no setup beyond the two numbers being passed in\nassertEquals(90.0, engine.applyDiscount(100.0, 0.10));",
+            "python": "# Same input always produces the same output, no side effects at all\nclass PricingEngine:\n    def apply_discount(self, amount, discount_rate):\n        return amount - (amount * discount_rate)\n\n\n# Trivial to test: no setup beyond the two numbers being passed in\nassert engine.apply_discount(100.0, 0.10) == 90.0",
+            "cpp": "// Same input always produces the same output, no side effects at all\nclass PricingEngine {\npublic:\n    double applyDiscount(double amount, double discountRate) const {\n        return amount - (amount * discountRate);\n    }\n};\n\n// Trivial to test: no setup beyond the two numbers being passed in\nEXPECT_DOUBLE_EQ(90.0, engine.applyDiscount(100.0, 0.10));"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading4",
+          "content": "Small, Single-Responsibility Units",
+          "text": "Small, Single-Responsibility Units"
+        },
+        {
+          "type": "paragraph",
+          "content": "A method that does one thing has exactly one thing a test needs to verify. This is the same payoff the Controllers, Handlers and Services topic described: business logic separated from HTTP concerns means testing business logic never requires a running web server."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading4",
+          "content": "Seams for Substituting Fakes",
+          "text": "Seams for Substituting Fakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "An interface at an integration point, a repository, an email sender, a payment gateway, gives tests a place to plug in a fake without touching the class under test at all."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "code",
+          "content": "interface EmailSender {\n    void send(String to, String body);\n}\n\nclass SmtpEmailSender implements EmailSender {\n    public void send(String to, String body) { /* real network call */ }\n}\n\nclass FakeEmailSender implements EmailSender {\n    List<String> sentMessages = new ArrayList<>();\n    public void send(String to, String body) { sentMessages.add(to + \": \" + body); }\n}",
+          "code": {
+            "language": "java",
+            "content": "interface EmailSender {\n    void send(String to, String body);\n}\n\nclass SmtpEmailSender implements EmailSender {\n    public void send(String to, String body) { /* real network call */ }\n}\n\nclass FakeEmailSender implements EmailSender {\n    List<String> sentMessages = new ArrayList<>();\n    public void send(String to, String body) { sentMessages.add(to + \": \" + body); }\n}"
+          },
+          "codes": {
+            "java": "interface EmailSender {\n    void send(String to, String body);\n}\n\nclass SmtpEmailSender implements EmailSender {\n    public void send(String to, String body) { /* real network call */ }\n}\n\nclass FakeEmailSender implements EmailSender {\n    List<String> sentMessages = new ArrayList<>();\n    public void send(String to, String body) { sentMessages.add(to + \": \" + body); }\n}",
+            "python": "class EmailSender(ABC):\n    @abstractmethod\n    def send(self, to, body): ...\n\n\nclass SmtpEmailSender(EmailSender):\n    def send(self, to, body):\n        pass  # real network call\n\n\nclass FakeEmailSender(EmailSender):\n    def __init__(self):\n        self.sent_messages = []\n\n    def send(self, to, body):\n        self.sent_messages.append(f\"{to}: {body}\")",
+            "cpp": "class EmailSender {\npublic:\n    virtual ~EmailSender() = default;\n    virtual void send(const std::string& to, const std::string& body) = 0;\n};\n\nclass SmtpEmailSender : public EmailSender {\npublic:\n    void send(const std::string& to, const std::string& body) override { /* real network call */ }\n};\n\nclass FakeEmailSender : public EmailSender {\npublic:\n    std::vector<std::string> sentMessages;\n    void send(const std::string& to, const std::string& body) override {\n        sentMessages.push_back(to + \": \" + body);\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>A seam: production and test can each plug in their own implementation</strong>"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1784621790346-201707989.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1784621790346-201707989.png",
+          "alt": "A service depending on a repository interface, satisfied by a real implementation or a test fake"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading1",
+          "content": "4. Unit Tests vs Other Kinds of Tests",
+          "text": "4. Unit Tests vs Other Kinds of Tests"
+        },
+        {
+          "type": "paragraph",
+          "content": "A <strong>unit test</strong> verifies one small piece of behavior, usually a single method or class, in isolation, with its dependencies faked. It runs in milliseconds and touches no network, database, or filesystem. Just enough context to place it among its neighbors:"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Test Type\",\"Scope\",\"Typical Speed\"],\"rows\":[[\"Unit\",\"One class or method, dependencies faked\",\"Milliseconds\"],[\"Integration\",\"A class plus a real collaborator, like an actual database\",\"Seconds\"],[\"End to end\",\"The whole system, through its real entry point\",\"Seconds to minutes\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Scope grows, speed drops</strong>"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1784621786259-850596297.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1784621786259-850596297.png",
+          "alt": "Unit tests cover one class, integration tests add real infrastructure, end to end tests cover everything"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "This topic is about the first one specifically, and about the design choices that make the first one possible at all."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading1",
+          "content": "5. Mocking, Stubbing, and the Risk of Over-Mocking",
+          "text": "5. Mocking, Stubbing, and the Risk of Over-Mocking"
+        },
+        {
+          "type": "paragraph",
+          "content": "A <strong>stub</strong> is a fake that returns canned data when asked. A <strong>mock</strong> is a fake a test later asks, did you get called correctly. Both let a test isolate the one unit it actually cares about from everything that unit depends on."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "code",
+          "content": "@Test\nvoid invoice_appliesTaxCorrectly() {\n    OrderRepository repo = mock(OrderRepository.class);\n    when(repo.findById(\"o1\")).thenReturn(new Order(\"o1\", 100.0)); // stub: returns canned data\n\n    EmailSender emailSender = mock(EmailSender.class);\n\n    InvoiceService service = new InvoiceService(repo, emailSender, Clock.systemUTC());\n    service.generateInvoice(\"o1\");\n\n    verify(emailSender).send(eq(\"customer@example.com\"), contains(\"118.0\")); // mock: verifies interaction\n}",
+          "code": {
+            "language": "java",
+            "content": "@Test\nvoid invoice_appliesTaxCorrectly() {\n    OrderRepository repo = mock(OrderRepository.class);\n    when(repo.findById(\"o1\")).thenReturn(new Order(\"o1\", 100.0)); // stub: returns canned data\n\n    EmailSender emailSender = mock(EmailSender.class);\n\n    InvoiceService service = new InvoiceService(repo, emailSender, Clock.systemUTC());\n    service.generateInvoice(\"o1\");\n\n    verify(emailSender).send(eq(\"customer@example.com\"), contains(\"118.0\")); // mock: verifies interaction\n}"
+          },
+          "codes": {
+            "java": "@Test\nvoid invoice_appliesTaxCorrectly() {\n    OrderRepository repo = mock(OrderRepository.class);\n    when(repo.findById(\"o1\")).thenReturn(new Order(\"o1\", 100.0)); // stub: returns canned data\n\n    EmailSender emailSender = mock(EmailSender.class);\n\n    InvoiceService service = new InvoiceService(repo, emailSender, Clock.systemUTC());\n    service.generateInvoice(\"o1\");\n\n    verify(emailSender).send(eq(\"customer@example.com\"), contains(\"118.0\")); // mock: verifies interaction\n}",
+            "python": "def test_invoice_applies_tax_correctly():\n    repo = Mock(spec=OrderRepository)\n    repo.find_by_id.return_value = Order(\"o1\", 100.0)   # stub: returns canned data\n\n    email_sender = Mock(spec=EmailSender)\n\n    service = InvoiceService(repo, email_sender, FixedClock(datetime.utcnow()))\n    service.generate_invoice(\"o1\")\n\n    args, _ = email_sender.send.call_args                # mock: verifies interaction\n    assert args[0] == \"customer@example.com\"\n    assert \"118.0\" in args[1]",
+            "cpp": "TEST(InvoiceServiceTest, AppliesTaxCorrectly) {\n    MockOrderRepository repo;\n    EXPECT_CALL(repo, findById(\"o1\"))\n        .WillOnce(Return(Order(\"o1\", 100.0)));           // stub: returns canned data\n\n    MockEmailSender emailSender;\n    EXPECT_CALL(emailSender, send(\"customer@example.com\", HasSubstr(\"118.0\")));  // mock: verifies interaction\n\n    InvoiceService service(repo, emailSender, SystemClock());\n    service.generateInvoice(\"o1\");\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "The risk shows up when mocking goes further than the seams that actually need it. A test that mocks a plain value object, or every single collaborator down to the smallest detail, stops verifying real behavior and starts verifying that the mocks return exactly what the test configured them to return."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "code",
+          "content": "// Over-mocked: this test only checks that mocks return what was configured\n@Test\nvoid badTest_provesNothingReal() {\n    Money money = mock(Money.class);           // a plain value object, no reason to mock\n    when(money.getAmount()).thenReturn(100.0);\n    when(money.getCurrency()).thenReturn(\"USD\");\n\n    // The test now verifies the mock's own setup, not the real\n    // behavior of Money, which could be replaced with a real object\n    // in two lines and test something meaningful instead.\n    assertEquals(100.0, money.getAmount());\n}",
+          "code": {
+            "language": "java",
+            "content": "// Over-mocked: this test only checks that mocks return what was configured\n@Test\nvoid badTest_provesNothingReal() {\n    Money money = mock(Money.class);           // a plain value object, no reason to mock\n    when(money.getAmount()).thenReturn(100.0);\n    when(money.getCurrency()).thenReturn(\"USD\");\n\n    // The test now verifies the mock's own setup, not the real\n    // behavior of Money, which could be replaced with a real object\n    // in two lines and test something meaningful instead.\n    assertEquals(100.0, money.getAmount());\n}"
+          },
+          "codes": {
+            "java": "// Over-mocked: this test only checks that mocks return what was configured\n@Test\nvoid badTest_provesNothingReal() {\n    Money money = mock(Money.class);           // a plain value object, no reason to mock\n    when(money.getAmount()).thenReturn(100.0);\n    when(money.getCurrency()).thenReturn(\"USD\");\n\n    // The test now verifies the mock's own setup, not the real\n    // behavior of Money, which could be replaced with a real object\n    // in two lines and test something meaningful instead.\n    assertEquals(100.0, money.getAmount());\n}",
+            "python": "# Over-mocked: this test only checks that mocks return what was configured\ndef test_bad_test_proves_nothing_real():\n    money = Mock(spec=Money)              # a plain value object, no reason to mock\n    money.amount = 100.0\n    money.currency = \"USD\"\n\n    # The test now verifies the mock's own setup, not the real\n    # behavior of Money, which could be replaced with a real object\n    # in two lines and test something meaningful instead.\n    assert money.amount == 100.0",
+            "cpp": "// Over-mocked: this test only checks that mocks return what was configured\nTEST(MoneyTest, BadTestProvesNothingReal) {\n    MockMoney money;                       // a plain value object, no reason to mock\n    EXPECT_CALL(money, amount()).WillRepeatedly(Return(100.0));\n    EXPECT_CALL(money, currency()).WillRepeatedly(Return(\"USD\"));\n\n    // The test now verifies the mock's own setup, not the real\n    // behavior of Money, which could be replaced with a real object\n    // in two lines and test something meaningful instead.\n    EXPECT_DOUBLE_EQ(100.0, money.amount());\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "A test like that can stay green through a genuine regression, and can break on a harmless refactor that changed nothing a user would notice. Mock at real integration boundaries, not at every object a method happens to touch."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading1",
+          "content": "6. Test-Driven Development as One Way to Force Testable Design",
+          "text": "6. Test-Driven Development as One Way to Force Testable Design"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Test-driven development</strong> reverses the usual order: write a failing test first, write just enough code to make it pass, then refactor with the test as a safety net. The cycle is often shortened to red, green, refactor."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "code",
+          "content": "// Step 1: write the test first, it fails, there is no implementation yet\n@Test\nvoid applyDiscount_tenPercentOffOneHundred_returnsNinety() {\n    PricingEngine engine = new PricingEngine();\n    assertEquals(90.0, engine.applyDiscount(100.0, 0.10));\n}\n\n// Step 2: write just enough code to make it pass\nclass PricingEngine {\n    double applyDiscount(double amount, double rate) {\n        return amount - (amount * rate);\n    }\n}\n\n// Step 3: refactor with the test as a safety net, behavior unchanged",
+          "code": {
+            "language": "java",
+            "content": "// Step 1: write the test first, it fails, there is no implementation yet\n@Test\nvoid applyDiscount_tenPercentOffOneHundred_returnsNinety() {\n    PricingEngine engine = new PricingEngine();\n    assertEquals(90.0, engine.applyDiscount(100.0, 0.10));\n}\n\n// Step 2: write just enough code to make it pass\nclass PricingEngine {\n    double applyDiscount(double amount, double rate) {\n        return amount - (amount * rate);\n    }\n}\n\n// Step 3: refactor with the test as a safety net, behavior unchanged"
+          },
+          "codes": {
+            "java": "// Step 1: write the test first, it fails, there is no implementation yet\n@Test\nvoid applyDiscount_tenPercentOffOneHundred_returnsNinety() {\n    PricingEngine engine = new PricingEngine();\n    assertEquals(90.0, engine.applyDiscount(100.0, 0.10));\n}\n\n// Step 2: write just enough code to make it pass\nclass PricingEngine {\n    double applyDiscount(double amount, double rate) {\n        return amount - (amount * rate);\n    }\n}\n\n// Step 3: refactor with the test as a safety net, behavior unchanged",
+            "python": "# Step 1: write the test first, it fails, there is no implementation yet\ndef test_apply_discount_ten_percent_off_one_hundred_returns_ninety():\n    engine = PricingEngine()\n    assert engine.apply_discount(100.0, 0.10) == 90.0\n\n\n# Step 2: write just enough code to make it pass\nclass PricingEngine:\n    def apply_discount(self, amount, rate):\n        return amount - (amount * rate)\n\n\n# Step 3: refactor with the test as a safety net, behavior unchanged",
+            "cpp": "// Step 1: write the test first, it fails, there is no implementation yet\nTEST(PricingEngineTest, ApplyDiscountTenPercentOffOneHundredReturnsNinety) {\n    PricingEngine engine;\n    EXPECT_DOUBLE_EQ(90.0, engine.applyDiscount(100.0, 0.10));\n}\n\n// Step 2: write just enough code to make it pass\nclass PricingEngine {\npublic:\n    double applyDiscount(double amount, double rate) const {\n        return amount - (amount * rate);\n    }\n};\n\n// Step 3: refactor with the test as a safety net, behavior unchanged"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>The TDD cycle</strong>"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1784621793455-778627536.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-images/1784621793455-778627536.png",
+          "alt": "Write a failing test, make it pass, refactor, repeat"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "Writing the test first forces a decision about dependencies and seams before the implementation exists, which tends to produce injectable, decoupled code as a side effect. It is not the only route to testable design, though, disciplined refactoring toward the same principles after the fact gets you there just as well."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading1",
+          "content": "7. Refactor: From Hard to Test to Easily Testable",
+          "text": "7. Refactor: From Hard to Test to Easily Testable"
+        },
+        {
+          "type": "paragraph",
+          "content": "Back to <code>InvoiceService</code> from section one. Every hidden dependency becomes an injected one, and the calculation is pulled out as its own pure method."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "code",
+          "content": "class InvoiceService {\n\n    private final OrderRepository orderRepository;\n    private final EmailSender emailSender;\n    private final Clock clock;\n\n    InvoiceService(OrderRepository orderRepository, EmailSender emailSender, Clock clock) {\n        this.orderRepository = orderRepository;\n        this.emailSender = emailSender;\n        this.clock = clock; // injected, not called statically\n    }\n\n    void generateInvoice(String orderId) {\n        Order order = orderRepository.findById(orderId);\n        double total = calculateTotal(order.getSubtotal());\n        LocalDate issuedOn = LocalDate.now(clock); // deterministic in tests\n\n        emailSender.send(order.getCustomerEmail(),\n            \"Invoice for \" + total + \", issued \" + issuedOn);\n    }\n\n    double calculateTotal(double subtotal) {\n        return subtotal * 1.18; // pure, tested on its own\n    }\n}",
+          "code": {
+            "language": "java",
+            "content": "class InvoiceService {\n\n    private final OrderRepository orderRepository;\n    private final EmailSender emailSender;\n    private final Clock clock;\n\n    InvoiceService(OrderRepository orderRepository, EmailSender emailSender, Clock clock) {\n        this.orderRepository = orderRepository;\n        this.emailSender = emailSender;\n        this.clock = clock; // injected, not called statically\n    }\n\n    void generateInvoice(String orderId) {\n        Order order = orderRepository.findById(orderId);\n        double total = calculateTotal(order.getSubtotal());\n        LocalDate issuedOn = LocalDate.now(clock); // deterministic in tests\n\n        emailSender.send(order.getCustomerEmail(),\n            \"Invoice for \" + total + \", issued \" + issuedOn);\n    }\n\n    double calculateTotal(double subtotal) {\n        return subtotal * 1.18; // pure, tested on its own\n    }\n}"
+          },
+          "codes": {
+            "java": "class InvoiceService {\n\n    private final OrderRepository orderRepository;\n    private final EmailSender emailSender;\n    private final Clock clock;\n\n    InvoiceService(OrderRepository orderRepository, EmailSender emailSender, Clock clock) {\n        this.orderRepository = orderRepository;\n        this.emailSender = emailSender;\n        this.clock = clock; // injected, not called statically\n    }\n\n    void generateInvoice(String orderId) {\n        Order order = orderRepository.findById(orderId);\n        double total = calculateTotal(order.getSubtotal());\n        LocalDate issuedOn = LocalDate.now(clock); // deterministic in tests\n\n        emailSender.send(order.getCustomerEmail(),\n            \"Invoice for \" + total + \", issued \" + issuedOn);\n    }\n\n    double calculateTotal(double subtotal) {\n        return subtotal * 1.18; // pure, tested on its own\n    }\n}",
+            "python": "class InvoiceService:\n\n    def __init__(self, order_repository, email_sender, clock):\n        self.order_repository = order_repository\n        self.email_sender = email_sender\n        self.clock = clock              # injected, not called statically\n\n    def generate_invoice(self, order_id):\n        order = self.order_repository.find_by_id(order_id)\n        total = self.calculate_total(order.subtotal)\n        issued_on = self.clock.today()  # deterministic in tests\n\n        self.email_sender.send(\n            order.customer_email,\n            f\"Invoice for {total}, issued {issued_on}\",\n        )\n\n    def calculate_total(self, subtotal):\n        return subtotal * 1.18          # pure, tested on its own",
+            "cpp": "class InvoiceService {\n    OrderRepository& orderRepository;\n    EmailSender& emailSender;\n    Clock& clock;\n\npublic:\n    InvoiceService(OrderRepository& orderRepository, EmailSender& emailSender, Clock& clock)\n        : orderRepository(orderRepository),\n          emailSender(emailSender),\n          clock(clock) {}               // injected, not called statically\n\n    void generateInvoice(const std::string& orderId) {\n        Order order = orderRepository.findById(orderId);\n        double total = calculateTotal(order.subtotal());\n        std::string issuedOn = clock.today();   // deterministic in tests\n\n        emailSender.send(order.customerEmail(),\n            \"Invoice for \" + std::to_string(total) + \", issued \" + issuedOn);\n    }\n\n    double calculateTotal(double subtotal) const {\n        return subtotal * 1.18;         // pure, tested on its own\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "Nothing here is created with <code>new</code> inside a method, nothing reaches for a static singleton, and the tax calculation can be tested entirely on its own. The full method can now be tested too, with a fixed clock and a fake email sender standing in for their real counterparts:"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "code",
+          "content": "@Test\nvoid generateInvoice_sendsEmailWithCorrectTotalAndFixedDate() {\n    OrderRepository repo = mock(OrderRepository.class);\n    when(repo.findById(\"o1\")).thenReturn(new Order(\"o1\", 100.0, \"a@b.com\"));\n\n    EmailSender emailSender = mock(EmailSender.class);\n    Clock fixedClock = Clock.fixed(Instant.parse(\"2026-01-01T00:00:00Z\"), ZoneOffset.UTC);\n\n    InvoiceService service = new InvoiceService(repo, emailSender, fixedClock);\n    service.generateInvoice(\"o1\");\n\n    verify(emailSender).send(eq(\"a@b.com\"), contains(\"2026-01-01\"));\n}",
+          "code": {
+            "language": "java",
+            "content": "@Test\nvoid generateInvoice_sendsEmailWithCorrectTotalAndFixedDate() {\n    OrderRepository repo = mock(OrderRepository.class);\n    when(repo.findById(\"o1\")).thenReturn(new Order(\"o1\", 100.0, \"a@b.com\"));\n\n    EmailSender emailSender = mock(EmailSender.class);\n    Clock fixedClock = Clock.fixed(Instant.parse(\"2026-01-01T00:00:00Z\"), ZoneOffset.UTC);\n\n    InvoiceService service = new InvoiceService(repo, emailSender, fixedClock);\n    service.generateInvoice(\"o1\");\n\n    verify(emailSender).send(eq(\"a@b.com\"), contains(\"2026-01-01\"));\n}"
+          },
+          "codes": {
+            "java": "@Test\nvoid generateInvoice_sendsEmailWithCorrectTotalAndFixedDate() {\n    OrderRepository repo = mock(OrderRepository.class);\n    when(repo.findById(\"o1\")).thenReturn(new Order(\"o1\", 100.0, \"a@b.com\"));\n\n    EmailSender emailSender = mock(EmailSender.class);\n    Clock fixedClock = Clock.fixed(Instant.parse(\"2026-01-01T00:00:00Z\"), ZoneOffset.UTC);\n\n    InvoiceService service = new InvoiceService(repo, emailSender, fixedClock);\n    service.generateInvoice(\"o1\");\n\n    verify(emailSender).send(eq(\"a@b.com\"), contains(\"2026-01-01\"));\n}",
+            "python": "def test_generate_invoice_sends_email_with_correct_total_and_fixed_date():\n    repo = Mock(spec=OrderRepository)\n    repo.find_by_id.return_value = Order(\"o1\", 100.0, \"a@b.com\")\n\n    email_sender = Mock(spec=EmailSender)\n    fixed_clock = FixedClock(date(2026, 1, 1))\n\n    service = InvoiceService(repo, email_sender, fixed_clock)\n    service.generate_invoice(\"o1\")\n\n    args, _ = email_sender.send.call_args\n    assert args[0] == \"a@b.com\"\n    assert \"2026-01-01\" in args[1]",
+            "cpp": "TEST(InvoiceServiceTest, GenerateInvoiceSendsEmailWithCorrectTotalAndFixedDate) {\n    MockOrderRepository repo;\n    EXPECT_CALL(repo, findById(\"o1\"))\n        .WillOnce(Return(Order(\"o1\", 100.0, \"a@b.com\")));\n\n    MockEmailSender emailSender;\n    FixedClock fixedClock(\"2026-01-01\");\n\n    EXPECT_CALL(emailSender, send(\"a@b.com\", HasSubstr(\"2026-01-01\")));\n\n    InvoiceService service(repo, emailSender, fixedClock);\n    service.generateInvoice(\"o1\");\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "paragraph",
+          "content": "Same behavior as the original method, now verifiable in milliseconds, with no real clock, no real network call, and no file ever touching disk."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading1",
+          "content": "8. Common Questions About Testability",
+          "text": "8. Common Questions About Testability"
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading4",
+          "content": "\"Doesn't dependency injection just move the complexity into constructors?\"",
+          "text": "\"Doesn't dependency injection just move the complexity into constructors?\""
+        },
+        {
+          "type": "paragraph",
+          "content": "It moves the complexity somewhere visible and explicit, which is the point. A long constructor is easy to spot and easy to reason about. A hidden dependency buried three lines into a method body is neither."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading4",
+          "content": "\"Is mocking every dependency of a service always the right approach?\"",
+          "text": "\"Is mocking every dependency of a service always the right approach?\""
+        },
+        {
+          "type": "paragraph",
+          "content": "No. Mock at genuine integration boundaries, a network call, a database, a third-party API. Real, cheap, side-effect-free objects like value objects or simple data classes are usually better left real in a test, not mocked."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading4",
+          "content": "\"Do I need a DI framework like Spring to get these benefits?\"",
+          "text": "\"Do I need a DI framework like Spring to get these benefits?\""
+        },
+        {
+          "type": "paragraph",
+          "content": "No. Dependency injection is a design principle, pass dependencies in rather than create them internally, not a specific framework feature. Plain constructor parameters, wired up by hand or by a framework, both satisfy it equally."
+        },
+        {
+          "type": "paragraph",
+          "content": null
+        },
+        {
+          "type": "heading4",
+          "content": "\"How do I know if I am over-mocking?\"",
+          "text": "\"How do I know if I am over-mocking?\""
+        },
+        {
+          "type": "paragraph",
+          "content": "A good signal: if a test would still pass after the real implementation was rewritten to do something completely different but behaviorally equivalent, the test was checking implementation details through its mocks, not real behavior."
+        }
+      ]
+    }
+  ]
+}

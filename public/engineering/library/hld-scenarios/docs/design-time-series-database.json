@@ -1,0 +1,725 @@
+{
+  "problemId": "p-design-time-series-database",
+  "title": "Design Time Series Database",
+  "slug": "design-time-series-database",
+  "sections": [
+    {
+      "id": "content",
+      "title": "Content"
+    }
+  ],
+  "content": [
+    {
+      "id": "content",
+      "title": "Content",
+      "blocks": [
+        {
+          "type": "heading1",
+          "text": "1. Problem Statement",
+          "content": "1. Problem Statement",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Design a time series database like InfluxDB or Prometheus, ingesting an enormous, continuous stream of timestamped metric points and answering time-range queries efficiently, without keeping full-resolution data forever at unbounded storage cost. The defining hard problem is not the writes themselves, which are simple append operations, it is managing the tension between wanting to query a year-old data point and refusing to store every single second of an entire year at full precision.",
+          "content": "Design a time series database like InfluxDB or Prometheus, ingesting an enormous, continuous stream of timestamped metric points and answering time-range queries efficiently, without keeping full-resolution data forever at unbounded storage cost. The defining hard problem is not the writes themselves, which are simple append operations, it is managing the tension between wanting to query a year-old data point and refusing to store every single second of an entire year at full precision."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230138367-846336636.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230138367-846336636.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230138367-846336636.png",
+          "alt": "New data points append to their current time chunk, aging chunks are downsampled into coarser rollups, and a query spanning both eras blends raw recent data with historical rollups"
+        },
+        {
+          "type": "paragraph",
+          "text": "The two techniques that resolve this are time-based chunking, organizing data into buckets by timestamp so a query only ever touches the chunks actually overlapping its requested range, and downsampling, aging raw chunks into much smaller, coarser aggregate rollups once they pass a full-resolution retention window, keeping ancient history queryable at a fraction of the storage cost.",
+          "content": "The two techniques that resolve this are time-based chunking, organizing data into buckets by timestamp so a query only ever touches the chunks actually overlapping its requested range, and downsampling, aging raw chunks into much smaller, coarser aggregate rollups once they pass a full-resolution retention window, keeping ancient history queryable at a fraction of the storage cost."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "2. Functional Requirements",
+          "content": "2. Functional Requirements",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A client should be able to write a timestamped metric data point at high volume. A client should be able to query for data within a specific time range, at whatever resolution is actually available for that range. Data older than a configured full-resolution retention window should be automatically downsampled into a coarser rollup rather than deleted outright. A query spanning both recent, full-resolution data and older, downsampled data should return one coherent, blended result.",
+          "content": "A client should be able to write a timestamped metric data point at high volume. A client should be able to query for data within a specific time range, at whatever resolution is actually available for that range. Data older than a configured full-resolution retention window should be automatically downsampled into a coarser rollup rather than deleted outright. A query spanning both recent, full-resolution data and older, downsampled data should return one coherent, blended result."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "3. Non-Functional Requirements",
+          "content": "3. Non-Functional Requirements",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Five qualities matter here, and the third is the genuinely hard trade-off this entire design is built around.",
+          "content": "Five qualities matter here, and the third is the genuinely hard trade-off this entire design is built around."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230140380-959167661.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230140380-959167661.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230140380-959167661.png",
+          "alt": "Extremely high write throughput, fast time range queries, bounded and manageable long-term storage, still-queryable history even when very old, and per-tenant metric isolation"
+        },
+        {
+          "type": "paragraph",
+          "text": "Extremely high write throughput means millions of metric points can arrive per second across many monitored systems. Fast time range queries mean a query for a specific window should never scan data outside that window, regardless of how much total historical data exists. Bounded, manageable long-term storage means raw, full-resolution data simply cannot be kept forever without storage growing without any limit. Still-queryable history means even data from a year ago should still be able to answer a query, just at reduced resolution rather than being gone entirely. And per-tenant metric isolation means one tenant's metrics must never be visible to, or interfere with, another tenant sharing the same platform.",
+          "content": "Extremely high write throughput means millions of metric points can arrive per second across many monitored systems. Fast time range queries mean a query for a specific window should never scan data outside that window, regardless of how much total historical data exists. Bounded, manageable long-term storage means raw, full-resolution data simply cannot be kept forever without storage growing without any limit. Still-queryable history means even data from a year ago should still be able to answer a query, just at reduced resolution rather than being gone entirely. And per-tenant metric isolation means one tenant's metrics must never be visible to, or interfere with, another tenant sharing the same platform."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "4. Clarifying Questions",
+          "content": "4. Clarifying Questions",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"What full-resolution retention window is required before data becomes eligible for downsampling, hours, days, or longer?\",\"How many downsampling tiers are needed, a single rollup resolution, or several progressively coarser tiers as data ages further?\",\"Should downsampling use simple averaging, or does it need to preserve richer summary statistics, such as min, max, and count, per bucket?\",\"Is multi-tenancy, isolating different tenants' metrics from each other, in scope for this design?\",\"What query latency is expected for a typical recent, narrow time range versus an unusually long historical one?\"]",
+          "items": [
+            "What full-resolution retention window is required before data becomes eligible for downsampling, hours, days, or longer?",
+            "How many downsampling tiers are needed, a single rollup resolution, or several progressively coarser tiers as data ages further?",
+            "Should downsampling use simple averaging, or does it need to preserve richer summary statistics, such as min, max, and count, per bucket?",
+            "Is multi-tenancy, isolating different tenants' metrics from each other, in scope for this design?",
+            "What query latency is expected for a typical recent, narrow time range versus an unusually long historical one?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "5. Assumptions & Constraints",
+          "content": "5. Assumptions & Constraints",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "This design implements a single downsampling tier for clarity, raw data aging past its full-resolution retention window is replaced by one coarser rollup, rather than several progressively coarser tiers, though the same underlying mechanism extends naturally to more tiers. Downsampling is assumed to use simple averaging per bucket for this design's worked example, though a real system would typically also retain min, max, and count alongside the average. A raw chunk is assumed never dropped until its corresponding rollup has been durably, verifiably stored, covered in section 20.",
+          "content": "This design implements a single downsampling tier for clarity, raw data aging past its full-resolution retention window is replaced by one coarser rollup, rather than several progressively coarser tiers, though the same underlying mechanism extends naturally to more tiers. Downsampling is assumed to use simple averaging per bucket for this design's worked example, though a real system would typically also retain min, max, and count alongside the average. A raw chunk is assumed never dropped until its corresponding rollup has been durably, verifiably stored, covered in section 20."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "6. Capacity Estimation",
+          "content": "6. Capacity Estimation",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A monitoring platform at real scale might ingest millions of metric points per second across a huge number of monitored systems. Raw, full-resolution data might be kept for a matter of days, with downsampled rollups retained for months or years beyond that at a small fraction of the original storage footprint. Most queries target a recent, narrow time window, while a smaller but real number span much longer historical ranges, relying entirely on downsampled data to stay fast and affordable.",
+          "content": "A monitoring platform at real scale might ingest millions of metric points per second across a huge number of monitored systems. Raw, full-resolution data might be kept for a matter of days, with downsampled rollups retained for months or years beyond that at a small fraction of the original storage footprint. Most queries target a recent, narrow time window, while a smaller but real number span much longer historical ranges, relying entirely on downsampled data to stay fast and affordable."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230141901-599639977.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230141901-599639977.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230141901-599639977.png",
+          "alt": "Millions of metric points ingested per second, raw data retained for days versus rollups retained for months or years, a large storage reduction from downsampling aged data, and most queries targeting a recent, narrow window"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "7. High-Level Architecture",
+          "content": "7. High-Level Architecture",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "An incoming point is written to whichever time chunk covers its timestamp. A downsampling job continuously watches for chunks that have aged past the full-resolution retention window, aggregating them into a rollup and only then dropping the original raw chunk. A query engine reads from both raw chunks and rollups as needed, depending on which parts of the requested time range are still at full resolution.",
+          "content": "An incoming point is written to whichever time chunk covers its timestamp. A downsampling job continuously watches for chunks that have aged past the full-resolution retention window, aggregating them into a rollup and only then dropping the original raw chunk. A query engine reads from both raw chunks and rollups as needed, depending on which parts of the requested time range are still at full resolution."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230143666-573101282.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230143666-573101282.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230143666-573101282.png",
+          "alt": "Writes land in time-bucketed raw chunks; a downsampling job ages old chunks into rollups; the query engine reads from both raw chunks and rollups depending on the requested time range"
+        },
+        {
+          "type": "heading2",
+          "text": "7.1 Time-Based Chunking",
+          "content": "7.1 Time-Based Chunking",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "An incoming data point is mapped, by its own timestamp, to the specific time chunk that covers it, and appended there. A subsequent query for a given time range only ever needs to touch the chunks that actually overlap it, never scanning data far outside the requested window.",
+          "content": "An incoming data point is mapped, by its own timestamp, to the specific time chunk that covers it, and appended there. A subsequent query for a given time range only ever needs to touch the chunks that actually overlap it, never scanning data far outside the requested window."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017183-415359386.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017183-415359386.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017183-415359386.png",
+          "alt": "A data point is appended to the time chunk covering its own timestamp, and a query only ever touches the chunks actually overlapping its requested range"
+        },
+        {
+          "type": "heading2",
+          "text": "7.2 Downsampling",
+          "content": "7.2 Downsampling",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Once a raw chunk ages past its full-resolution retention window, its individual points are aggregated into a single, much smaller rollup value, and the original raw chunk is dropped, freeing the space it occupied while keeping that time range still queryable at reduced resolution.",
+          "content": "Once a raw chunk ages past its full-resolution retention window, its individual points are aggregated into a single, much smaller rollup value, and the original raw chunk is dropped, freeing the space it occupied while keeping that time range still queryable at reduced resolution."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017429-462242097.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017429-462242097.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017429-462242097.png",
+          "alt": "A raw chunk aging past its retention window is aggregated into a coarser rollup and dropped, keeping that time range queryable at a fraction of the original storage cost"
+        },
+        {
+          "type": "heading2",
+          "text": "7.3 Blended Queries",
+          "content": "7.3 Blended Queries",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A query spanning both a recent time range still at full resolution and a much older one already downsampled reads from raw chunks for the recent portion and rollups for the older portion, combining both into one single, coherent result set rather than requiring the client to issue two separate queries.",
+          "content": "A query spanning both a recent time range still at full resolution and a much older one already downsampled reads from raw chunks for the recent portion and rollups for the older portion, combining both into one single, coherent result set rather than requiring the client to issue two separate queries."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230148568-893217945.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230148568-893217945.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230148568-893217945.png",
+          "alt": "A query spanning both recent and old time ranges reads raw data for the recent portion and rollups for the older portion, combined into one coherent result"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "8. Core Components",
+          "content": "8. Core Components",
+          "items": []
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Component\",\"Responsibility\",\"Why it exists\",\"Scaling consideration\"],\"rows\":[[\"Time Series API\",\"Accepts writes and time-range queries\",\"A single, validated entry point for every metric operation\",\"Scales horizontally, stateless\"],[\"Ingest Path\",\"Maps an incoming point to its correct time chunk and appends it\",\"The write-side entry into the time-bucketed storage model\",\"Scales with write volume, partitioned by metric\"],[\"Raw Chunk Store\",\"Holds full-resolution data within the retention window\",\"The authoritative, exact source for recent queries\",\"Partitioned by time chunk and metric\"],[\"Downsampling Job\",\"Aggregates an aged raw chunk into a rollup, then drops the original\",\"Keeps long-term storage bounded without losing all historical queryability\",\"Runs continuously, scales with total chunk aging volume\"],[\"Rollup Store\",\"Holds coarser, long-term aggregate summaries\",\"What historical queries beyond the raw retention window actually read from\",\"Much smaller than raw storage, scales gradually\"],[\"Query Engine\",\"Reads from raw chunks and rollups as needed and blends the results\",\"A query should not need to know or care which storage tier its data actually lives in\",\"Stateless, scales with query volume\"]]}",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "9. API Design",
+          "content": "9. API Design",
+          "items": []
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Endpoint\",\"Method\",\"Purpose\"],\"rows\":[[\"/metrics/:metricId/points\",\"POST\",\"Write a new timestamped data point for a metric\"],[\"/metrics/:metricId/query?start=&end=\",\"GET\",\"Query a metric over a time range, blending raw and rollup data as needed\"]]}",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The query endpoint deliberately returns one unified result regardless of whether it drew from raw chunks, rollups, or both, a client should never need to know or care which storage tier actually answered its request.",
+          "content": "The query endpoint deliberately returns one unified result regardless of whether it drew from raw chunks, rollups, or both, a client should never need to know or care which storage tier actually answered its request."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "10. Database Design",
+          "content": "10. Database Design",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230150197-224164134.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230150197-224164134.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230150197-224164134.png",
+          "alt": "Metric, RawPoint holding full-resolution individual data points, and Rollup holding a coarser, aggregated value per bucket"
+        },
+        {
+          "type": "paragraph",
+          "text": "RawPoint and Rollup are deliberately separate structures rather than one unified table with a resolution flag, since their access patterns, write-heavy and time-chunked for RawPoint, comparatively small and long-lived for Rollup, are different enough to benefit from being modeled and stored independently.",
+          "content": "RawPoint and Rollup are deliberately separate structures rather than one unified table with a resolution flag, since their access patterns, write-heavy and time-chunked for RawPoint, comparatively small and long-lived for Rollup, are different enough to benefit from being modeled and stored independently."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "11. Data Modeling Decisions",
+          "content": "11. Data Modeling Decisions",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Data is chunked by time rather than stored as one flat, unbounded append log per metric, since chunking is exactly what lets a time-range query skip data outside its window entirely, rather than scanning past it. Downsampling replaces raw data with an aggregate rather than simply deleting old data outright, trading exact precision for continued, if coarser, queryability, a deliberate choice given how often historical trend queries are genuinely useful even without individual-point granularity.",
+          "content": "Data is chunked by time rather than stored as one flat, unbounded append log per metric, since chunking is exactly what lets a time-range query skip data outside its window entirely, rather than scanning past it. Downsampling replaces raw data with an aggregate rather than simply deleting old data outright, trading exact precision for continued, if coarser, queryability, a deliberate choice given how often historical trend queries are genuinely useful even without individual-point granularity."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "12. High-Level Data Flow",
+          "content": "12. High-Level Data Flow",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "12.1 Write Flow",
+          "content": "12.1 Write Flow",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230152336-726993371.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230152336-726993371.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230152336-726993371.png",
+          "alt": "A new data point is mapped to its current time chunk and appended there"
+        },
+        {
+          "type": "heading2",
+          "text": "12.2 Downsample Flow",
+          "content": "12.2 Downsample Flow",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230153943-212174142.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230153943-212174142.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230153943-212174142.png",
+          "alt": "An aged raw chunk is aggregated into a rollup, durably stored, and only then is the original raw chunk dropped"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "13. Detailed Workflows",
+          "content": "13. Detailed Workflows",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The happy path for writes is the write flow above, a point cleanly appended to its own time chunk. The workflow worth walking through separately is a query spanning both a still-raw recent window and an already-downsampled older one, the query engine reads the recent portion directly from raw chunks at full resolution, reads the older portion from its rollup, and returns both blended together as one result, exactly matching what actually happened to that data's resolution over time rather than forcing the client to understand the underlying storage tiers at all.",
+          "content": "The happy path for writes is the write flow above, a point cleanly appended to its own time chunk. The workflow worth walking through separately is a query spanning both a still-raw recent window and an already-downsampled older one, the query engine reads the recent portion directly from raw chunks at full resolution, reads the older portion from its rollup, and returns both blended together as one result, exactly matching what actually happened to that data's resolution over time rather than forcing the client to understand the underlying storage tiers at all."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "14. Caching Strategy",
+          "content": "14. Caching Strategy",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230155713-111499377.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230155713-111499377.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230155713-111499377.png",
+          "alt": "A write to the currently active, still-open time chunk is appended directly in memory; crossing into a new chunk boundary flushes the previous chunk to durable storage and opens a fresh one"
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping only the currently active chunk hot in memory, rather than the entire raw retention window, captures the overwhelming majority of write traffic's latency benefit without needing every recent chunk resident at once.",
+          "content": "Keeping only the currently active chunk hot in memory, rather than the entire raw retention window, captures the overwhelming majority of write traffic's latency benefit without needing every recent chunk resident at once."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "15. Message Queues & Async Processing",
+          "content": "15. Message Queues & Async Processing",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017688-697510897.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017688-697510897.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017688-697510897.png",
+          "alt": "A chunk crossing its retention age is queued for downsampling, processed by workers that aggregate it into a rollup and only then drop the original raw chunk"
+        },
+        {
+          "type": "paragraph",
+          "text": "Queuing downsampling work lets it proceed entirely independently of the live write and query paths, an aging chunk's eventual rollup never competes with, or slows down, ongoing ingestion.",
+          "content": "Queuing downsampling work lets it proceed entirely independently of the live write and query paths, an aging chunk's eventual rollup never competes with, or slows down, ongoing ingestion."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "16. Load Balancing Strategy",
+          "content": "16. Load Balancing Strategy",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230159520-194145858.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230159520-194145858.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230159520-194145858.png",
+          "alt": "An incoming data point is routed to a partition by hashing its metric or series id, so every point for one metric is always handled consistently"
+        },
+        {
+          "type": "paragraph",
+          "text": "Partitioning by metric keeps one metric's own time chunks and query load local to one partition, letting an unusually high-frequency metric be handled without needing coordination across every other metric on the platform.",
+          "content": "Partitioning by metric keeps one metric's own time chunks and query load local to one partition, letting an unusually high-frequency metric be handled without needing coordination across every other metric on the platform."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "17. Scaling Strategy",
+          "content": "17. Scaling Strategy",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017431-623456069.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017431-623456069.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017431-623456069.png",
+          "alt": "A growing ingest backlog or downsampling job lag triggers adding more ingest or downsampling capacity"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because writes and downsampling are handled by genuinely separate components, each scales independently, more ingest capacity for rising write volume, more downsampling throughput if aging chunks start piling up faster than they can be rolled up.",
+          "content": "Because writes and downsampling are handled by genuinely separate components, each scales independently, more ingest capacity for rising write volume, more downsampling throughput if aging chunks start piling up faster than they can be rolled up."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "18. Database Scaling",
+          "content": "18. Database Scaling",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Raw chunk storage is partitioned by metric and time, and is by far the larger, faster-growing store, bounded specifically by the full-resolution retention window rather than growing forever. Rollup storage grows far more slowly, since each rollup replaces an entire raw chunk's worth of individual points with one small aggregate value.",
+          "content": "Raw chunk storage is partitioned by metric and time, and is by far the larger, faster-growing store, bounded specifically by the full-resolution retention window rather than growing forever. Rollup storage grows far more slowly, since each rollup replaces an entire raw chunk's worth of individual points with one small aggregate value."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "19. Consistency & Availability",
+          "content": "19. Consistency & Availability",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230162693-877449574.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230162693-877449574.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230162693-877449574.png",
+          "alt": "A freshly written, still-raw data point is exact and immediately queryable; an already downsampled historical rollup is an honest, coarser approximation, trading precision for bounded storage"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a deliberate, transparent trade rather than an accidental inconsistency, a rollup never claims to be anything other than an aggregate, and a client querying deep history is always getting exactly what the design promises for that time range, not a silently degraded version of something meant to be exact.",
+          "content": "This is a deliberate, transparent trade rather than an accidental inconsistency, a rollup never claims to be anything other than an aggregate, and a client querying deep history is always getting exactly what the design promises for that time range, not a silently degraded version of something meant to be exact."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "20. Reliability & Fault Tolerance",
+          "content": "20. Reliability & Fault Tolerance",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230165998-959393415.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230165998-959393415.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230165998-959393415.png",
+          "alt": "A raw chunk's rollup is computed and durably stored first, and only once that rollup is verified is the original raw chunk actually dropped"
+        },
+        {
+          "type": "paragraph",
+          "text": "This ordering is the entire basis of the design's durability guarantee during downsampling, computing the rollup and confirming it succeeded before ever touching the original raw chunk means a crash mid-downsampling simply leaves the raw chunk intact for another attempt, never in a state where both the raw data and its rollup are lost at once.",
+          "content": "This ordering is the entire basis of the design's durability guarantee during downsampling, computing the rollup and confirming it succeeded before ever touching the original raw chunk means a crash mid-downsampling simply leaves the raw chunk intact for another attempt, never in a state where both the raw data and its rollup are lost at once."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "21. Security Considerations",
+          "content": "21. Security Considerations",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017430-199214364.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017430-199214364.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017430-199214364.png",
+          "alt": "A read or write request for a specific metric is checked against that tenant's ownership; another tenant's metrics stay fully isolated regardless of the outcome"
+        },
+        {
+          "type": "paragraph",
+          "text": "Per-tenant metric isolation is this design's defining security concern, distinct from every other category's angle in this project, since a shared, multi-tenant monitoring platform genuinely holding operational data for many different organizations at once makes strict isolation between them a hard, non-negotiable requirement rather than a nice-to-have.",
+          "content": "Per-tenant metric isolation is this design's defining security concern, distinct from every other category's angle in this project, since a shared, multi-tenant monitoring platform genuinely holding operational data for many different organizations at once makes strict isolation between them a hard, non-negotiable requirement rather than a nice-to-have."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "22. Monitoring & Observability",
+          "content": "22. Monitoring & Observability",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Downsampling job lag, how far behind the retention window the job has fallen, is the clearest signal of whether raw storage is staying bounded as designed, a growing lag directly foreshadows unexpected storage growth before it actually becomes a real problem. Per-metric write rate is worth watching too, an unusually high-frequency metric can disproportionately load its own partition relative to typical metrics on the platform.",
+          "content": "Downsampling job lag, how far behind the retention window the job has fallen, is the clearest signal of whether raw storage is staying bounded as designed, a growing lag directly foreshadows unexpected storage growth before it actually becomes a real problem. Per-metric write rate is worth watching too, an unusually high-frequency metric can disproportionately load its own partition relative to typical metrics on the platform."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "23. Bottlenecks & Single Points of Failure",
+          "content": "23. Bottlenecks & Single Points of Failure",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230169734-79427704.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230169734-79427704.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230169734-79427704.png",
+          "alt": "A single, extremely high-frequency metric dominating one partition's ingest volume, the downsampling job falling behind and letting raw storage grow unexpectedly, and a query spanning an unusually long historical range touching many rollup segments at once"
+        },
+        {
+          "type": "paragraph",
+          "text": "The second of these is exactly why downsampling job lag deserves its own dedicated monitoring rather than being an afterthought, it is the single mechanism keeping this entire design's storage bounded, and falling behind on it silently undermines that guarantee well before anyone notices from query behavior alone.",
+          "content": "The second of these is exactly why downsampling job lag deserves its own dedicated monitoring rather than being an afterthought, it is the single mechanism keeping this entire design's storage bounded, and falling behind on it silently undermines that guarantee well before anyone notices from query behavior alone."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "24. Trade-Offs",
+          "content": "24. Trade-Offs",
+          "items": []
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Long term storage cost\",\"Historical query resolution\",\"Where it breaks down\"],\"rows\":[[\"Time chunked storage with downsampling\",\"Bounded, aged data replaced with small rollups\",\"Reduced but genuinely still queryable\",\"Requires choosing sensible retention and rollup resolution ahead of time\"],[\"Keep all raw data forever, no downsampling\",\"Grows without bound indefinitely\",\"Full, exact precision at any age\",\"Storage cost eventually becomes unsustainable at real ingestion scale\"],[\"Delete data outright past retention, no rollup at all\",\"Bounded, the smallest possible footprint\",\"None at all, that history is simply gone\",\"Loses the ability to answer any long-range historical trend query whatsoever\"]]}",
+          "items": []
+        },
+        {
+          "type": "blockQuote",
+          "text": "Downsampling rather than outright deletion is the right default because historical trend queries are genuinely valuable even without individual-point precision, and the storage this design saves by aggregating rather than keeping everything is exactly what makes truly long-term retention affordable at all.",
+          "content": "Downsampling rather than outright deletion is the right default because historical trend queries are genuinely valuable even without individual-point precision, and the storage this design saves by aggregating rather than keeping everything is exactly what makes truly long-term retention affordable at all.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "25. Cost Optimization",
+          "content": "25. Cost Optimization",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Downsampling itself is the largest cost optimization in this entire design, converting an otherwise unbounded raw-data storage bill into one that grows far more slowly as data ages. Keeping only the currently active chunk hot in memory, rather than the full raw retention window, avoids paying for memory-resident storage far beyond what actually needs to be fast.",
+          "content": "Downsampling itself is the largest cost optimization in this entire design, converting an otherwise unbounded raw-data storage bill into one that grows far more slowly as data ages. Keeping only the currently active chunk hot in memory, rather than the full raw retention window, avoids paying for memory-resident storage far beyond what actually needs to be fast."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "26. Edge Cases",
+          "content": "26. Edge Cases",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"A query's time range falls entirely within data that has already been downsampled, correctly returning rollup-resolution results without ever touching raw storage at all.\",\"A query spans exactly the boundary between still-raw and already-downsampled data, correctly blending both into one combined, coherent result.\",\"The downsampling job crashes partway through aggregating a chunk, correctly leaving the original raw chunk intact rather than losing data, ready to retry the rollup safely.\",\"A metric receives an unusually large burst of writes far above its typical rate, correctly still bucketed by time and processed without corrupting or skipping other metrics' own chunks.\"]",
+          "items": [
+            "A query's time range falls entirely within data that has already been downsampled, correctly returning rollup-resolution results without ever touching raw storage at all.",
+            "A query spans exactly the boundary between still-raw and already-downsampled data, correctly blending both into one combined, coherent result.",
+            "The downsampling job crashes partway through aggregating a chunk, correctly leaving the original raw chunk intact rather than losing data, ready to retry the rollup safely.",
+            "A metric receives an unusually large burst of writes far above its typical rate, correctly still bucketed by time and processed without corrupting or skipping other metrics' own chunks."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "27. Production Considerations",
+          "content": "27. Production Considerations",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A change to the downsampling aggregation logic needs careful, gradual rollout, since a bug there risks silently corrupting historical rollups platform-wide, an error that might not be noticed until someone actually queries the affected time range much later. Changes to retention window configuration deserve real caution too, shortening it unexpectedly can trigger a sudden, large wave of downsampling work all at once.",
+          "content": "A change to the downsampling aggregation logic needs careful, gradual rollout, since a bug there risks silently corrupting historical rollups platform-wide, an error that might not be noticed until someone actually queries the affected time range much later. Changes to retention window configuration deserve real caution too, shortening it unexpectedly can trigger a sudden, large wave of downsampling work all at once."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "28. Future Improvements",
+          "content": "28. Future Improvements",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Multiple progressively coarser rollup tiers, rather than a single downsampling step, would let extremely old data shrink even further in storage while newer historical data retains a bit more resolution. Richer per-bucket summary statistics, min, max, and count alongside the average this design implements, would let downsampled queries answer more than just trend-line questions about aged data.",
+          "content": "Multiple progressively coarser rollup tiers, rather than a single downsampling step, would let extremely old data shrink even further in storage while newer historical data retains a bit more resolution. Richer per-bucket summary statistics, min, max, and count alongside the average this design implements, would let downsampled queries answer more than just trend-line questions about aged data."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "29. Follow-Up Questions",
+          "content": "29. Follow-Up Questions",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"How would you extend this design to support multiple progressively coarser rollup tiers as data ages further?\",\"How would you choose sensible retention windows and rollup resolutions for metrics with very different natural write frequencies?\",\"How would you detect and handle a downsampling job that is systematically falling behind schedule?\"]",
+          "items": [
+            "How would you extend this design to support multiple progressively coarser rollup tiers as data ages further?",
+            "How would you choose sensible retention windows and rollup resolutions for metrics with very different natural write frequencies?",
+            "How would you detect and handle a downsampling job that is systematically falling behind schedule?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "30. Final Architecture Diagram",
+          "content": "30. Final Architecture Diagram",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230171249-509925078.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230171249-509925078.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785230171249-509925078.png",
+          "alt": "The complete system: writes land in time-bucketed raw chunks, a downsampling job ages old chunks into rollups only after safely verifying them, and the query engine blends raw and rollup data as needed, all watched by monitoring"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Complete Code Implementation",
+          "content": "Complete Code Implementation",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A real, self-contained, directly runnable implementation of time-based chunking and downsampling, in Java, Python, and C++, exactly as you would actually copy, compile and run it, demonstrating a query returning all raw points before any downsampling has happened, and the exact same query correctly blending a downsampled rollup for aged data with still-raw points for recent data after downsampling runs.",
+          "content": "A real, self-contained, directly runnable implementation of time-based chunking and downsampling, in Java, Python, and C++, exactly as you would actually copy, compile and run it, demonstrating a query returning all raw points before any downsampling has happened, and the exact same query correctly blending a downsampled rollup for aged data with still-raw points for recent data after downsampling runs."
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        TimeSeriesDB db = new TimeSeriesDB(100); // bucket size of 100 time units, standing in for something like an hour\n\n        db.write(5, 10.0);   // bucket 0\n        db.write(50, 20.0);  // bucket 0\n        db.write(90, 30.0);  // bucket 0\n        db.write(150, 40.0); // bucket 1\n        db.write(180, 50.0); // bucket 1\n\n        System.out.println(\"Query [0,200) before downsampling: \" + db.query(0, 200));\n\n        // Bucket 0 ages past retention and is downsampled: its 3 points average to 20.0.\n        db.downsampleAndExpire(0);\n\n        System.out.println(\"Query [0,200) after downsampling bucket 0: \" + db.query(0, 200));\n    }\n}\n\n// Represents either a raw data point or a downsampled rollup value in a\n// query result, so the caller can see which resolution each bucket returned.\nclass QueryResult {\n    long bucketStart;\n    String kind; // \"RAW\" or \"ROLLUP\"\n    List<Double> values;\n\n    QueryResult(long bucketStart, String kind, List<Double> values) {\n        this.bucketStart = bucketStart;\n        this.kind = kind;\n        this.values = values;\n    }\n\n    public String toString() {\n        return \"[\" + kind + \" bucket=\" + bucketStart + \" values=\" + values + \"]\";\n    }\n}\n\n// A time series database using time-based chunking: raw points are bucketed\n// by timestamp, and a bucket can later be downsampled into a single rollup\n// value, freeing its raw points while keeping that time range still queryable.\nclass TimeSeriesDB {\n    private final long bucketSize;\n    private final Map<Long, List<Double>> rawPointsByBucket = new TreeMap<>(); // bucketStart -> raw values\n    private final Map<Long, Double> rollupsByBucket = new TreeMap<>();            // bucketStart -> aggregated value\n\n    TimeSeriesDB(long bucketSize) {\n        this.bucketSize = bucketSize;\n    }\n\n    private long bucketFor(long timestamp) {\n        return (timestamp / bucketSize) * bucketSize; // floor to this timestamp's bucket start\n    }\n\n    void write(long timestamp, double value) {\n        long bucket = bucketFor(timestamp);\n        rawPointsByBucket.computeIfAbsent(bucket, b -> new ArrayList<>()).add(value);\n    }\n\n    // Aggregates a bucket's raw points into one rollup value (a simple average\n    // for this worked example), then drops the original raw points.\n    void downsampleAndExpire(long bucketStart) {\n        List<Double> points = rawPointsByBucket.get(bucketStart);\n        double sum = 0;\n        for (double v : points) sum += v;\n        double average = sum / points.size();\n        rollupsByBucket.put(bucketStart, average);\n        rawPointsByBucket.remove(bucketStart); // only now, drop the raw data, freeing its space\n    }\n\n    // Queries a time range, returning raw points for buckets that still have\n    // them, and a rollup for buckets that have already been downsampled.\n    List<QueryResult> query(long startInclusive, long endExclusive) {\n        List<QueryResult> results = new ArrayList<>();\n        for (long bucket = bucketFor(startInclusive); bucket < endExclusive; bucket += bucketSize) {\n            if (rawPointsByBucket.containsKey(bucket)) {\n                results.add(new QueryResult(bucket, \"RAW\", rawPointsByBucket.get(bucket)));\n            } else if (rollupsByBucket.containsKey(bucket)) {\n                results.add(new QueryResult(bucket, \"ROLLUP\", Collections.singletonList(rollupsByBucket.get(bucket))));\n            }\n        }\n        return results;\n    }\n}",
+            "python": "class QueryResult:\n    # Represents either a raw data point or a downsampled rollup value in a\n    # query result, so the caller can see which resolution each bucket returned.\n    def __init__(self, bucket_start, kind, values):\n        self.bucket_start = bucket_start\n        self.kind = kind  # \"RAW\" or \"ROLLUP\"\n        self.values = values\n\n    def __repr__(self):\n        return f\"[{self.kind} bucket={self.bucket_start} values={self.values}]\"\n\n\nclass TimeSeriesDB:\n    # A time series database using time-based chunking: raw points are\n    # bucketed by timestamp, and a bucket can later be downsampled into a\n    # single rollup value, freeing its raw points while keeping that time\n    # range still queryable.\n    def __init__(self, bucket_size):\n        self.bucket_size = bucket_size\n        self.raw_points_by_bucket = {}  # bucketStart -> raw values\n        self.rollups_by_bucket = {}     # bucketStart -> aggregated value\n\n    def _bucket_for(self, timestamp):\n        return (timestamp // self.bucket_size) * self.bucket_size  # floor to this timestamp's bucket start\n\n    def write(self, timestamp, value):\n        bucket = self._bucket_for(timestamp)\n        self.raw_points_by_bucket.setdefault(bucket, []).append(value)\n\n    def downsample_and_expire(self, bucket_start):\n        points = self.raw_points_by_bucket[bucket_start]\n        average = sum(points) / len(points)  # a simple average for this worked example\n        self.rollups_by_bucket[bucket_start] = average\n        del self.raw_points_by_bucket[bucket_start]  # only now, drop the raw data, freeing its space\n\n    def query(self, start_inclusive, end_exclusive):\n        results = []\n        bucket = self._bucket_for(start_inclusive)\n        while bucket < end_exclusive:\n            if bucket in self.raw_points_by_bucket:\n                results.append(QueryResult(bucket, \"RAW\", self.raw_points_by_bucket[bucket]))\n            elif bucket in self.rollups_by_bucket:\n                results.append(QueryResult(bucket, \"ROLLUP\", [self.rollups_by_bucket[bucket]]))\n            bucket += self.bucket_size\n        return results\n\n\ndef main():\n    db = TimeSeriesDB(100)  # bucket size of 100 time units, standing in for something like an hour\n\n    db.write(5, 10.0)    # bucket 0\n    db.write(50, 20.0)   # bucket 0\n    db.write(90, 30.0)   # bucket 0\n    db.write(150, 40.0)  # bucket 1\n    db.write(180, 50.0)  # bucket 1\n\n    print(\"Query [0,200) before downsampling:\", db.query(0, 200))\n\n    # Bucket 0 ages past retention and is downsampled: its 3 points average to 20.0.\n    db.downsample_and_expire(0)\n\n    print(\"Query [0,200) after downsampling bucket 0:\", db.query(0, 200))\n\n\nif __name__ == \"__main__\":\n    main()",
+            "cpp": "#include <iostream>\n#include <map>\n#include <vector>\n#include <string>\nusing namespace std;\n\n// Represents either a raw data point or a downsampled rollup value in a\n// query result, so the caller can see which resolution each bucket returned.\nstruct QueryResult {\n    long bucketStart;\n    string kind; // \"RAW\" or \"ROLLUP\"\n    vector<double> values;\n};\n\nvoid printResult(const QueryResult& r) {\n    cout << \"[\" << r.kind << \" bucket=\" << r.bucketStart << \" values=[\";\n    for (size_t i = 0; i < r.values.size(); i++) {\n        cout << r.values[i];\n        if (i + 1 < r.values.size()) cout << \", \";\n    }\n    cout << \"]] \";\n}\n\n// A time series database using time-based chunking: raw points are bucketed\n// by timestamp, and a bucket can later be downsampled into a single rollup\n// value, freeing its raw points while keeping that time range still queryable.\nclass TimeSeriesDB {\npublic:\n    TimeSeriesDB(long bucketSize) : bucketSize(bucketSize) {}\n\n    long bucketFor(long timestamp) {\n        return (timestamp / bucketSize) * bucketSize; // floor to this timestamp's bucket start\n    }\n\n    void write(long timestamp, double value) {\n        long bucket = bucketFor(timestamp);\n        rawPointsByBucket[bucket].push_back(value);\n    }\n\n    void downsampleAndExpire(long bucketStart) {\n        vector<double>& points = rawPointsByBucket[bucketStart];\n        double sum = 0;\n        for (double v : points) sum += v;\n        double average = sum / points.size(); // a simple average for this worked example\n        rollupsByBucket[bucketStart] = average;\n        rawPointsByBucket.erase(bucketStart); // only now, drop the raw data, freeing its space\n    }\n\n    vector<QueryResult> query(long startInclusive, long endExclusive) {\n        vector<QueryResult> results;\n        for (long bucket = bucketFor(startInclusive); bucket < endExclusive; bucket += bucketSize) {\n            if (rawPointsByBucket.count(bucket)) {\n                results.push_back({bucket, \"RAW\", rawPointsByBucket[bucket]});\n            } else if (rollupsByBucket.count(bucket)) {\n                results.push_back({bucket, \"ROLLUP\", {rollupsByBucket[bucket]}});\n            }\n        }\n        return results;\n    }\n\nprivate:\n    long bucketSize;\n    map<long, vector<double>> rawPointsByBucket; // bucketStart -> raw values\n    map<long, double> rollupsByBucket;              // bucketStart -> aggregated value\n};\n\nint main() {\n    TimeSeriesDB db(100); // bucket size of 100 time units, standing in for something like an hour\n\n    db.write(5, 10.0);    // bucket 0\n    db.write(50, 20.0);   // bucket 0\n    db.write(90, 30.0);   // bucket 0\n    db.write(150, 40.0);  // bucket 1\n    db.write(180, 50.0);  // bucket 1\n\n    cout << \"Query [0,200) before downsampling: \";\n    for (const auto& r : db.query(0, 200)) printResult(r);\n    cout << endl;\n\n    // Bucket 0 ages past retention and is downsampled: its 3 points average to 20.0.\n    db.downsampleAndExpire(0);\n\n    cout << \"Query [0,200) after downsampling bucket 0: \";\n    for (const auto& r : db.query(0, 200)) printResult(r);\n    cout << endl;\n\n    return 0;\n}"
+          },
+          "code": {
+            "language": "java",
+            "content": "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        TimeSeriesDB db = new TimeSeriesDB(100); // bucket size of 100 time units, standing in for something like an hour\n\n        db.write(5, 10.0);   // bucket 0\n        db.write(50, 20.0);  // bucket 0\n        db.write(90, 30.0);  // bucket 0\n        db.write(150, 40.0); // bucket 1\n        db.write(180, 50.0); // bucket 1\n\n        System.out.println(\"Query [0,200) before downsampling: \" + db.query(0, 200));\n\n        // Bucket 0 ages past retention and is downsampled: its 3 points average to 20.0.\n        db.downsampleAndExpire(0);\n\n        System.out.println(\"Query [0,200) after downsampling bucket 0: \" + db.query(0, 200));\n    }\n}\n\n// Represents either a raw data point or a downsampled rollup value in a\n// query result, so the caller can see which resolution each bucket returned.\nclass QueryResult {\n    long bucketStart;\n    String kind; // \"RAW\" or \"ROLLUP\"\n    List<Double> values;\n\n    QueryResult(long bucketStart, String kind, List<Double> values) {\n        this.bucketStart = bucketStart;\n        this.kind = kind;\n        this.values = values;\n    }\n\n    public String toString() {\n        return \"[\" + kind + \" bucket=\" + bucketStart + \" values=\" + values + \"]\";\n    }\n}\n\n// A time series database using time-based chunking: raw points are bucketed\n// by timestamp, and a bucket can later be downsampled into a single rollup\n// value, freeing its raw points while keeping that time range still queryable.\nclass TimeSeriesDB {\n    private final long bucketSize;\n    private final Map<Long, List<Double>> rawPointsByBucket = new TreeMap<>(); // bucketStart -> raw values\n    private final Map<Long, Double> rollupsByBucket = new TreeMap<>();            // bucketStart -> aggregated value\n\n    TimeSeriesDB(long bucketSize) {\n        this.bucketSize = bucketSize;\n    }\n\n    private long bucketFor(long timestamp) {\n        return (timestamp / bucketSize) * bucketSize; // floor to this timestamp's bucket start\n    }\n\n    void write(long timestamp, double value) {\n        long bucket = bucketFor(timestamp);\n        rawPointsByBucket.computeIfAbsent(bucket, b -> new ArrayList<>()).add(value);\n    }\n\n    // Aggregates a bucket's raw points into one rollup value (a simple average\n    // for this worked example), then drops the original raw points.\n    void downsampleAndExpire(long bucketStart) {\n        List<Double> points = rawPointsByBucket.get(bucketStart);\n        double sum = 0;\n        for (double v : points) sum += v;\n        double average = sum / points.size();\n        rollupsByBucket.put(bucketStart, average);\n        rawPointsByBucket.remove(bucketStart); // only now, drop the raw data, freeing its space\n    }\n\n    // Queries a time range, returning raw points for buckets that still have\n    // them, and a rollup for buckets that have already been downsampled.\n    List<QueryResult> query(long startInclusive, long endExclusive) {\n        List<QueryResult> results = new ArrayList<>();\n        for (long bucket = bucketFor(startInclusive); bucket < endExclusive; bucket += bucketSize) {\n            if (rawPointsByBucket.containsKey(bucket)) {\n                results.add(new QueryResult(bucket, \"RAW\", rawPointsByBucket.get(bucket)));\n            } else if (rollupsByBucket.containsKey(bucket)) {\n                results.add(new QueryResult(bucket, \"ROLLUP\", Collections.singletonList(rollupsByBucket.get(bucket))));\n            }\n        }\n        return results;\n    }\n}"
+          },
+          "content": "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        TimeSeriesDB db = new TimeSeriesDB(100); // bucket size of 100 time units, standing in for something like an hour\n\n        db.write(5, 10.0);   // bucket 0\n        db.write(50, 20.0);  // bucket 0\n        db.write(90, 30.0);  // bucket 0\n        db.write(150, 40.0); // bucket 1\n        db.write(180, 50.0); // bucket 1\n\n        System.out.println(\"Query [0,200) before downsampling: \" + db.query(0, 200));\n\n        // Bucket 0 ages past retention and is downsampled: its 3 points average to 20.0.\n        db.downsampleAndExpire(0);\n\n        System.out.println(\"Query [0,200) after downsampling bucket 0: \" + db.query(0, 200));\n    }\n}\n\n// Represents either a raw data point or a downsampled rollup value in a\n// query result, so the caller can see which resolution each bucket returned.\nclass QueryResult {\n    long bucketStart;\n    String kind; // \"RAW\" or \"ROLLUP\"\n    List<Double> values;\n\n    QueryResult(long bucketStart, String kind, List<Double> values) {\n        this.bucketStart = bucketStart;\n        this.kind = kind;\n        this.values = values;\n    }\n\n    public String toString() {\n        return \"[\" + kind + \" bucket=\" + bucketStart + \" values=\" + values + \"]\";\n    }\n}\n\n// A time series database using time-based chunking: raw points are bucketed\n// by timestamp, and a bucket can later be downsampled into a single rollup\n// value, freeing its raw points while keeping that time range still queryable.\nclass TimeSeriesDB {\n    private final long bucketSize;\n    private final Map<Long, List<Double>> rawPointsByBucket = new TreeMap<>(); // bucketStart -> raw values\n    private final Map<Long, Double> rollupsByBucket = new TreeMap<>();            // bucketStart -> aggregated value\n\n    TimeSeriesDB(long bucketSize) {\n        this.bucketSize = bucketSize;\n    }\n\n    private long bucketFor(long timestamp) {\n        return (timestamp / bucketSize) * bucketSize; // floor to this timestamp's bucket start\n    }\n\n    void write(long timestamp, double value) {\n        long bucket = bucketFor(timestamp);\n        rawPointsByBucket.computeIfAbsent(bucket, b -> new ArrayList<>()).add(value);\n    }\n\n    // Aggregates a bucket's raw points into one rollup value (a simple average\n    // for this worked example), then drops the original raw points.\n    void downsampleAndExpire(long bucketStart) {\n        List<Double> points = rawPointsByBucket.get(bucketStart);\n        double sum = 0;\n        for (double v : points) sum += v;\n        double average = sum / points.size();\n        rollupsByBucket.put(bucketStart, average);\n        rawPointsByBucket.remove(bucketStart); // only now, drop the raw data, freeing its space\n    }\n\n    // Queries a time range, returning raw points for buckets that still have\n    // them, and a rollup for buckets that have already been downsampled.\n    List<QueryResult> query(long startInclusive, long endExclusive) {\n        List<QueryResult> results = new ArrayList<>();\n        for (long bucket = bucketFor(startInclusive); bucket < endExclusive; bucket += bucketSize) {\n            if (rawPointsByBucket.containsKey(bucket)) {\n                results.add(new QueryResult(bucket, \"RAW\", rawPointsByBucket.get(bucket)));\n            } else if (rollupsByBucket.containsKey(bucket)) {\n                results.add(new QueryResult(bucket, \"ROLLUP\", Collections.singletonList(rollupsByBucket.get(bucket))));\n            }\n        }\n        return results;\n    }\n}",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Deliverables Recap",
+          "content": "Deliverables Recap",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"Architecture: time-bucketed raw chunks feeding a downsampling job that ages old chunks into rollups, with a query engine blending raw and rollup data as needed.\",\"Capacity: millions of metric points ingested per second, raw data retained for days versus rollups for months or years, and most queries targeting a recent, narrow window.\",\"The core techniques: time-based chunking and downsampling, both worked through with a real, verified implementation in Java, Python, and C++.\",\"Database: a metric-and-time-partitioned raw chunk store bounded by retention, alongside a much smaller, slower-growing rollup store.\",\"End-to-end workflows: a normal write flow and a safe downsample-then-drop flow, both traced as sequence diagrams.\",\"Consistency: exact, immediately queryable raw data paired with an honestly coarser, approximate historical rollup.\",\"Trade-offs: time-chunked storage with downsampling versus keeping all raw data forever versus deleting aged data outright, compared directly on long-term storage cost and historical query resolution.\"]",
+          "items": [
+            "Architecture: time-bucketed raw chunks feeding a downsampling job that ages old chunks into rollups, with a query engine blending raw and rollup data as needed.",
+            "Capacity: millions of metric points ingested per second, raw data retained for days versus rollups for months or years, and most queries targeting a recent, narrow window.",
+            "The core techniques: time-based chunking and downsampling, both worked through with a real, verified implementation in Java, Python, and C++.",
+            "Database: a metric-and-time-partitioned raw chunk store bounded by retention, alongside a much smaller, slower-growing rollup store.",
+            "End-to-end workflows: a normal write flow and a safe downsample-then-drop flow, both traced as sequence diagrams.",
+            "Consistency: exact, immediately queryable raw data paired with an honestly coarser, approximate historical rollup.",
+            "Trade-offs: time-chunked storage with downsampling versus keeping all raw data forever versus deleting aged data outright, compared directly on long-term storage cost and historical query resolution."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

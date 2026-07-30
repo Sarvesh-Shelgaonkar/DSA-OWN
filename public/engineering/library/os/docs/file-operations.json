@@ -1,0 +1,354 @@
+{
+  "title": "File Operations",
+  "slug": "file-operations",
+  "content": [
+    {
+      "id": "file-operations",
+      "title": "File Operations",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "Every time a program creates a file, writes to it, or reads from it, that program is not touching the disk itself. It is asking the operating system to do it through a small, well defined set of system calls. This chapter walks through that entire set, create, open, read, write, seek, close, and delete, and spends real time on open, the most conceptually loaded of them all, because it sets up the machinery every other operation depends on."
+        },
+        {
+          "type": "paragraph",
+          "content": "By the end of this chapter you will know exactly what happens inside the operating system when a file is opened, what a file descriptor actually is, why reading and writing a file never requires the caller to track a position by hand, how seeking enables random access, and why closing a file does not always mean the underlying resource disappears immediately."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068018-961391893.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068018-961391893.png",
+          "alt": "file-operations",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068018-961391893.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The File Operation System Calls",
+          "text": "1. The File Operation System Calls"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every operating system exposes a small family of system calls for working with files, and almost every language runtime and library eventually calls down into this same small set. Before looking at any single one in depth, it helps to see the whole family together, since they form one connected lifecycle rather than seven unrelated operations."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"System call\",\"What actually happens at the OS level\"],\"rows\":[[\"create\",\"Asks the file system to allocate a new directory entry and the on disk structures for a file, typically an inode or equivalent, with zero length and no data blocks yet. On most Unix systems this is folded into open with the O_CREAT flag rather than being a fully separate call.\"],[\"open\",\"Locates the file through the file system, checks permissions, and builds a live, in memory connection to it: an entry in the OS wide open file table that tracks a current offset, the access mode requested, and a reference count, plus a new slot in the calling process own file descriptor table that points at that entry.\"],[\"read\",\"Copies bytes from the file starting at its current offset into a buffer supplied by the caller, then advances that same offset forward by however many bytes were actually transferred.\"],[\"write\",\"Copies bytes from a caller supplied buffer into the file starting at its current offset, extending the file if necessary, then advances that offset forward by however many bytes were actually transferred.\"],[\"seek, lseek\",\"Changes the current offset stored in the open file table entry to a new value without transferring a single byte of data, purely repositioning where the next read or write will begin.\"],[\"close\",\"Decrements the reference count on the open file table entry the descriptor pointed at and removes the descriptor from the process own table; the underlying resource is only released once that reference count reaches zero.\"],[\"delete, unlink\",\"Removes the directory entry that gave the file its name; the actual data blocks are only reclaimed once no directory entry references them and no process still holds the file open.\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "create is often just open",
+          "content": "Many Unix systems do not expose a distinct create system call at all. Calling open with the O_CREAT flag creates the file if it does not already exist and opens it in the same step, which is why some textbooks describe six operations instead of seven."
+        },
+        {
+          "type": "code",
+          "content": "int   create(const char *path, mode_t mode);\nint   open(const char *path, int flags, mode_t mode);\nssize_t read(int fd, void *buffer, size_t count);\nssize_t write(int fd, const void *buffer, size_t count);\noff_t lseek(int fd, off_t offset, int whence);\nint   close(int fd);\nint   unlink(const char *path);",
+          "code": "int   create(const char *path, mode_t mode);\nint   open(const char *path, int flags, mode_t mode);\nssize_t read(int fd, void *buffer, size_t count);\nssize_t write(int fd, const void *buffer, size_t count);\noff_t lseek(int fd, off_t offset, int whence);\nint   close(int fd);\nint   unlink(const char *path);",
+          "codes": {
+            "c": "int   create(const char *path, mode_t mode);\nint   open(const char *path, int flags, mode_t mode);\nssize_t read(int fd, void *buffer, size_t count);\nssize_t write(int fd, const void *buffer, size_t count);\noff_t lseek(int fd, off_t offset, int whence);\nint   close(int fd);\nint   unlink(const char *path);"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Keep this table in mind as an anchor. The rest of this chapter walks through these operations roughly in the order a file actually experiences them, starting with open, since nothing else is possible until a file has been opened."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The OPEN Operation in Depth",
+          "text": "2. The OPEN Operation in Depth"
+        },
+        {
+          "type": "paragraph",
+          "content": "Opening a file is not simply getting access to it. The operating system does real, stateful work: it locates the file through the directory structure, checks that the requesting process is allowed the requested access, and then builds a live, in memory record of this particular open. That record is usually called an open file table entry, and it lives inside the kernel, not inside the calling process."
+        },
+        {
+          "type": "paragraph",
+          "content": "That entry holds three things that matter for everything else in this chapter: a current offset that starts at 0 on a fresh open, the access mode the file was opened with, read only, write only, or read write, and a reference count that starts at 1. Every later read, write, or seek on this file actually operates on that shared entry, not on anything private to the process."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068018-219608806.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068018-219608806.png",
+          "alt": "The OPEN Operation in Depth",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068018-219608806.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Field inside the open file table entry\",\"What it tracks\"],\"rows\":[[\"Current offset\",\"Where the next read or write will start; begins at 0 on a fresh open, or at the file end if opened with an append flag\"],[\"Access mode\",\"Whether this particular open is read only, write only, or read write; every later read or write call is checked against it\"],[\"Reference count\",\"How many file descriptors, in this process or another, currently point at this exact entry; the entry is only torn down once this reaches 0\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068018-704743204.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068018-704743204.png",
+          "alt": "The OPEN Operation in Depth",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068018-704743204.png"
+        },
+        {
+          "type": "heading3",
+          "content": "Two tables, not one",
+          "text": "Two tables, not one"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is easy to assume a file descriptor is the file, or the offset. It is neither. It is a small integer that indexes into the calling process own file descriptor table, and each slot in that table simply points at an open file table entry living inside the kernel. The offset, the access mode, and the reference count all live in that kernel side entry, not inside the process table itself. This split between a private per process table and a shared kernel wide table is the single most important idea in this whole chapter."
+        },
+        {
+          "type": "blockQuote",
+          "content": "A file descriptor is not the file, and it is not even the offset. It is a small integer that points at a table entry, and that table entry is where the real state actually lives."
+        },
+        {
+          "type": "paragraph",
+          "content": "One more nuance is worth locking in now, because it comes back later when close and forking are discussed. Calling open on the same path twice, whether from the same process or two different ones, does not share anything by default. Each call to open produces its own independent open file table entry, with its own offset starting at 0 and its own reference count of 1. Two file descriptors only end up sharing a single entry, and therefore a single offset, when one is derived from the other through duplication, or inherited across a fork."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. File Descriptors: The Process Own Handle",
+          "text": "3. File Descriptors: The Process Own Handle"
+        },
+        {
+          "type": "paragraph",
+          "content": "A file descriptor is a small non negative integer that a process uses to refer to an open file in every system call it makes afterward. It is nothing more than an index into that process own file descriptor table, the table introduced in the previous section, and its only job is to point at the correct open file table entry inside the kernel."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every process, without exception, starts life with three file descriptors already open: 0 for standard input, 1 for standard output, and 2 for standard error. These are not special in any structural way. They are ordinary entries in the file descriptor table like any other, simply opened for the process before it even begins running, by a convention every program can rely on. This is why a call as simple as printf can put text on the screen: printf ultimately writes to file descriptor 1."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068478-353257398.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068478-353257398.png",
+          "alt": "File Descriptors: The Process Own Handle",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068478-353257398.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Descriptor number\",\"Standard name\",\"Typical destination\"],\"rows\":[[\"0\",\"stdin\",\"Keyboard input, or a piped input stream\"],[\"1\",\"stdout\",\"The terminal screen, or a redirected output file\"],[\"2\",\"stderr\",\"The terminal screen, kept separate from stdout so error messages are not silently redirected away with normal output\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a program opens its own first file, the kernel typically hands back the lowest free integer, which is why 3 shows up so often in textbook examples. That number is never guaranteed though; it depends entirely on which descriptors happen to be open at that moment."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. READ and WRITE: Data Transfer at the Current Offset",
+          "text": "4. READ and WRITE: Data Transfer at the Current Offset"
+        },
+        {
+          "type": "paragraph",
+          "content": "Both read and write operate relative to the file current offset, the same offset value that lives inside the open file table entry from section 2, not anywhere inside the process itself. A read call copies bytes starting at that offset into a buffer the caller provides, and a write call copies bytes from a caller supplied buffer into the file starting at that same offset."
+        },
+        {
+          "type": "paragraph",
+          "content": "Neither call requires the caller to say where to start. Both simply use whatever the offset currently is, and afterward the kernel advances that offset forward by exactly the number of bytes that were actually transferred. Read 100 bytes and the offset moves forward by 100. Write 40 bytes and it moves forward by 40. This is precisely why repeated sequential reads naturally progress through a file: call read three times in a row with no seek in between, and three consecutive chunks of the file come back, one after another, without the caller ever telling the operating system where the previous call left off."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068478-533778000.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068478-533778000.png",
+          "alt": "READ and WRITE: Data Transfer at the Current Offset",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068478-533778000.png"
+        },
+        {
+          "type": "heading3",
+          "content": "The return value is not optional",
+          "text": "The return value is not optional"
+        },
+        {
+          "type": "paragraph",
+          "content": "A read call can transfer fewer bytes than requested, most commonly because it reaches the end of the file first. A return value of 0 signals that the offset already sits at the end of the file and there is nothing left to read. Well written code always checks this return value rather than assuming the full request was satisfied, since silently ignoring it is a common source of subtle, hard to reproduce bugs."
+        },
+        {
+          "type": "code",
+          "content": "char buffer[64];\nssize_t n = read(fd, buffer, sizeof(buffer));\nwhile (n > 0) {\n    process(buffer, n);\n    n = read(fd, buffer, sizeof(buffer));\n}\n/* n reaching 0 means the offset is already at the end of the file */",
+          "code": "char buffer[64];\nssize_t n = read(fd, buffer, sizeof(buffer));\nwhile (n > 0) {\n    process(buffer, n);\n    n = read(fd, buffer, sizeof(buffer));\n}\n/* n reaching 0 means the offset is already at the end of the file */",
+          "codes": {
+            "c": "char buffer[64];\nssize_t n = read(fd, buffer, sizeof(buffer));\nwhile (n > 0) {\n    process(buffer, n);\n    n = read(fd, buffer, sizeof(buffer));\n}\n/* n reaching 0 means the offset is already at the end of the file */"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. SEEK: Repositioning Without Touching Data",
+          "text": "5. SEEK: Repositioning Without Touching Data"
+        },
+        {
+          "type": "paragraph",
+          "content": "Seek, exposed on most systems through the lseek call, changes the current offset stored in the open file table entry to a new value, and nothing else. No byte is read, no byte is written, and the file contents are completely untouched. All that changes is where the next read or write will begin."
+        },
+        {
+          "type": "paragraph",
+          "content": "This single capability is what turns a file from something that can only be consumed start to finish into something that supports random access, jumping directly to an arbitrary byte position without reading everything before it. A database engine that needs record number forty thousand does not read the thirty nine thousand nine hundred and ninety nine records before it to get there; it seeks straight to the byte offset where that record begins and reads from there."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068479-109680153.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068479-109680153.png",
+          "alt": "SEEK: Repositioning Without Touching Data",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068479-109680153.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"SEEK_SET moves the offset to an exact absolute position counted from the very start of the file.\",\"SEEK_CUR moves the offset forward or backward relative to wherever it currently sits.\",\"SEEK_END moves the offset relative to the end of the file, commonly used to jump straight to the end before appending.\"]",
+          "items": [
+            "SEEK_SET moves the offset to an exact absolute position counted from the very start of the file.",
+            "SEEK_CUR moves the offset forward or backward relative to wherever it currently sits.",
+            "SEEK_END moves the offset relative to the end of the file, commonly used to jump straight to the end before appending."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. A Worked Example: Tracing a Sequence of Operations",
+          "text": "6. A Worked Example: Tracing a Sequence of Operations"
+        },
+        {
+          "type": "paragraph",
+          "content": "The clearest way to lock all of this in is to trace one concrete sequence of calls end to end, watching the offset inside a single open file table entry change with every step."
+        },
+        {
+          "type": "list",
+          "content": "[\"open the file. The kernel creates a new open file table entry with the offset set to 0, the access mode set to read and write, and a reference count of 1. The call returns a file descriptor, say 3, that points at this new entry.\",\"read 100 bytes. The kernel copies the first 100 bytes of the file into the caller buffer, then advances the offset from 0 to 100 inside the open file table entry.\",\"seek to offset 500. No data moves at all. The kernel simply overwrites the offset value inside that same open file table entry, from 100 to 500.\",\"write 50 bytes. The kernel copies 50 bytes from the caller buffer into the file starting at byte 500, then advances the offset from 500 to 550.\",\"close the file descriptor. The reference count on the open file table entry drops from 1 to 0, and since nothing else points at it, the kernel fully releases the entry.\"]",
+          "items": [
+            "open the file. The kernel creates a new open file table entry with the offset set to 0, the access mode set to read and write, and a reference count of 1. The call returns a file descriptor, say 3, that points at this new entry.",
+            "read 100 bytes. The kernel copies the first 100 bytes of the file into the caller buffer, then advances the offset from 0 to 100 inside the open file table entry.",
+            "seek to offset 500. No data moves at all. The kernel simply overwrites the offset value inside that same open file table entry, from 100 to 500.",
+            "write 50 bytes. The kernel copies 50 bytes from the caller buffer into the file starting at byte 500, then advances the offset from 500 to 550.",
+            "close the file descriptor. The reference count on the open file table entry drops from 1 to 0, and since nothing else points at it, the kernel fully releases the entry."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068479-911202013.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068479-911202013.png",
+          "alt": "A Worked Example: Tracing a Sequence of Operations",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068479-911202013.png"
+        },
+        {
+          "type": "code",
+          "content": "int fd = open(\"data.bin\", O_RDWR);\nchar buffer[100];\nread(fd, buffer, 100);          /* offset moves from 0 to 100 */\nlseek(fd, 500, SEEK_SET);       /* offset jumps directly to 500 */\nchar payload[50];\nwrite(fd, payload, 50);         /* offset moves from 500 to 550 */\nclose(fd);                      /* reference count drops to 0 */",
+          "code": "int fd = open(\"data.bin\", O_RDWR);\nchar buffer[100];\nread(fd, buffer, 100);          /* offset moves from 0 to 100 */\nlseek(fd, 500, SEEK_SET);       /* offset jumps directly to 500 */\nchar payload[50];\nwrite(fd, payload, 50);         /* offset moves from 500 to 550 */\nclose(fd);                      /* reference count drops to 0 */",
+          "codes": {
+            "c": "int fd = open(\"data.bin\", O_RDWR);\nchar buffer[100];\nread(fd, buffer, 100);          /* offset moves from 0 to 100 */\nlseek(fd, 500, SEEK_SET);       /* offset jumps directly to 500 */\nchar payload[50];\nwrite(fd, payload, 50);         /* offset moves from 500 to 550 */\nclose(fd);                      /* reference count drops to 0 */"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice that at no point did the caller pass an explicit position into read or write. The offset lived entirely inside the kernel open file table entry the whole time, updated automatically after every operation, and seek was the only call that touched it directly without transferring any data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. CLOSE and Why the Reference Count Matters",
+          "text": "7. CLOSE and Why the Reference Count Matters"
+        },
+        {
+          "type": "paragraph",
+          "content": "Closing a file descriptor does two things: it removes that descriptor from the calling process file descriptor table, freeing that slot for reuse, and it decrements the reference count on whichever open file table entry the descriptor pointed at. Only when that count reaches 0 does the kernel actually release the underlying resource, flush any buffered data, and free the memory backing the entry itself."
+        },
+        {
+          "type": "paragraph",
+          "content": "A reference count above 1 is not an edge case, it is routine. The clearest example is fork: when a process forks, the child receives a copy of the parent entire file descriptor table, and every descriptor in that copy points at the exact same open file table entries the parent was using, not new ones. The reference count on each of those entries increases by 1 to reflect the new descriptor now pointing at it, and because it is the same entry, parent and child from that point on share a single offset."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068480-341165141.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068480-341165141.png",
+          "alt": "CLOSE and Why the Reference Count Matters",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068480-341165141.png"
+        },
+        {
+          "type": "heading3",
+          "content": "Shared offsets after fork",
+          "text": "Shared offsets after fork"
+        },
+        {
+          "type": "paragraph",
+          "content": "Concretely, if a child process reads 100 bytes right after a fork, the offset inside the shared open file table entry moves from 0 to 100. If the parent then reads next, without ever calling read itself before that point, it will receive the next 100 bytes, not the same first 100 bytes the child already consumed, because both descriptors were always pointing at one shared offset, not two independent ones."
+        },
+        {
+          "type": "note",
+          "title": "A frequent mistake",
+          "content": "It is easy to assume every file descriptor has its own private, independent offset. Duplicated descriptors, whether created directly with a call like dup, or inherited across a fork, actually share the exact same open file table entry, and therefore the exact same offset. A read through one of them silently moves the position seen by the other."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. File Locking: An Application of Mutual Exclusion",
+          "text": "8. File Locking: An Application of Mutual Exclusion"
+        },
+        {
+          "type": "paragraph",
+          "content": "Everything so far assumes a single process working with a file undisturbed. Real systems frequently have multiple processes, or multiple threads, opening and touching the very same file at the same time, and without any coordination, concurrent writes can interleave and corrupt the file contents exactly the way concurrent access to shared memory corrupts a variable."
+        },
+        {
+          "type": "paragraph",
+          "content": "The fix is file locking, and the idea should already feel familiar: it is the same mutual exclusion principle from the synchronization module, applied to a file instead of a variable in memory. A shared lock allows any number of readers at once, since reading does not change the data, while an exclusive lock allows exactly one writer and blocks every other reader and writer until it is released."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068480-730608943.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068480-730608943.png",
+          "alt": "File Locking: An Application of Mutual Exclusion",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068480-730608943.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Comparing the Operations, Common Mistakes, and the Interview Angle",
+          "text": "9. Comparing the Operations, Common Mistakes, and the Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "With every operation now covered individually, it helps to see them lined up side by side, focused specifically on what each one changes inside the open file table entry."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Operation\",\"Transfers data\",\"Effect on the offset\",\"Effect on the open file table entry\"],\"rows\":[[\"open\",\"No\",\"Set to 0, or to the file end if opened for append\",\"A brand new entry is created with reference count 1\"],[\"read\",\"Yes, file to buffer\",\"Advances forward by the number of bytes actually read\",\"Offset field updated, nothing else changes\"],[\"write\",\"Yes, buffer to file\",\"Advances forward by the number of bytes actually written\",\"Offset field updated, and the file may grow\"],[\"seek\",\"No\",\"Set directly to whatever value was requested\",\"Offset field overwritten, nothing else changes\"],[\"close\",\"No\",\"Not applicable, the descriptor no longer exists\",\"Reference count decremented, entry released only once it reaches 0\"]]}"
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming a file descriptor carries its own private offset. Descriptors created through duplication or inherited across a fork share one open file table entry, and therefore one offset, not separate ones.\",\"Assuming close immediately frees the underlying resource. It only decrements a reference count, and the resource stays alive as long as any other descriptor, in this process or another, still points at the same open file table entry.\",\"Forgetting that opening the same path twice produces two independent open file table entries with two independent offsets, even though both refer to the same underlying file on disk.\",\"Ignoring the return value of read or write, which reports how many bytes were actually transferred and can legitimately be less than what was requested.\"]",
+          "items": [
+            "Assuming a file descriptor carries its own private offset. Descriptors created through duplication or inherited across a fork share one open file table entry, and therefore one offset, not separate ones.",
+            "Assuming close immediately frees the underlying resource. It only decrements a reference count, and the resource stays alive as long as any other descriptor, in this process or another, still points at the same open file table entry.",
+            "Forgetting that opening the same path twice produces two independent open file table entries with two independent offsets, even though both refer to the same underlying file on disk.",
+            "Ignoring the return value of read or write, which reports how many bytes were actually transferred and can legitimately be less than what was requested."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Interview angle",
+          "content": "Be ready to explain this exact chain from memory: a file descriptor is a small integer, private to one process, that indexes into that process own file descriptor table; each slot in that table points at an open file table entry living inside the kernel, shared across any descriptor that was duplicated or inherited; and that shared entry is what actually holds the current offset, the access mode, and the reference count. This relationship between a file descriptor, a process file descriptor table, and the OS wide open file table is one of the most frequently asked systems interview questions, and most candidates who struggle with it are missing exactly this three level picture."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every file operation in this chapter, from open through close, is really just a well defined way to create, read, or update that shared kernel side entry. Once that picture is solid, file locking, memory mapped files, and the rest of the file systems module all build directly on top of it."
+        }
+      ]
+    }
+  ]
+}

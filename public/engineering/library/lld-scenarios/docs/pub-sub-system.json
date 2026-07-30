@@ -1,0 +1,773 @@
+{
+  "problemId": "p-pub-sub-system",
+  "title": "Pub-Sub System",
+  "slug": "pub-sub-system",
+  "sections": [
+    {
+      "id": "content",
+      "title": "Content"
+    }
+  ],
+  "content": [
+    {
+      "id": "content",
+      "title": "Content",
+      "blocks": [
+        {
+          "type": "heading1",
+          "text": "1. Problem Statement",
+          "content": "1. Problem Statement"
+        },
+        {
+          "type": "paragraph",
+          "text": "<div style=\"border:2px solid #5b5fc7;border-radius:14px;padding:18px 22px;background:rgba(91,95,199,0.07);margin:4px 0 8px 0;\"><p style=\"margin:0 0 12px 0;\">Design the core message routing engine behind a <strong>publish-subscribe system</strong> (the kind that powers Kafka topics or Google Cloud Pub/Sub). Two mechanics separate this from a plain direct-callback observer: <strong>wildcard topic matching</strong>, where a subscriber can subscribe to a pattern like \"orders.*\" and receive every message published under that family of topics, and <strong>acknowledgment-based delivery</strong>, where a message sits in a subscriber's own queue until explicitly acknowledged, gets redelivered if it times out, and is moved to a dead-letter list after too many failed attempts.</p><img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926865908-799227179.png\" alt=\"A published message is routed to every matching subscription and queued per subscriber; only an explicit acknowledgment marks it done, otherwise it is redelivered up to a limit before landing in the dead letter list\" style=\"width:100%;border-radius:8px;margin:4px 0 14px 0;\" /><ul style=\"margin:0 0 12px 1.25em;padding:0;list-style:disc;\"><li style=\"margin:4px 0;\"><strong>Actors:</strong> Publisher (publishes messages), Subscriber (subscribes to topic patterns and processes messages), PubSubService (the core orchestrator).</li><li style=\"margin:4px 0;\"><strong>Scope:</strong> exact and wildcard topic matching, per-subscriber message queues, acknowledgment, timeout-based redelivery, and dead-lettering.</li></ul><p style=\"border-left:3px solid #5b5fc7;padding-left:12px;font-style:italic;margin:0 0 12px 0;\">The distinguishing mechanic is durable, acknowledged delivery: unlike a direct observer callback that fires once and forgets, a message here lives in a subscriber's queue until explicitly acknowledged, and an unacknowledged message is redelivered up to a fixed number of times before being set aside in a dead-letter list.</p></div>"
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "2. Functional Requirements",
+          "content": "2. Functional Requirements"
+        },
+        {
+          "type": "paragraph",
+          "text": "The system must support the following <strong>core capabilities</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Subscribe to a topic pattern:</strong> an exact topic name, or a wildcard pattern using a single-segment wildcard.",
+            "<strong>Publish a message:</strong> route one copy to every subscriber with at least one matching subscription.",
+            "<strong>Receive a message:</strong> a subscriber pulls the next pending message from its own queue, marking it in flight.",
+            "<strong>Acknowledge a message:</strong> confirm successful processing, removing it from in-flight tracking.",
+            "<strong>Redeliver or dead-letter:</strong> a message left unacknowledged past a timeout is redelivered up to a retry limit, then moved to a dead-letter list."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "3. Non-Functional Requirements",
+          "content": "3. Non-Functional Requirements"
+        },
+        {
+          "type": "paragraph",
+          "text": "Beyond correctness, the design should hold up along five <strong>quality pillars</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926868357-894155684.png",
+          "metadata": {
+            "alt": "Five non-functional pillars: scalability, extensibility, maintainability, performance, thread safety"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Scalability:</strong> supporting many topics, subscribers, and in-flight messages must not require touching existing routing logic.",
+            "<strong>Extensibility:</strong> a new matching rule (multi-level wildcards, regular expressions) should plug in without rewriting the service.",
+            "<strong>Maintainability:</strong> matching, notification, and id creation are isolated in their own classes.",
+            "<strong>Performance:</strong> routing a published message is proportional to the number of registered subscriptions.",
+            "<strong>Thread safety:</strong> two concurrent receive calls on the same subscriber must never both dequeue the exact same message."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "4. Clarifying Questions",
+          "content": "4. Clarifying Questions"
+        },
+        {
+          "type": "paragraph",
+          "text": "Questions worth asking the interviewer <strong>before designing</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Should wildcards support multiple levels (matching a variable number of segments), or only a single segment at a time?",
+            "Should message ordering be strictly preserved per subscriber, even across redeliveries?",
+            "Is there a maximum queue size per subscriber, and what happens when it is exceeded?",
+            "Should a subscriber be able to unsubscribe from a pattern, and how should in-flight messages for that pattern be handled?",
+            "Is exactly-once delivery required, or is at-least-once, with the possibility of duplicate processing, acceptable?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "5. Assumptions & Constraints",
+          "content": "5. Assumptions & Constraints"
+        },
+        {
+          "type": "paragraph",
+          "text": "To keep the design focused, we make these <strong>explicit assumptions</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Wildcard patterns support a single-segment wildcard only, a pattern and a topic must have the same number of dot-separated segments to ever match.",
+            "Delivery is at-least-once, a redelivered message may in principle be processed more than once by the same subscriber.",
+            "Timeouts are modeled as an explicit tick counter advanced by the caller, rather than real wall-clock time, to keep behavior deterministic and testable.",
+            "Subscriber queues are unbounded in this design, a maximum queue size and its overflow behavior are noted as a follow-up.",
+            "A message is delivered to a subscriber at most once per publish call, even if more than one of that subscriber's patterns matches the topic."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "6. Core Entities",
+          "content": "6. Core Entities"
+        },
+        {
+          "type": "paragraph",
+          "text": "The design centers on <strong>three core entities</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926870673-445635599.png",
+          "metadata": {
+            "alt": "Core entities: Message, Subscriber, and Subscription"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Message:</strong> one published event, its topic, payload, and how many times it has been delivered.",
+            "<strong>Subscriber:</strong> one consumer, with its own pending queue, in-flight tracking, and dead-letter list.",
+            "<strong>Subscription:</strong> one topic pattern a subscriber has registered interest in."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "7. Relationships Between Entities",
+          "content": "7. Relationships Between Entities"
+        },
+        {
+          "type": "paragraph",
+          "text": "These entities connect through a small set of <strong>well-defined relationships</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926872546-770877519.png",
+          "metadata": {
+            "alt": "A publisher publishes messages; a subscriber holds many subscriptions; a message is routed to every matching subscriber, who queues it until acknowledged or dead lettered"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Subscriber to Subscription</strong> is one-to-many.",
+            "<strong>Message to Subscriber</strong> is many-to-many at the routing level, but each subscriber tracks its own independent copy and lifecycle for a delivered message."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "8. UML Class Diagram",
+          "content": "8. UML Class Diagram"
+        },
+        {
+          "type": "paragraph",
+          "text": "The class diagram below shows the <strong>full static structure</strong>, including the Strategy and Observer interfaces:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926892633-101189639.png",
+          "metadata": {
+            "alt": "UML class diagram for the Pub-Sub System"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "9. Design Patterns Used",
+          "content": "9. Design Patterns Used"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three patterns keep topic matching, notification, and id creation <strong>decoupled from the core service</strong>."
+        },
+        {
+          "type": "heading2",
+          "text": "9.1 Strategy Pattern (Topic Matching)",
+          "content": "9.1 Strategy Pattern (Topic Matching)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> an exact subscription and a wildcard subscription fundamentally disagree on how to compare a pattern against a topic, and that decision genuinely varies per subscription."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926874415-194761816.png",
+          "metadata": {
+            "alt": "TopicMatchingStrategy interface with ExactTopicMatchingStrategy and WildcardTopicMatchingStrategy implementations"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> a future multi-level wildcard or regular-expression matching rule is a new strategy implementation, with zero changes to the core routing logic in PubSubService. <strong>What it solves:</strong> it isolates pattern-matching rules from the shared, stable queueing and redelivery algorithm."
+        },
+        {
+          "type": "heading2",
+          "text": "9.2 Observer Pattern (Notifications)",
+          "content": "9.2 Observer Pattern (Notifications)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> a message being published, acknowledged, or dead-lettered are all events a real pub-sub deployment would want to react to (monitoring dashboards, alerting on dead letters)."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926876289-86169706.png",
+          "metadata": {
+            "alt": "DeliveryObserver interface notified by PubSubService on every lifecycle event"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> PubSubService does not need to know who is listening. <strong>What it solves:</strong> it decouples the core routing and redelivery workflow from side effects."
+        },
+        {
+          "type": "heading2",
+          "text": "9.3 Factory Pattern (Id Creation)",
+          "content": "9.3 Factory Pattern (Id Creation)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> message id generation should not be scattered across calling code."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926877993-404374629.png",
+          "metadata": {
+            "alt": "MessageIdFactory generating sequential M prefixed ids"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> every message is created through one consistent path. <strong>What it solves:</strong> centralizes id-generation rules so they cannot drift or collide."
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "10. Class Design",
+          "content": "10. Class Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "Each class has a single, clear <strong>responsibility</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Message:</strong> attributes messageId, topic, payload, deliveryCount; responsibility: represent one published event and its retry history.",
+            "<strong>Subscriber:</strong> attributes subscriberId, topicPatterns, pendingQueue, inFlight, deadLetterList; responsibility: track one consumer's subscriptions and message lifecycle.",
+            "<strong>PubSubService:</strong> the orchestrator; responsibility: route published messages, manage delivery and acknowledgment, and drive redelivery and dead-lettering."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "11. Interface Design",
+          "content": "11. Interface Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two interfaces keep the design <strong>open for extension</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926880282-867002091.png",
+          "metadata": {
+            "alt": "TopicMatchingStrategy and DeliveryObserver interfaces with their key methods"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>TopicMatchingStrategy:</strong> matches(pattern, topic): abstracts away exactly how a subscription pattern compares against a published topic.",
+            "<strong>DeliveryObserver:</strong> onMessagePublished / onMessageAcknowledged / onMessageDeadLettered: abstracts away who reacts to lifecycle events."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "12. Sequence Diagrams",
+          "content": "12. Sequence Diagrams"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three flows below cover a <strong>wildcard match delivering a message</strong>, a <strong>message recovering via redelivery and a late acknowledgment</strong>, and a <strong>message exhausting its retries into the dead-letter list</strong>."
+        },
+        {
+          "type": "heading2",
+          "text": "12.1 Wildcard Match",
+          "content": "12.1 Wildcard Match"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926894842-852763323.png",
+          "metadata": {
+            "alt": "Publishing to orders.created is routed to a subscriber whose pattern orders.* matches it"
+          }
+        },
+        {
+          "type": "heading2",
+          "text": "12.2 Redelivery Then Success",
+          "content": "12.2 Redelivery Then Success"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926896712-890561477.png",
+          "metadata": {
+            "alt": "An unacknowledged message times out, is redelivered, and is successfully acknowledged on its second delivery"
+          }
+        },
+        {
+          "type": "heading2",
+          "text": "12.3 Exhausted Retries Into Dead Letter",
+          "content": "12.3 Exhausted Retries Into Dead Letter"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926898454-495217833.png",
+          "metadata": {
+            "alt": "A message that times out a second time exceeds the retry limit and is moved to the dead letter list instead of being redelivered again"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "13. Important Workflows",
+          "content": "13. Important Workflows"
+        },
+        {
+          "type": "paragraph",
+          "text": "The <strong>publish-then-acknowledge-or-redeliver workflow</strong>, alongside its dead-lettering branch, looks like this:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926882056-480301470.png",
+          "metadata": {
+            "alt": "A published message is queued per matching subscriber; receiving marks it in flight; acknowledging finishes it, while a timeout without acknowledgment either redelivers it or, past the retry limit, dead letters it"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Happy path:</strong> publish → matching subscribers are enqueued → each receives it → each acknowledges it before any timeout → done.",
+            "<strong>Recovery path:</strong> publish → received but not acknowledged in time → redelivered, delivery count incremented → received again → acknowledged successfully this time.",
+            "<strong>Failure path:</strong> publish → received but never acknowledged, even after redelivery → delivery count exceeds the retry limit → moved to the dead-letter list, no further redelivery attempted."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "14. Public APIs / Methods",
+          "content": "14. Public APIs / Methods"
+        },
+        {
+          "type": "paragraph",
+          "text": "The service exposes a <strong>small, intention-revealing API</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>subscribe(subscriberId, topicPattern):</strong> registers interest in an exact topic or a wildcard pattern.",
+            "<strong>publish(topic, payload):</strong> routes one message copy to every matching subscriber, returning how many subscribers matched.",
+            "<strong>receive(subscriberId):</strong> dequeues the next pending message for a subscriber, marking it in flight.",
+            "<strong>acknowledge(subscriberId, messageId):</strong> confirms successful processing of an in-flight message.",
+            "<strong>advanceTick() / checkForRedelivery():</strong> advances the deterministic clock and sweeps for timed-out, unacknowledged messages."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "15. Exception Handling",
+          "content": "15. Exception Handling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three custom exceptions cover the <strong>realistic failure modes</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926885125-837816768.png",
+          "metadata": {
+            "alt": "InvalidTopicPatternException, EmptyQueueException, InvalidAcknowledgmentException"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>InvalidTopicPatternException:</strong> subscribe is called with a blank pattern.",
+            "<strong>EmptyQueueException:</strong> receive is called on a subscriber with nothing currently pending.",
+            "<strong>InvalidAcknowledgmentException:</strong> acknowledge references a message that is not currently in flight for that subscriber."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "16. Concurrency Considerations",
+          "content": "16. Concurrency Considerations"
+        },
+        {
+          "type": "paragraph",
+          "text": "The <strong>critical race</strong> is two threads calling receive on the same subscriber at nearly the same moment."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926886847-972197095.png",
+          "metadata": {
+            "alt": "Two threads racing to receive from the same subscriber's queue; synchronization ensures one dequeues the front message before the other reads the queue"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Synchronizing the dequeue-and-mark-in-flight step per subscriber ensures two concurrent receive calls can never both walk away with the same message, which would otherwise let it be processed, and separately acknowledged, twice."
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "17. Extensibility Discussion",
+          "content": "17. Extensibility Discussion"
+        },
+        {
+          "type": "paragraph",
+          "text": "The pattern choices make several <strong>future features</strong> low-friction to add:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A multi-level wildcard or regular-expression matching rule is a new TopicMatchingStrategy implementation.",
+            "A new notification channel (a monitoring dashboard, a dead-letter alert) is a new DeliveryObserver implementation.",
+            "A bounded queue with an overflow policy can be added by checking size in publish before enqueueing.",
+            "Unsubscribing can be added as a new method that simply removes a pattern from a subscriber's list, without touching the matching or redelivery logic."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "18. SOLID Principles Applied",
+          "content": "18. SOLID Principles Applied"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Single Responsibility:</strong> Subscriber tracks its own queue and lifecycle, TopicMatchingStrategy decides matching rules, DeliveryObserver reacts to events, each for one reason to change.",
+            "<strong>Open/Closed:</strong> new matching rules or notification behavior extends via new classes, not edits to PubSubService.",
+            "<strong>Liskov Substitution:</strong> any TopicMatchingStrategy or DeliveryObserver implementation can replace another without breaking the service.",
+            "<strong>Interface Segregation:</strong> DeliveryObserver exposes only the three lifecycle callbacks a listener actually needs.",
+            "<strong>Dependency Inversion:</strong> PubSubService depends on the TopicMatchingStrategy and DeliveryObserver interfaces, not concrete classes."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "19. Edge Cases",
+          "content": "19. Edge Cases"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A topic with a different number of segments than a wildcard pattern never matches, even if every corresponding segment up to the shorter length would otherwise agree.",
+            "A publish call that matches zero subscribers is not an error, it simply results in no messages being enqueued anywhere.",
+            "A subscriber with two different patterns that both match the same published topic still receives exactly one copy of that message, not two.",
+            "A message successfully acknowledged is removed from in-flight tracking immediately, so a later, stray redelivery sweep can never act on it."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "20. Complexity Analysis",
+          "content": "20. Complexity Analysis"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>publish:</strong> O(s) where s is the total number of registered subscriptions across every subscriber.",
+            "<strong>receive / acknowledge:</strong> O(1) for the queue and in-flight map operations involved.",
+            "<strong>checkForRedelivery:</strong> O(m) where m is the total number of currently in-flight messages across every subscriber.",
+            "<strong>Space:</strong> O(subscribers + subscriptions + messages in flight and pending) held in memory."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "21. Database Design",
+          "content": "21. Database Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "A relational schema mirrors the in-memory model directly, with <strong>foreign keys enforcing referential integrity</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784926900228-172629677.png",
+          "metadata": {
+            "alt": "ER diagram: Subscriber, Subscription, Message, and MessageDelivery"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "MESSAGE_DELIVERY tracks the per-subscriber status of one message (pending, in flight, acknowledged, dead lettered) separately from the message itself.",
+            "An index on MESSAGE_DELIVERY(subscriberId, status) speeds up finding a subscriber's next pending message."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "22. Improvements & Follow-Up Questions",
+          "content": "22. Improvements & Follow-Up Questions"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Add multi-level wildcard support, matching a variable number of trailing segments.",
+            "Add a bounded queue per subscriber with a configurable overflow policy.",
+            "Support unsubscribing, with a defined policy for already in-flight messages under a removed pattern.",
+            "In a distributed deployment, partition topics across multiple broker nodes rather than routing through a single in-process service."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Complete Code Implementation",
+          "content": "Complete Code Implementation"
+        },
+        {
+          "type": "paragraph",
+          "text": "Message, Subscriber, and MessageIdFactory:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// One published event, its topic, payload, and how many times it has been delivered.\nclass Message {\n    private final String messageId;   // unique id, e.g. M1\n    private final String topic;         // the topic it was published to\n    private final String payload;         // the message body\n    private int deliveryCount;              // how many times this has been delivered so far\n\n    public Message(String messageId, String topic, String payload) {\n        this.messageId = messageId; // store id\n        this.topic = topic;           // store topic\n        this.payload = payload;        // store payload\n        this.deliveryCount = 0;          // never delivered yet\n    }\n\n    public String getMessageId() { return messageId; } // id getter\n    public String getTopic() { return topic; }             // topic getter\n    public String getPayload() { return payload; }            // payload getter\n    public int getDeliveryCount() { return deliveryCount; }       // delivery count getter\n    public void incrementDeliveryCount() { deliveryCount++; }        // bump delivery count on each redelivery\n}\n\n// One consumer, with its own pending queue, in-flight tracking, and dead-letter list.\nclass Subscriber {\n    private final String subscriberId;                                                  // unique id\n    private final java.util.List<String> topicPatterns = new java.util.ArrayList<>();       // registered patterns\n    private final java.util.List<Message> pendingQueue = new java.util.LinkedList<>();         // messages waiting to be received\n    private final java.util.Map<String, Integer> inFlightDeliveredAtTick = new java.util.LinkedHashMap<>(); // messageId -> tick it was delivered at\n    private final java.util.Map<String, Message> inFlightMessages = new java.util.LinkedHashMap<>();           // messageId -> the message itself\n    private final java.util.List<Message> deadLetterList = new java.util.ArrayList<>();                    // messages that exhausted their retries\n\n    public Subscriber(String subscriberId) {\n        this.subscriberId = subscriberId; // store id\n    }\n\n    public String getSubscriberId() { return subscriberId; }              // id getter\n    public java.util.List<String> getTopicPatterns() { return topicPatterns; } // registered patterns getter\n    public void addPattern(String pattern) { topicPatterns.add(pattern); }        // register a new pattern\n    public void enqueue(Message message) { pendingQueue.add(message); }             // add a message to the back of the pending queue\n    public boolean hasPending() { return !pendingQueue.isEmpty(); }                    // true if anything is waiting to be received\n    public Message dequeueFront() { return ((java.util.LinkedList<Message>) pendingQueue).removeFirst(); } // remove and return the front message\n    public void requeueFront(Message message) { ((java.util.LinkedList<Message>) pendingQueue).addFirst(message); } // put a message back at the front for priority redelivery\n    public void markInFlight(Message message, int tick) {                                // record that a message is now awaiting acknowledgment\n        inFlightMessages.put(message.getMessageId(), message);\n        inFlightDeliveredAtTick.put(message.getMessageId(), tick);\n    }\n    public boolean isInFlight(String messageId) { return inFlightMessages.containsKey(messageId); } // check if a message is currently awaiting acknowledgment\n    public void clearInFlight(String messageId) {                                          // remove a message from in-flight tracking\n        inFlightMessages.remove(messageId);\n        inFlightDeliveredAtTick.remove(messageId);\n    }\n    public java.util.Map<String, Message> getInFlightMessages() { return inFlightMessages; }     // full in-flight map getter\n    public java.util.Map<String, Integer> getInFlightDeliveredAtTick() { return inFlightDeliveredAtTick; } // full delivered-at-tick map getter\n    public void addToDeadLetter(Message message) { deadLetterList.add(message); }                  // move a message into the dead letter list\n    public java.util.List<Message> getDeadLetterList() { return deadLetterList; }                     // dead letter list getter\n}\n\n// Creates sequential, correctly-prefixed ids for messages.\nclass MessageIdFactory {\n    private int messageCounter = 0; // running id counter\n\n    public String nextMessageId() {\n        messageCounter++;               // bump id counter\n        return \"M\" + messageCounter;      // e.g. M1\n    }\n}",
+            "python": "# One published event, its topic, payload, and how many times it has been delivered.\nclass Message:\n    def __init__(self, message_id, topic, payload):\n        self.message_id = message_id  # unique id, e.g. M1\n        self.topic = topic              # the topic it was published to\n        self.payload = payload            # the message body\n        self.delivery_count = 0             # never delivered yet\n\n    def increment_delivery_count(self):\n        self.delivery_count += 1  # bump delivery count on each redelivery\n\n# One consumer, with its own pending queue, in-flight tracking, and dead-letter list.\nclass Subscriber:\n    def __init__(self, subscriber_id):\n        self.subscriber_id = subscriber_id            # unique id\n        self.topic_patterns = []                          # registered patterns\n        self.pending_queue = []                              # messages waiting to be received\n        self.in_flight_delivered_at_tick = {}                   # messageId -> tick it was delivered at\n        self.in_flight_messages = {}                              # messageId -> the message itself\n        self.dead_letter_list = []                                  # messages that exhausted their retries\n\n    def add_pattern(self, pattern):\n        self.topic_patterns.append(pattern)  # register a new pattern\n\n    def enqueue(self, message):\n        self.pending_queue.append(message)  # add a message to the back of the pending queue\n\n    def has_pending(self):\n        return len(self.pending_queue) > 0  # true if anything is waiting to be received\n\n    def dequeue_front(self):\n        return self.pending_queue.pop(0)  # remove and return the front message\n\n    def requeue_front(self, message):\n        self.pending_queue.insert(0, message)  # put a message back at the front for priority redelivery\n\n    def mark_in_flight(self, message, tick):\n        self.in_flight_messages[message.message_id] = message  # record that a message is now awaiting acknowledgment\n        self.in_flight_delivered_at_tick[message.message_id] = tick\n\n    def is_in_flight(self, message_id):\n        return message_id in self.in_flight_messages  # check if a message is currently awaiting acknowledgment\n\n    def clear_in_flight(self, message_id):\n        del self.in_flight_messages[message_id]  # remove a message from in-flight tracking\n        del self.in_flight_delivered_at_tick[message_id]\n\n    def add_to_dead_letter(self, message):\n        self.dead_letter_list.append(message)  # move a message into the dead letter list\n\n# Creates sequential, correctly-prefixed ids for messages.\nclass MessageIdFactory:\n    def __init__(self):\n        self.message_counter = 0  # running id counter\n\n    def next_message_id(self):\n        self.message_counter += 1  # bump id counter\n        return f\"M{self.message_counter}\"  # e.g. M1",
+            "cpp": "#include <string>\n#include <vector>\n#include <map>\n#include <deque>\nusing namespace std;\n\n// One published event, its topic, payload, and how many times it has been delivered.\nclass Message {\npublic:\n    string messageId;    // unique id, e.g. M1\n    string topic;           // the topic it was published to\n    string payload;            // the message body\n    int deliveryCount;             // how many times this has been delivered so far\n\n    Message() : deliveryCount(0) {}\n    Message(string id, string t, string p) : messageId(id), topic(t), payload(p), deliveryCount(0) {}\n    // constructor stores id, topic, and payload, starting at zero deliveries\n\n    void incrementDeliveryCount() { deliveryCount++; } // bump delivery count on each redelivery\n};\n\n// One consumer, with its own pending queue, in-flight tracking, and dead-letter list.\nclass Subscriber {\npublic:\n    string subscriberId;                       // unique id\n    vector<string> topicPatterns;                  // registered patterns\n    deque<Message> pendingQueue;                       // messages waiting to be received\n    map<string, int> inFlightDeliveredAtTick;             // messageId -> tick it was delivered at\n    map<string, Message> inFlightMessages;                   // messageId -> the message itself\n    vector<Message> deadLetterList;                             // messages that exhausted their retries\n\n    Subscriber() {}\n    Subscriber(string id) : subscriberId(id) {} // constructor stores id\n\n    void addPattern(string pattern) { topicPatterns.push_back(pattern); } // register a new pattern\n    void enqueue(Message message) { pendingQueue.push_back(message); }      // add a message to the back of the pending queue\n    bool hasPending() { return !pendingQueue.empty(); }                        // true if anything is waiting to be received\n\n    Message dequeueFront() {                          // remove and return the front message\n        Message front = pendingQueue.front();\n        pendingQueue.pop_front();\n        return front;\n    }\n\n    void requeueFront(Message message) { pendingQueue.push_front(message); } // put a message back at the front for priority redelivery\n\n    void markInFlight(Message message, int tick) {          // record that a message is now awaiting acknowledgment\n        inFlightMessages[message.messageId] = message;\n        inFlightDeliveredAtTick[message.messageId] = tick;\n    }\n\n    bool isInFlight(string messageId) { return inFlightMessages.find(messageId) != inFlightMessages.end(); } // check if a message is currently awaiting acknowledgment\n\n    void clearInFlight(string messageId) {          // remove a message from in-flight tracking\n        inFlightMessages.erase(messageId);\n        inFlightDeliveredAtTick.erase(messageId);\n    }\n\n    void addToDeadLetter(Message message) { deadLetterList.push_back(message); } // move a message into the dead letter list\n};\n\n// Creates sequential, correctly-prefixed ids for messages.\nclass MessageIdFactory {\n    int messageCounter = 0; // running id counter\n\npublic:\n    string nextMessageId() {\n        messageCounter++;                    // bump id counter\n        return \"M\" + to_string(messageCounter); // e.g. M1\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "TopicMatchingStrategy, ExactTopicMatchingStrategy, WildcardTopicMatchingStrategy, DeliveryObserver and ConsoleDeliveryObserver:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Strategy interface: how a subscription pattern compares against a published topic.\ninterface TopicMatchingStrategy {\n    boolean matches(String pattern, String topic); // true if this pattern should receive this topic's messages\n}\n\n// The topic string must equal the pattern exactly.\nclass ExactTopicMatchingStrategy implements TopicMatchingStrategy {\n    @Override\n    public boolean matches(String pattern, String topic) {\n        return pattern.equals(topic); // exact string equality, nothing more\n    }\n}\n\n// Same segment count required, a star segment matches any single segment.\nclass WildcardTopicMatchingStrategy implements TopicMatchingStrategy {\n    @Override\n    public boolean matches(String pattern, String topic) {\n        String[] patternParts = pattern.split(\"\\\\.\");    // split the pattern into dot separated segments\n        String[] topicParts = topic.split(\"\\\\.\");           // split the topic the same way\n        if (patternParts.length != topicParts.length) return false; // different segment counts never match\n        for (int i = 0; i < patternParts.length; i++) {                // compare segment by segment\n            if (!patternParts[i].equals(\"*\") && !patternParts[i].equals(topicParts[i])) return false; // a non wildcard segment must match exactly\n        }\n        return true; // every segment agreed, or was a wildcard\n    }\n}\n\n// Observer interface: reacts to pub-sub lifecycle events.\ninterface DeliveryObserver {\n    void onMessagePublished(String topic, int matchedCount);            // a message was routed to some number of subscribers\n    void onMessageAcknowledged(String subscriberId, String messageId);     // a subscriber confirmed successful processing\n    void onMessageDeadLettered(String subscriberId, Message message);        // a message exhausted its retries\n}\n\n// Simple observer that prints events to the console.\nclass ConsoleDeliveryObserver implements DeliveryObserver {\n    @Override\n    public void onMessagePublished(String topic, int matchedCount) {\n        System.out.println(\"Published to \" + topic + \", matched \" + matchedCount + \" subscriber(s)\");\n    }\n\n    @Override\n    public void onMessageAcknowledged(String subscriberId, String messageId) {\n        System.out.println(\"Acknowledged \" + messageId + \" for \" + subscriberId);\n    }\n\n    @Override\n    public void onMessageDeadLettered(String subscriberId, Message message) {\n        System.out.println(\"Dead lettered \" + message.getMessageId() + \" for \" + subscriberId);\n    }\n}",
+            "python": "# Strategy interface: how a subscription pattern compares against a published topic.\nclass TopicMatchingStrategy:\n    def matches(self, pattern, topic): raise NotImplementedError\n\n# The topic string must equal the pattern exactly.\nclass ExactTopicMatchingStrategy(TopicMatchingStrategy):\n    def matches(self, pattern, topic):\n        return pattern == topic  # exact string equality, nothing more\n\n# Same segment count required, a star segment matches any single segment.\nclass WildcardTopicMatchingStrategy(TopicMatchingStrategy):\n    def matches(self, pattern, topic):\n        pattern_parts = pattern.split(\".\")   # split the pattern into dot separated segments\n        topic_parts = topic.split(\".\")          # split the topic the same way\n        if len(pattern_parts) != len(topic_parts):\n            return False  # different segment counts never match\n        for i in range(len(pattern_parts)):  # compare segment by segment\n            if pattern_parts[i] != \"*\" and pattern_parts[i] != topic_parts[i]:\n                return False  # a non wildcard segment must match exactly\n        return True  # every segment agreed, or was a wildcard\n\n# Observer interface: reacts to pub-sub lifecycle events.\nclass DeliveryObserver:\n    def on_message_published(self, topic, matched_count): raise NotImplementedError\n    def on_message_acknowledged(self, subscriber_id, message_id): raise NotImplementedError\n    def on_message_dead_lettered(self, subscriber_id, message): raise NotImplementedError\n\n# Simple observer that prints events to the console.\nclass ConsoleDeliveryObserver(DeliveryObserver):\n    def on_message_published(self, topic, matched_count):\n        print(f\"Published to {topic}, matched {matched_count} subscriber(s)\")\n\n    def on_message_acknowledged(self, subscriber_id, message_id):\n        print(f\"Acknowledged {message_id} for {subscriber_id}\")\n\n    def on_message_dead_lettered(self, subscriber_id, message):\n        print(f\"Dead lettered {message.message_id} for {subscriber_id}\")",
+            "cpp": "#include <string>\n#include <vector>\n#include <sstream>\n#include <iostream>\nusing namespace std;\n\n// Splits a dot separated string into its segments.\nvector<string> splitBySegment(const string& value) {\n    vector<string> parts;              // accumulated segments\n    stringstream stream(value);           // stream over the input\n    string segment;                          // one segment at a time\n    while (getline(stream, segment, '.')) parts.push_back(segment); // split on every dot\n    return parts; // the full list of segments\n}\n\n// Strategy interface: how a subscription pattern compares against a published topic.\nclass TopicMatchingStrategy {\npublic:\n    virtual bool matches(const string& pattern, const string& topic) = 0;\n    virtual ~TopicMatchingStrategy() {}\n};\n\n// The topic string must equal the pattern exactly.\nclass ExactTopicMatchingStrategy : public TopicMatchingStrategy {\npublic:\n    bool matches(const string& pattern, const string& topic) override {\n        return pattern == topic; // exact string equality, nothing more\n    }\n};\n\n// Same segment count required, a star segment matches any single segment.\nclass WildcardTopicMatchingStrategy : public TopicMatchingStrategy {\npublic:\n    bool matches(const string& pattern, const string& topic) override {\n        vector<string> patternParts = splitBySegment(pattern);    // split the pattern into dot separated segments\n        vector<string> topicParts = splitBySegment(topic);           // split the topic the same way\n        if (patternParts.size() != topicParts.size()) return false;     // different segment counts never match\n        for (size_t i = 0; i < patternParts.size(); i++) {                  // compare segment by segment\n            if (patternParts[i] != \"*\" && patternParts[i] != topicParts[i]) return false; // a non wildcard segment must match exactly\n        }\n        return true; // every segment agreed, or was a wildcard\n    }\n};\n\n// Observer interface: reacts to pub-sub lifecycle events.\nclass DeliveryObserver {\npublic:\n    virtual void onMessagePublished(const string& topic, int matchedCount) = 0;\n    virtual void onMessageAcknowledged(const string& subscriberId, const string& messageId) = 0;\n    virtual void onMessageDeadLettered(const string& subscriberId, const Message& message) = 0;\n    virtual ~DeliveryObserver() {}\n};\n\n// Simple observer that prints events to the console.\nclass ConsoleDeliveryObserver : public DeliveryObserver {\npublic:\n    void onMessagePublished(const string& topic, int matchedCount) override {\n        cout << \"Published to \" << topic << \", matched \" << matchedCount << \" subscriber(s)\" << endl;\n    }\n    void onMessageAcknowledged(const string& subscriberId, const string& messageId) override {\n        cout << \"Acknowledged \" << messageId << \" for \" << subscriberId << endl;\n    }\n    void onMessageDeadLettered(const string& subscriberId, const Message& message) override {\n        cout << \"Dead lettered \" << message.messageId << \" for \" << subscriberId << endl;\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "PubSubService, including publish, receive, acknowledge, and the redelivery sweep:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Custom exceptions for the realistic failure modes.\nclass InvalidTopicPatternException extends RuntimeException {\n    public InvalidTopicPatternException(String msg) { super(msg); }\n}\nclass EmptyQueueException extends RuntimeException {\n    public EmptyQueueException(String msg) { super(msg); }\n}\nclass InvalidAcknowledgmentException extends RuntimeException {\n    public InvalidAcknowledgmentException(String msg) { super(msg); }\n}\n\n// The core message routing engine tying every piece together.\nclass PubSubService {\n    private final java.util.Map<String, Subscriber> subscribers = new java.util.LinkedHashMap<>(); // subscriberId -> Subscriber\n    private final java.util.List<DeliveryObserver> observers = new java.util.ArrayList<>();      // listeners\n    private final ExactTopicMatchingStrategy exactStrategy = new ExactTopicMatchingStrategy();       // reused exact matcher\n    private final WildcardTopicMatchingStrategy wildcardStrategy = new WildcardTopicMatchingStrategy(); // reused wildcard matcher\n    private int currentTick = 0;                                                                          // deterministic logical clock\n    private final int maxRetries;                                                                            // redelivery attempts allowed before dead lettering\n    private final int timeoutTicks;                                                                             // ticks an in-flight message may wait before timing out\n\n    public PubSubService(int maxRetries, int timeoutTicks) {\n        this.maxRetries = maxRetries;       // store retry limit\n        this.timeoutTicks = timeoutTicks;     // store timeout window\n    }\n\n    public void addObserver(DeliveryObserver observer) { observers.add(observer); } // register a listener\n\n    public Subscriber subscriberFor(String subscriberId) {\n        return subscribers.computeIfAbsent(subscriberId, Subscriber::new); // create the subscriber on first use\n    }\n\n    private TopicMatchingStrategy strategyFor(String pattern) {\n        return pattern.contains(\"*\") ? wildcardStrategy : exactStrategy; // a wildcard character selects the wildcard strategy\n    }\n\n    // Registers interest in an exact topic or a wildcard pattern.\n    public void subscribe(String subscriberId, String pattern) {\n        if (pattern == null || pattern.trim().isEmpty()) { // blank patterns are not allowed\n            throw new InvalidTopicPatternException(\"Topic pattern must not be blank\");\n        }\n        subscriberFor(subscriberId).addPattern(pattern); // register the pattern\n    }\n\n    // Routes one message copy to every subscriber with at least one matching subscription.\n    public int publish(String topic, String payload, MessageIdFactory factory) {\n        int matchedCount = 0;                                                          // how many subscribers matched\n        for (Subscriber subscriber : subscribers.values()) {                              // scan every registered subscriber\n            boolean matched = false;                                                         // has this subscriber already matched this publish\n            for (String pattern : subscriber.getTopicPatterns()) {                              // scan every one of their patterns\n                if (strategyFor(pattern).matches(pattern, topic)) { matched = true; break; }        // one match is enough\n            }\n            if (matched) {                                                                        // enqueue exactly one copy for this subscriber\n                Message message = new Message(factory.nextMessageId(), topic, payload);\n                subscriber.enqueue(message);\n                matchedCount++;\n            }\n        }\n        for (DeliveryObserver obs : observers) obs.onMessagePublished(topic, matchedCount); // notify\n        return matchedCount; // how many subscribers received a copy\n    }\n\n    // Dequeues the next pending message for a subscriber, marking it in flight.\n    public synchronized Message receive(String subscriberId) {\n        Subscriber subscriber = subscriberFor(subscriberId);          // the subscriber pulling a message\n        if (!subscriber.hasPending()) {                                  // nothing waiting\n            throw new EmptyQueueException(\"No pending messages for \" + subscriberId);\n        }\n        Message message = subscriber.dequeueFront();                        // take the front of the queue\n        subscriber.markInFlight(message, currentTick);                         // start tracking it as awaiting acknowledgment\n        return message; // hand back the message now in flight\n    }\n\n    // Confirms successful processing of an in-flight message.\n    public void acknowledge(String subscriberId, String messageId) {\n        Subscriber subscriber = subscriberFor(subscriberId);          // the subscriber acknowledging\n        if (!subscriber.isInFlight(messageId)) {                         // this message is not currently awaiting acknowledgment\n            throw new InvalidAcknowledgmentException(messageId + \" is not in flight for \" + subscriberId);\n        }\n        subscriber.clearInFlight(messageId);                                 // done, stop tracking it\n        for (DeliveryObserver obs : observers) obs.onMessageAcknowledged(subscriberId, messageId); // notify\n    }\n\n    public void advanceTick() { currentTick++; } // advances the deterministic logical clock by one step\n\n    // Sweeps every subscriber's in-flight messages, redelivering or dead-lettering anything that has timed out.\n    public void checkForRedelivery() {\n        for (Subscriber subscriber : subscribers.values()) {                                                       // scan every subscriber\n            java.util.List<String> timedOut = new java.util.ArrayList<>();                                             // ids that have timed out this sweep\n            for (java.util.Map.Entry<String, Integer> entry : subscriber.getInFlightDeliveredAtTick().entrySet()) {        // scan every in-flight message\n                if (currentTick-entry.getValue() >= timeoutTicks) timedOut.add(entry.getKey()); // this one has waited too long\n            }\n            for (String messageId : timedOut) {                                                                          // handle each timed out message\n                Message message = subscriber.getInFlightMessages().get(messageId);                                          // the message itself\n                subscriber.clearInFlight(messageId);                                                                           // no longer in flight\n                message.incrementDeliveryCount();                                                                                // this counts as a failed attempt\n                if (message.getDeliveryCount() > maxRetries) {                                                                     // retries exhausted\n                    subscriber.addToDeadLetter(message);                                                                              // set it aside permanently\n                    for (DeliveryObserver obs : observers) obs.onMessageDeadLettered(subscriber.getSubscriberId(), message);\n                } else {                                                                                                              // still has attempts left\n                    subscriber.requeueFront(message);                                                                                    // redeliver it next\n                }\n            }\n        }\n    }\n}",
+            "python": "# Custom exceptions for the realistic failure modes.\nclass InvalidTopicPatternException(Exception): pass\nclass EmptyQueueException(Exception): pass\nclass InvalidAcknowledgmentException(Exception): pass\n\n# The core message routing engine tying every piece together.\nclass PubSubService:\n    def __init__(self, max_retries, timeout_ticks):\n        self.subscribers = {}      # subscriberId -> Subscriber\n        self.observers = []           # listeners\n        self.exact_strategy = ExactTopicMatchingStrategy()      # reused exact matcher\n        self.wildcard_strategy = WildcardTopicMatchingStrategy()  # reused wildcard matcher\n        self.current_tick = 0                                       # deterministic logical clock\n        self.max_retries = max_retries                                 # redelivery attempts allowed before dead lettering\n        self.timeout_ticks = timeout_ticks                                # ticks an in-flight message may wait before timing out\n\n    def add_observer(self, observer):\n        self.observers.append(observer)  # register a listener\n\n    def _subscriber_for(self, subscriber_id):\n        if subscriber_id not in self.subscribers:\n            self.subscribers[subscriber_id] = Subscriber(subscriber_id)  # create the subscriber on first use\n        return self.subscribers[subscriber_id]\n\n    def _strategy_for(self, pattern):\n        return self.wildcard_strategy if \"*\" in pattern else self.exact_strategy  # a wildcard character selects the wildcard strategy\n\n    def subscribe(self, subscriber_id, pattern):\n        if pattern is None or pattern.strip() == \"\":  # blank patterns are not allowed\n            raise InvalidTopicPatternException(\"Topic pattern must not be blank\")\n        self._subscriber_for(subscriber_id).add_pattern(pattern)  # register the pattern\n\n    def publish(self, topic, payload, factory):\n        matched_count = 0  # how many subscribers matched\n        for subscriber in self.subscribers.values():  # scan every registered subscriber\n            matched = False  # has this subscriber already matched this publish\n            for pattern in subscriber.topic_patterns:  # scan every one of their patterns\n                if self._strategy_for(pattern).matches(pattern, topic):\n                    matched = True\n                    break  # one match is enough\n            if matched:  # enqueue exactly one copy for this subscriber\n                message = Message(factory.next_message_id(), topic, payload)\n                subscriber.enqueue(message)\n                matched_count += 1\n        for obs in self.observers:\n            obs.on_message_published(topic, matched_count)  # notify\n        return matched_count  # how many subscribers received a copy\n\n    def receive(self, subscriber_id):\n        subscriber = self._subscriber_for(subscriber_id)  # the subscriber pulling a message\n        if not subscriber.has_pending():  # nothing waiting\n            raise EmptyQueueException(f\"No pending messages for {subscriber_id}\")\n        message = subscriber.dequeue_front()  # take the front of the queue\n        subscriber.mark_in_flight(message, self.current_tick)  # start tracking it as awaiting acknowledgment\n        return message  # hand back the message now in flight\n\n    def acknowledge(self, subscriber_id, message_id):\n        subscriber = self._subscriber_for(subscriber_id)  # the subscriber acknowledging\n        if not subscriber.is_in_flight(message_id):  # this message is not currently awaiting acknowledgment\n            raise InvalidAcknowledgmentException(f\"{message_id} is not in flight for {subscriber_id}\")\n        subscriber.clear_in_flight(message_id)  # done, stop tracking it\n        for obs in self.observers:\n            obs.on_message_acknowledged(subscriber_id, message_id)  # notify\n\n    def advance_tick(self):\n        self.current_tick += 1  # advances the deterministic logical clock by one step\n\n    def check_for_redelivery(self):\n        for subscriber in self.subscribers.values():  # scan every subscriber\n            timed_out = []  # ids that have timed out this sweep\n            for message_id, delivered_at in subscriber.in_flight_delivered_at_tick.items():  # scan every in-flight message\n                if self.current_tick-delivered_at >= self.timeout_ticks:\n                    timed_out.append(message_id)  # this one has waited too long\n            for message_id in timed_out:  # handle each timed out message\n                message = subscriber.in_flight_messages[message_id]  # the message itself\n                subscriber.clear_in_flight(message_id)  # no longer in flight\n                message.increment_delivery_count()  # this counts as a failed attempt\n                if message.delivery_count > self.max_retries:  # retries exhausted\n                    subscriber.add_to_dead_letter(message)  # set it aside permanently\n                    for obs in self.observers:\n                        obs.on_message_dead_lettered(subscriber.subscriber_id, message)\n                else:  # still has attempts left\n                    subscriber.requeue_front(message)  # redeliver it next",
+            "cpp": "#include <string>\n#include <vector>\n#include <map>\n#include <memory>\n#include <stdexcept>\nusing namespace std;\n\n// Custom exceptions for the realistic failure modes.\nclass InvalidTopicPatternException : public runtime_error {\npublic: InvalidTopicPatternException(const string& msg) : runtime_error(msg) {}\n};\nclass EmptyQueueException : public runtime_error {\npublic: EmptyQueueException(const string& msg) : runtime_error(msg) {}\n};\nclass InvalidAcknowledgmentException : public runtime_error {\npublic: InvalidAcknowledgmentException(const string& msg) : runtime_error(msg) {}\n};\n\n// The core message routing engine tying every piece together.\nclass PubSubService {\n    map<string, Subscriber> subscribers;                 // subscriberId -> Subscriber\n    vector<shared_ptr<DeliveryObserver>> observers;          // listeners\n    ExactTopicMatchingStrategy exactStrategy;                   // reused exact matcher\n    WildcardTopicMatchingStrategy wildcardStrategy;                // reused wildcard matcher\n    int currentTick = 0;                                              // deterministic logical clock\n    int maxRetries;                                                      // redelivery attempts allowed before dead lettering\n    int timeoutTicks;                                                       // ticks an in-flight message may wait before timing out\n\n    Subscriber& subscriberFor(string subscriberId) {\n        if (subscribers.find(subscriberId) == subscribers.end()) subscribers[subscriberId] = Subscriber(subscriberId); // create on first use\n        return subscribers.at(subscriberId);\n    }\n\n    TopicMatchingStrategy& strategyFor(string pattern) {\n        if (pattern.find('*') != string::npos) return wildcardStrategy; // a wildcard character selects the wildcard strategy\n        return exactStrategy;\n    }\n\npublic:\n    PubSubService(int retries, int timeout) : maxRetries(retries), timeoutTicks(timeout) {} // store retry limit and timeout window\n\n    void addObserver(shared_ptr<DeliveryObserver> observer) { observers.push_back(observer); } // register a listener\n\n    void subscribe(string subscriberId, string pattern) {\n        if (pattern.empty()) throw InvalidTopicPatternException(\"Topic pattern must not be blank\"); // blank patterns are not allowed\n        subscriberFor(subscriberId).addPattern(pattern); // register the pattern\n    }\n\n    int publish(string topic, string payload, MessageIdFactory& factory) {\n        int matchedCount = 0;                                                          // how many subscribers matched\n        for (auto& pair : subscribers) {                                                  // scan every registered subscriber\n            Subscriber& subscriber = pair.second;\n            bool matched = false;                                                            // has this subscriber already matched this publish\n            for (auto& pattern : subscriber.topicPatterns) {                                     // scan every one of their patterns\n                if (strategyFor(pattern).matches(pattern, topic)) { matched = true; break; }         // one match is enough\n            }\n            if (matched) {                                                                        // enqueue exactly one copy for this subscriber\n                Message message(factory.nextMessageId(), topic, payload);\n                subscriber.enqueue(message);\n                matchedCount++;\n            }\n        }\n        for (auto& obs : observers) obs->onMessagePublished(topic, matchedCount); // notify\n        return matchedCount; // how many subscribers received a copy\n    }\n\n    Message receive(string subscriberId) {\n        Subscriber& subscriber = subscriberFor(subscriberId);          // the subscriber pulling a message\n        if (!subscriber.hasPending()) throw EmptyQueueException(\"No pending messages for \" + subscriberId); // nothing waiting\n        Message message = subscriber.dequeueFront();                       // take the front of the queue\n        subscriber.markInFlight(message, currentTick);                        // start tracking it as awaiting acknowledgment\n        return message; // hand back the message now in flight\n    }\n\n    void acknowledge(string subscriberId, string messageId) {\n        Subscriber& subscriber = subscriberFor(subscriberId);          // the subscriber acknowledging\n        if (!subscriber.isInFlight(messageId)) throw InvalidAcknowledgmentException(messageId + \" is not in flight for \" + subscriberId); // not currently awaiting acknowledgment\n        subscriber.clearInFlight(messageId);                                 // done, stop tracking it\n        for (auto& obs : observers) obs->onMessageAcknowledged(subscriberId, messageId); // notify\n    }\n\n    void advanceTick() { currentTick++; } // advances the deterministic logical clock by one step\n\n    void checkForRedelivery() {\n        for (auto& pair : subscribers) {                                                                            // scan every subscriber\n            Subscriber& subscriber = pair.second;\n            vector<string> timedOut;                                                                                    // ids that have timed out this sweep\n            for (auto& entry : subscriber.inFlightDeliveredAtTick) {                                                       // scan every in-flight message\n                if (currentTick-entry.second >= timeoutTicks) timedOut.push_back(entry.first); // this one has waited too long\n            }\n            for (auto& messageId : timedOut) {                                                                            // handle each timed out message\n                Message message = subscriber.inFlightMessages.at(messageId);                                                 // the message itself\n                subscriber.clearInFlight(messageId);                                                                            // no longer in flight\n                message.incrementDeliveryCount();                                                                                 // this counts as a failed attempt\n                if (message.deliveryCount > maxRetries) {                                                                          // retries exhausted\n                    subscriber.addToDeadLetter(message);                                                                               // set it aside permanently\n                    for (auto& obs : observers) obs->onMessageDeadLettered(subscriber.subscriberId, message);\n                } else {                                                                                                               // still has attempts left\n                    subscriber.requeueFront(message);                                                                                     // redeliver it next\n                }\n            }\n        }\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Complete, self-contained, directly runnable file (every class above combined into one file per language, exactly as you would actually copy, compile and run it), demonstrating exact and wildcard routing, a topic that matches nobody, a message that recovers via redelivery and a late acknowledgment, and a message that exhausts its retries into the dead letter list:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        PubSubService service = new PubSubService(1, 3);\n        service.addObserver(new ConsoleDeliveryObserver());\n        MessageIdFactory factory = new MessageIdFactory();\n\n        service.subscribe(\"SubA\", \"orders.created\");\n        service.subscribe(\"SubB\", \"orders.*\");\n        service.subscribe(\"SubC\", \"payments.*\");\n\n        service.publish(\"orders.created\", \"Order123\", factory);\n        service.publish(\"orders.cancelled\", \"Order124\", factory);\n        service.publish(\"orders.created.urgent\", \"Order125\", factory);\n\n        Message subAMessage = service.receive(\"SubA\");\n        service.acknowledge(\"SubA\", subAMessage.getMessageId());\n\n        Message firstForB = service.receive(\"SubB\");\n        Message secondForB = service.receive(\"SubB\");\n\n        service.advanceTick();\n        service.advanceTick();\n        service.advanceTick();\n        service.checkForRedelivery();\n\n        Message redeliveredFirst = service.receive(\"SubB\");\n        service.acknowledge(\"SubB\", redeliveredFirst.getMessageId());\n\n        Message redeliveredSecond = service.receive(\"SubB\");\n\n        service.advanceTick();\n        service.advanceTick();\n        service.advanceTick();\n        service.checkForRedelivery();\n\n        try {\n            service.receive(\"SubB\");\n        } catch (EmptyQueueException e) {\n            System.out.println(\"Caught expected: \" + e.getMessage());\n        }\n\n        try {\n            service.acknowledge(\"SubB\", \"nonexistent-id\");\n        } catch (InvalidAcknowledgmentException e) {\n            System.out.println(\"Caught expected: \" + e.getMessage());\n        }\n\n        try {\n            service.subscribe(\"SubD\", \"\");\n        } catch (InvalidTopicPatternException e) {\n            System.out.println(\"Caught expected: \" + e.getMessage());\n        }\n\n        Subscriber subscriberB = service.subscriberFor(\"SubB\");\n        System.out.println(\"Dead letter count for SubB: \" + subscriberB.getDeadLetterList().size());\n        for (Message m : subscriberB.getDeadLetterList()) {\n            System.out.println(\"Dead lettered payload: \" + m.getPayload());\n        }\n    }\n}\n\nclass Message {\n    private final String messageId;\n    private final String topic;\n    private final String payload;\n    private int deliveryCount;\n\n    public Message(String messageId, String topic, String payload) {\n        this.messageId = messageId;\n        this.topic = topic;\n        this.payload = payload;\n        this.deliveryCount = 0;\n    }\n\n    public String getMessageId() { return messageId; }\n    public String getTopic() { return topic; }\n    public String getPayload() { return payload; }\n    public int getDeliveryCount() { return deliveryCount; }\n    public void incrementDeliveryCount() { deliveryCount++; }\n}\n\nclass Subscriber {\n    private final String subscriberId;\n    private final List<String> topicPatterns = new ArrayList<>();\n    private final LinkedList<Message> pendingQueue = new LinkedList<>();\n    private final Map<String, Integer> inFlightDeliveredAtTick = new LinkedHashMap<>();\n    private final Map<String, Message> inFlightMessages = new LinkedHashMap<>();\n    private final List<Message> deadLetterList = new ArrayList<>();\n\n    public Subscriber(String subscriberId) {\n        this.subscriberId = subscriberId;\n    }\n\n    public String getSubscriberId() { return subscriberId; }\n    public List<String> getTopicPatterns() { return topicPatterns; }\n    public void addPattern(String pattern) { topicPatterns.add(pattern); }\n    public void enqueue(Message message) { pendingQueue.add(message); }\n    public boolean hasPending() { return !pendingQueue.isEmpty(); }\n    public Message dequeueFront() { return pendingQueue.removeFirst(); }\n    public void requeueFront(Message message) { pendingQueue.addFirst(message); }\n    public void markInFlight(Message message, int tick) {\n        inFlightMessages.put(message.getMessageId(), message);\n        inFlightDeliveredAtTick.put(message.getMessageId(), tick);\n    }\n    public boolean isInFlight(String messageId) { return inFlightMessages.containsKey(messageId); }\n    public void clearInFlight(String messageId) {\n        inFlightMessages.remove(messageId);\n        inFlightDeliveredAtTick.remove(messageId);\n    }\n    public Map<String, Message> getInFlightMessages() { return inFlightMessages; }\n    public Map<String, Integer> getInFlightDeliveredAtTick() { return inFlightDeliveredAtTick; }\n    public void addToDeadLetter(Message message) { deadLetterList.add(message); }\n    public List<Message> getDeadLetterList() { return deadLetterList; }\n}\n\nclass MessageIdFactory {\n    private int messageCounter = 0;\n\n    public String nextMessageId() {\n        messageCounter++;\n        return \"M\" + messageCounter;\n    }\n}\n\ninterface TopicMatchingStrategy {\n    boolean matches(String pattern, String topic);\n}\n\nclass ExactTopicMatchingStrategy implements TopicMatchingStrategy {\n    @Override\n    public boolean matches(String pattern, String topic) {\n        return pattern.equals(topic);\n    }\n}\n\nclass WildcardTopicMatchingStrategy implements TopicMatchingStrategy {\n    @Override\n    public boolean matches(String pattern, String topic) {\n        String[] patternParts = pattern.split(\"\\\\.\");\n        String[] topicParts = topic.split(\"\\\\.\");\n        if (patternParts.length != topicParts.length) return false;\n        for (int i = 0; i < patternParts.length; i++) {\n            if (!patternParts[i].equals(\"*\") && !patternParts[i].equals(topicParts[i])) return false;\n        }\n        return true;\n    }\n}\n\ninterface DeliveryObserver {\n    void onMessagePublished(String topic, int matchedCount);\n    void onMessageAcknowledged(String subscriberId, String messageId);\n    void onMessageDeadLettered(String subscriberId, Message message);\n}\n\nclass ConsoleDeliveryObserver implements DeliveryObserver {\n    @Override\n    public void onMessagePublished(String topic, int matchedCount) {\n        System.out.println(\"Published to \" + topic + \", matched \" + matchedCount + \" subscriber(s)\");\n    }\n\n    @Override\n    public void onMessageAcknowledged(String subscriberId, String messageId) {\n        System.out.println(\"Acknowledged \" + messageId + \" for \" + subscriberId);\n    }\n\n    @Override\n    public void onMessageDeadLettered(String subscriberId, Message message) {\n        System.out.println(\"Dead lettered \" + message.getMessageId() + \" for \" + subscriberId);\n    }\n}\n\nclass InvalidTopicPatternException extends RuntimeException {\n    public InvalidTopicPatternException(String msg) { super(msg); }\n}\nclass EmptyQueueException extends RuntimeException {\n    public EmptyQueueException(String msg) { super(msg); }\n}\nclass InvalidAcknowledgmentException extends RuntimeException {\n    public InvalidAcknowledgmentException(String msg) { super(msg); }\n}\n\nclass PubSubService {\n    private final Map<String, Subscriber> subscribers = new LinkedHashMap<>();\n    private final List<DeliveryObserver> observers = new ArrayList<>();\n    private final ExactTopicMatchingStrategy exactStrategy = new ExactTopicMatchingStrategy();\n    private final WildcardTopicMatchingStrategy wildcardStrategy = new WildcardTopicMatchingStrategy();\n    private int currentTick = 0;\n    private final int maxRetries;\n    private final int timeoutTicks;\n\n    public PubSubService(int maxRetries, int timeoutTicks) {\n        this.maxRetries = maxRetries;\n        this.timeoutTicks = timeoutTicks;\n    }\n\n    public void addObserver(DeliveryObserver observer) { observers.add(observer); }\n\n    public Subscriber subscriberFor(String subscriberId) {\n        return subscribers.computeIfAbsent(subscriberId, Subscriber::new);\n    }\n\n    private TopicMatchingStrategy strategyFor(String pattern) {\n        return pattern.contains(\"*\") ? wildcardStrategy : exactStrategy;\n    }\n\n    public void subscribe(String subscriberId, String pattern) {\n        if (pattern == null || pattern.trim().isEmpty()) {\n            throw new InvalidTopicPatternException(\"Topic pattern must not be blank\");\n        }\n        subscriberFor(subscriberId).addPattern(pattern);\n    }\n\n    public int publish(String topic, String payload, MessageIdFactory factory) {\n        int matchedCount = 0;\n        for (Subscriber subscriber : subscribers.values()) {\n            boolean matched = false;\n            for (String pattern : subscriber.getTopicPatterns()) {\n                if (strategyFor(pattern).matches(pattern, topic)) { matched = true; break; }\n            }\n            if (matched) {\n                Message message = new Message(factory.nextMessageId(), topic, payload);\n                subscriber.enqueue(message);\n                matchedCount++;\n            }\n        }\n        for (DeliveryObserver obs : observers) obs.onMessagePublished(topic, matchedCount);\n        return matchedCount;\n    }\n\n    public synchronized Message receive(String subscriberId) {\n        Subscriber subscriber = subscriberFor(subscriberId);\n        if (!subscriber.hasPending()) {\n            throw new EmptyQueueException(\"No pending messages for \" + subscriberId);\n        }\n        Message message = subscriber.dequeueFront();\n        subscriber.markInFlight(message, currentTick);\n        return message;\n    }\n\n    public void acknowledge(String subscriberId, String messageId) {\n        Subscriber subscriber = subscriberFor(subscriberId);\n        if (!subscriber.isInFlight(messageId)) {\n            throw new InvalidAcknowledgmentException(messageId + \" is not in flight for \" + subscriberId);\n        }\n        subscriber.clearInFlight(messageId);\n        for (DeliveryObserver obs : observers) obs.onMessageAcknowledged(subscriberId, messageId);\n    }\n\n    public void advanceTick() { currentTick++; }\n\n    public void checkForRedelivery() {\n        for (Subscriber subscriber : subscribers.values()) {\n            List<String> timedOut = new ArrayList<>();\n            for (Map.Entry<String, Integer> entry : subscriber.getInFlightDeliveredAtTick().entrySet()) {\n                if (currentTick-entry.getValue() >= timeoutTicks) timedOut.add(entry.getKey());\n            }\n            for (String messageId : timedOut) {\n                Message message = subscriber.getInFlightMessages().get(messageId);\n                subscriber.clearInFlight(messageId);\n                message.incrementDeliveryCount();\n                if (message.getDeliveryCount() > maxRetries) {\n                    subscriber.addToDeadLetter(message);\n                    for (DeliveryObserver obs : observers) obs.onMessageDeadLettered(subscriber.getSubscriberId(), message);\n                } else {\n                    subscriber.requeueFront(message);\n                }\n            }\n        }\n    }\n}",
+            "python": "class Message:\n    def __init__(self, message_id, topic, payload):\n        self.message_id = message_id\n        self.topic = topic\n        self.payload = payload\n        self.delivery_count = 0\n\n    def increment_delivery_count(self):\n        self.delivery_count += 1\n\nclass Subscriber:\n    def __init__(self, subscriber_id):\n        self.subscriber_id = subscriber_id\n        self.topic_patterns = []\n        self.pending_queue = []\n        self.in_flight_delivered_at_tick = {}\n        self.in_flight_messages = {}\n        self.dead_letter_list = []\n\n    def add_pattern(self, pattern):\n        self.topic_patterns.append(pattern)\n\n    def enqueue(self, message):\n        self.pending_queue.append(message)\n\n    def has_pending(self):\n        return len(self.pending_queue) > 0\n\n    def dequeue_front(self):\n        return self.pending_queue.pop(0)\n\n    def requeue_front(self, message):\n        self.pending_queue.insert(0, message)\n\n    def mark_in_flight(self, message, tick):\n        self.in_flight_messages[message.message_id] = message\n        self.in_flight_delivered_at_tick[message.message_id] = tick\n\n    def is_in_flight(self, message_id):\n        return message_id in self.in_flight_messages\n\n    def clear_in_flight(self, message_id):\n        del self.in_flight_messages[message_id]\n        del self.in_flight_delivered_at_tick[message_id]\n\n    def add_to_dead_letter(self, message):\n        self.dead_letter_list.append(message)\n\nclass MessageIdFactory:\n    def __init__(self):\n        self.message_counter = 0\n\n    def next_message_id(self):\n        self.message_counter += 1\n        return f\"M{self.message_counter}\"\n\nclass TopicMatchingStrategy:\n    def matches(self, pattern, topic): raise NotImplementedError\n\nclass ExactTopicMatchingStrategy(TopicMatchingStrategy):\n    def matches(self, pattern, topic):\n        return pattern == topic\n\nclass WildcardTopicMatchingStrategy(TopicMatchingStrategy):\n    def matches(self, pattern, topic):\n        pattern_parts = pattern.split(\".\")\n        topic_parts = topic.split(\".\")\n        if len(pattern_parts) != len(topic_parts):\n            return False\n        for i in range(len(pattern_parts)):\n            if pattern_parts[i] != \"*\" and pattern_parts[i] != topic_parts[i]:\n                return False\n        return True\n\nclass DeliveryObserver:\n    def on_message_published(self, topic, matched_count): raise NotImplementedError\n    def on_message_acknowledged(self, subscriber_id, message_id): raise NotImplementedError\n    def on_message_dead_lettered(self, subscriber_id, message): raise NotImplementedError\n\nclass ConsoleDeliveryObserver(DeliveryObserver):\n    def on_message_published(self, topic, matched_count):\n        print(f\"Published to {topic}, matched {matched_count} subscriber(s)\")\n\n    def on_message_acknowledged(self, subscriber_id, message_id):\n        print(f\"Acknowledged {message_id} for {subscriber_id}\")\n\n    def on_message_dead_lettered(self, subscriber_id, message):\n        print(f\"Dead lettered {message.message_id} for {subscriber_id}\")\n\nclass InvalidTopicPatternException(Exception): pass\nclass EmptyQueueException(Exception): pass\nclass InvalidAcknowledgmentException(Exception): pass\n\nclass PubSubService:\n    def __init__(self, max_retries, timeout_ticks):\n        self.subscribers = {}\n        self.observers = []\n        self.exact_strategy = ExactTopicMatchingStrategy()\n        self.wildcard_strategy = WildcardTopicMatchingStrategy()\n        self.current_tick = 0\n        self.max_retries = max_retries\n        self.timeout_ticks = timeout_ticks\n\n    def add_observer(self, observer):\n        self.observers.append(observer)\n\n    def subscriber_for(self, subscriber_id):\n        if subscriber_id not in self.subscribers:\n            self.subscribers[subscriber_id] = Subscriber(subscriber_id)\n        return self.subscribers[subscriber_id]\n\n    def _strategy_for(self, pattern):\n        return self.wildcard_strategy if \"*\" in pattern else self.exact_strategy\n\n    def subscribe(self, subscriber_id, pattern):\n        if pattern is None or pattern.strip() == \"\":\n            raise InvalidTopicPatternException(\"Topic pattern must not be blank\")\n        self.subscriber_for(subscriber_id).add_pattern(pattern)\n\n    def publish(self, topic, payload, factory):\n        matched_count = 0\n        for subscriber in self.subscribers.values():\n            matched = False\n            for pattern in subscriber.topic_patterns:\n                if self._strategy_for(pattern).matches(pattern, topic):\n                    matched = True\n                    break\n            if matched:\n                message = Message(factory.next_message_id(), topic, payload)\n                subscriber.enqueue(message)\n                matched_count += 1\n        for obs in self.observers:\n            obs.on_message_published(topic, matched_count)\n        return matched_count\n\n    def receive(self, subscriber_id):\n        subscriber = self.subscriber_for(subscriber_id)\n        if not subscriber.has_pending():\n            raise EmptyQueueException(f\"No pending messages for {subscriber_id}\")\n        message = subscriber.dequeue_front()\n        subscriber.mark_in_flight(message, self.current_tick)\n        return message\n\n    def acknowledge(self, subscriber_id, message_id):\n        subscriber = self.subscriber_for(subscriber_id)\n        if not subscriber.is_in_flight(message_id):\n            raise InvalidAcknowledgmentException(f\"{message_id} is not in flight for {subscriber_id}\")\n        subscriber.clear_in_flight(message_id)\n        for obs in self.observers:\n            obs.on_message_acknowledged(subscriber_id, message_id)\n\n    def advance_tick(self):\n        self.current_tick += 1\n\n    def check_for_redelivery(self):\n        for subscriber in self.subscribers.values():\n            timed_out = []\n            for message_id, delivered_at in subscriber.in_flight_delivered_at_tick.items():\n                if self.current_tick-delivered_at >= self.timeout_ticks:\n                    timed_out.append(message_id)\n            for message_id in timed_out:\n                message = subscriber.in_flight_messages[message_id]\n                subscriber.clear_in_flight(message_id)\n                message.increment_delivery_count()\n                if message.delivery_count > self.max_retries:\n                    subscriber.add_to_dead_letter(message)\n                    for obs in self.observers:\n                        obs.on_message_dead_lettered(subscriber.subscriber_id, message)\n                else:\n                    subscriber.requeue_front(message)\n\ndef main():\n    service = PubSubService(1, 3)\n    service.add_observer(ConsoleDeliveryObserver())\n    factory = MessageIdFactory()\n\n    service.subscribe(\"SubA\", \"orders.created\")\n    service.subscribe(\"SubB\", \"orders.*\")\n    service.subscribe(\"SubC\", \"payments.*\")\n\n    service.publish(\"orders.created\", \"Order123\", factory)\n    service.publish(\"orders.cancelled\", \"Order124\", factory)\n    service.publish(\"orders.created.urgent\", \"Order125\", factory)\n\n    sub_a_message = service.receive(\"SubA\")\n    service.acknowledge(\"SubA\", sub_a_message.message_id)\n\n    first_for_b = service.receive(\"SubB\")\n    second_for_b = service.receive(\"SubB\")\n\n    service.advance_tick()\n    service.advance_tick()\n    service.advance_tick()\n    service.check_for_redelivery()\n\n    redelivered_first = service.receive(\"SubB\")\n    service.acknowledge(\"SubB\", redelivered_first.message_id)\n\n    redelivered_second = service.receive(\"SubB\")\n\n    service.advance_tick()\n    service.advance_tick()\n    service.advance_tick()\n    service.check_for_redelivery()\n\n    try:\n        service.receive(\"SubB\")\n    except EmptyQueueException as e:\n        print(f\"Caught expected: {e}\")\n\n    try:\n        service.acknowledge(\"SubB\", \"nonexistent-id\")\n    except InvalidAcknowledgmentException as e:\n        print(f\"Caught expected: {e}\")\n\n    try:\n        service.subscribe(\"SubD\", \"\")\n    except InvalidTopicPatternException as e:\n        print(f\"Caught expected: {e}\")\n\n    subscriber_b = service.subscriber_for(\"SubB\")\n    print(f\"Dead letter count for SubB: {len(subscriber_b.dead_letter_list)}\")\n    for m in subscriber_b.dead_letter_list:\n        print(f\"Dead lettered payload: {m.payload}\")\n\nif __name__ == \"__main__\":\n    main()",
+            "cpp": "#include <iostream>\n#include <string>\n#include <vector>\n#include <map>\n#include <deque>\n#include <memory>\n#include <sstream>\n#include <stdexcept>\nusing namespace std;\n\nclass Message {\npublic:\n    string messageId;\n    string topic;\n    string payload;\n    int deliveryCount;\n\n    Message() : deliveryCount(0) {}\n    Message(string id, string t, string p) : messageId(id), topic(t), payload(p), deliveryCount(0) {}\n\n    void incrementDeliveryCount() { deliveryCount++; }\n};\n\nclass Subscriber {\npublic:\n    string subscriberId;\n    vector<string> topicPatterns;\n    deque<Message> pendingQueue;\n    map<string, int> inFlightDeliveredAtTick;\n    map<string, Message> inFlightMessages;\n    vector<Message> deadLetterList;\n\n    Subscriber() {}\n    Subscriber(string id) : subscriberId(id) {}\n\n    void addPattern(string pattern) { topicPatterns.push_back(pattern); }\n    void enqueue(Message message) { pendingQueue.push_back(message); }\n    bool hasPending() { return !pendingQueue.empty(); }\n\n    Message dequeueFront() {\n        Message front = pendingQueue.front();\n        pendingQueue.pop_front();\n        return front;\n    }\n\n    void requeueFront(Message message) { pendingQueue.push_front(message); }\n\n    void markInFlight(Message message, int tick) {\n        inFlightMessages[message.messageId] = message;\n        inFlightDeliveredAtTick[message.messageId] = tick;\n    }\n\n    bool isInFlight(string messageId) { return inFlightMessages.find(messageId) != inFlightMessages.end(); }\n\n    void clearInFlight(string messageId) {\n        inFlightMessages.erase(messageId);\n        inFlightDeliveredAtTick.erase(messageId);\n    }\n\n    void addToDeadLetter(Message message) { deadLetterList.push_back(message); }\n};\n\nclass MessageIdFactory {\n    int messageCounter = 0;\n\npublic:\n    string nextMessageId() {\n        messageCounter++;\n        return \"M\" + to_string(messageCounter);\n    }\n};\n\nvector<string> splitBySegment(const string& value) {\n    vector<string> parts;\n    stringstream stream(value);\n    string segment;\n    while (getline(stream, segment, '.')) parts.push_back(segment);\n    return parts;\n}\n\nclass TopicMatchingStrategy {\npublic:\n    virtual bool matches(const string& pattern, const string& topic) = 0;\n    virtual ~TopicMatchingStrategy() {}\n};\n\nclass ExactTopicMatchingStrategy : public TopicMatchingStrategy {\npublic:\n    bool matches(const string& pattern, const string& topic) override {\n        return pattern == topic;\n    }\n};\n\nclass WildcardTopicMatchingStrategy : public TopicMatchingStrategy {\npublic:\n    bool matches(const string& pattern, const string& topic) override {\n        vector<string> patternParts = splitBySegment(pattern);\n        vector<string> topicParts = splitBySegment(topic);\n        if (patternParts.size() != topicParts.size()) return false;\n        for (size_t i = 0; i < patternParts.size(); i++) {\n            if (patternParts[i] != \"*\" && patternParts[i] != topicParts[i]) return false;\n        }\n        return true;\n    }\n};\n\nclass DeliveryObserver {\npublic:\n    virtual void onMessagePublished(const string& topic, int matchedCount) = 0;\n    virtual void onMessageAcknowledged(const string& subscriberId, const string& messageId) = 0;\n    virtual void onMessageDeadLettered(const string& subscriberId, const Message& message) = 0;\n    virtual ~DeliveryObserver() {}\n};\n\nclass ConsoleDeliveryObserver : public DeliveryObserver {\npublic:\n    void onMessagePublished(const string& topic, int matchedCount) override {\n        cout << \"Published to \" << topic << \", matched \" << matchedCount << \" subscriber(s)\" << endl;\n    }\n    void onMessageAcknowledged(const string& subscriberId, const string& messageId) override {\n        cout << \"Acknowledged \" << messageId << \" for \" << subscriberId << endl;\n    }\n    void onMessageDeadLettered(const string& subscriberId, const Message& message) override {\n        cout << \"Dead lettered \" << message.messageId << \" for \" << subscriberId << endl;\n    }\n};\n\nclass InvalidTopicPatternException : public runtime_error {\npublic: InvalidTopicPatternException(const string& msg) : runtime_error(msg) {}\n};\nclass EmptyQueueException : public runtime_error {\npublic: EmptyQueueException(const string& msg) : runtime_error(msg) {}\n};\nclass InvalidAcknowledgmentException : public runtime_error {\npublic: InvalidAcknowledgmentException(const string& msg) : runtime_error(msg) {}\n};\n\nclass PubSubService {\n    map<string, Subscriber> subscribers;\n    vector<shared_ptr<DeliveryObserver>> observers;\n    ExactTopicMatchingStrategy exactStrategy;\n    WildcardTopicMatchingStrategy wildcardStrategy;\n    int currentTick = 0;\n    int maxRetries;\n    int timeoutTicks;\n\npublic:\n    PubSubService(int retries, int timeout) : maxRetries(retries), timeoutTicks(timeout) {}\n\n    void addObserver(shared_ptr<DeliveryObserver> observer) { observers.push_back(observer); }\n\n    Subscriber& subscriberFor(string subscriberId) {\n        if (subscribers.find(subscriberId) == subscribers.end()) subscribers[subscriberId] = Subscriber(subscriberId);\n        return subscribers.at(subscriberId);\n    }\n\n    TopicMatchingStrategy& strategyFor(string pattern) {\n        if (pattern.find('*') != string::npos) return wildcardStrategy;\n        return exactStrategy;\n    }\n\n    void subscribe(string subscriberId, string pattern) {\n        if (pattern.empty()) throw InvalidTopicPatternException(\"Topic pattern must not be blank\");\n        subscriberFor(subscriberId).addPattern(pattern);\n    }\n\n    int publish(string topic, string payload, MessageIdFactory& factory) {\n        int matchedCount = 0;\n        for (auto& pair : subscribers) {\n            Subscriber& subscriber = pair.second;\n            bool matched = false;\n            for (auto& pattern : subscriber.topicPatterns) {\n                if (strategyFor(pattern).matches(pattern, topic)) { matched = true; break; }\n            }\n            if (matched) {\n                Message message(factory.nextMessageId(), topic, payload);\n                subscriber.enqueue(message);\n                matchedCount++;\n            }\n        }\n        for (auto& obs : observers) obs->onMessagePublished(topic, matchedCount);\n        return matchedCount;\n    }\n\n    Message receive(string subscriberId) {\n        Subscriber& subscriber = subscriberFor(subscriberId);\n        if (!subscriber.hasPending()) throw EmptyQueueException(\"No pending messages for \" + subscriberId);\n        Message message = subscriber.dequeueFront();\n        subscriber.markInFlight(message, currentTick);\n        return message;\n    }\n\n    void acknowledge(string subscriberId, string messageId) {\n        Subscriber& subscriber = subscriberFor(subscriberId);\n        if (!subscriber.isInFlight(messageId)) throw InvalidAcknowledgmentException(messageId + \" is not in flight for \" + subscriberId);\n        subscriber.clearInFlight(messageId);\n        for (auto& obs : observers) obs->onMessageAcknowledged(subscriberId, messageId);\n    }\n\n    void advanceTick() { currentTick++; }\n\n    void checkForRedelivery() {\n        for (auto& pair : subscribers) {\n            Subscriber& subscriber = pair.second;\n            vector<string> timedOut;\n            for (auto& entry : subscriber.inFlightDeliveredAtTick) {\n                if (currentTick-entry.second >= timeoutTicks) timedOut.push_back(entry.first);\n            }\n            for (auto& messageId : timedOut) {\n                Message message = subscriber.inFlightMessages.at(messageId);\n                subscriber.clearInFlight(messageId);\n                message.incrementDeliveryCount();\n                if (message.deliveryCount > maxRetries) {\n                    subscriber.addToDeadLetter(message);\n                    for (auto& obs : observers) obs->onMessageDeadLettered(subscriber.subscriberId, message);\n                } else {\n                    subscriber.requeueFront(message);\n                }\n            }\n        }\n    }\n};\n\nint main() {\n    PubSubService service(1, 3);\n    service.addObserver(make_shared<ConsoleDeliveryObserver>());\n    MessageIdFactory factory;\n\n    service.subscribe(\"SubA\", \"orders.created\");\n    service.subscribe(\"SubB\", \"orders.*\");\n    service.subscribe(\"SubC\", \"payments.*\");\n\n    service.publish(\"orders.created\", \"Order123\", factory);\n    service.publish(\"orders.cancelled\", \"Order124\", factory);\n    service.publish(\"orders.created.urgent\", \"Order125\", factory);\n\n    Message subAMessage = service.receive(\"SubA\");\n    service.acknowledge(\"SubA\", subAMessage.messageId);\n\n    Message firstForB = service.receive(\"SubB\");\n    Message secondForB = service.receive(\"SubB\");\n\n    service.advanceTick();\n    service.advanceTick();\n    service.advanceTick();\n    service.checkForRedelivery();\n\n    Message redeliveredFirst = service.receive(\"SubB\");\n    service.acknowledge(\"SubB\", redeliveredFirst.messageId);\n\n    Message redeliveredSecond = service.receive(\"SubB\");\n\n    service.advanceTick();\n    service.advanceTick();\n    service.advanceTick();\n    service.checkForRedelivery();\n\n    try {\n        service.receive(\"SubB\");\n    } catch (EmptyQueueException& e) {\n        cout << \"Caught expected: \" << e.what() << endl;\n    }\n\n    try {\n        service.acknowledge(\"SubB\", \"nonexistent-id\");\n    } catch (InvalidAcknowledgmentException& e) {\n        cout << \"Caught expected: \" << e.what() << endl;\n    }\n\n    try {\n        service.subscribe(\"SubD\", \"\");\n    } catch (InvalidTopicPatternException& e) {\n        cout << \"Caught expected: \" << e.what() << endl;\n    }\n\n    Subscriber& subscriberB = service.subscriberFor(\"SubB\");\n    cout << \"Dead letter count for SubB: \" << subscriberB.deadLetterList.size() << endl;\n    for (auto& m : subscriberB.deadLetterList) {\n        cout << \"Dead lettered payload: \" << m.payload << endl;\n    }\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Folder Structure",
+          "content": "Folder Structure"
+        },
+        {
+          "type": "paragraph",
+          "text": "A real project would split these classes across files as follows:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "src/main/java/pubsub/\n  Message.java\n  Subscriber.java\n  MessageIdFactory.java\n  TopicMatchingStrategy.java\n  ExactTopicMatchingStrategy.java\n  WildcardTopicMatchingStrategy.java\n  DeliveryObserver.java\n  ConsoleDeliveryObserver.java\n  PubSubService.java\n  exceptions/\n    InvalidTopicPatternException.java\n    EmptyQueueException.java\n    InvalidAcknowledgmentException.java\n  Main.java",
+            "python": "pubsub/\n  __init__.py\n  message.py\n  subscriber.py\n  message_id_factory.py\n  topic_matching_strategy.py\n  delivery_observer.py\n  exceptions.py\n  pubsub_service.py\n  main.py",
+            "cpp": "pubsub/\n  include/\n    Message.h\n    Subscriber.h\n    MessageIdFactory.h\n    TopicMatchingStrategy.h\n    DeliveryObserver.h\n    Exceptions.h\n    PubSubService.h\n  src/\n    MessageIdFactory.cpp\n    WildcardTopicMatchingStrategy.cpp\n    PubSubService.cpp\n    main.cpp"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Interview Discussion Points",
+          "content": "Interview Discussion Points"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Why does redelivery put a message back at the FRONT of the queue rather than the back? To preserve as much of the original delivery order as possible, a message that already waited once should generally be retried before newer messages that have not been attempted at all.",
+            "Why require the same number of segments for a wildcard match instead of letting a wildcard match zero or more segments? Because a single-segment wildcard is simple to reason about and implement correctly, a multi-level wildcard is explicitly called out as a natural but more complex follow-up.",
+            "How would you extend this to guarantee exactly-once delivery instead of at-least-once? Track processed message ids per subscriber (an idempotency-style approach) so a redelivered message that was actually already handled can be recognized and skipped, at the cost of extra bookkeeping."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Trade-offs & Alternative Designs",
+          "content": "Trade-offs & Alternative Designs"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>At-least-once with acknowledgment vs fire-and-forget observer callbacks:</strong> acknowledgment-based delivery survives a subscriber that is temporarily slow or crashes mid-processing, at the cost of extra bookkeeping (queues, in-flight tracking, redelivery sweeps) that a simple observer callback does not need.",
+            "<strong>Single-segment wildcard vs full multi-level wildcard matching:</strong> a single-segment wildcard is simple and fast to evaluate, at the cost of not supporting patterns that should match a variable-depth topic hierarchy.",
+            "<strong>Deterministic tick-based timeouts vs real wall-clock timeouts:</strong> tick-based timeouts make behavior fully reproducible and testable, at the cost of needing an explicit driver to advance time, rather than timeouts simply happening on their own in real time."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Production Considerations & Best Practices",
+          "content": "Production Considerations & Best Practices"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Persist messages and their per-subscriber delivery status in a durable store using the schema in the Database Design section, so in-flight state survives a service restart.",
+            "Replace the deterministic tick counter with a real wall-clock timeout check driven by a background sweep thread in production.",
+            "Alert on a growing dead-letter list per subscriber, since it usually signals a bug or outage in that subscriber's processing logic.",
+            "Partition topics across multiple broker instances in a large-scale deployment, so publish and delivery load is not bottlenecked on a single process."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

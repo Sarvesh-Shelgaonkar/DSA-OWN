@@ -1,0 +1,314 @@
+{
+  "title": "File Allocation Methods",
+  "slug": "file-allocation-methods",
+  "content": [
+    {
+      "id": "file-allocation-methods",
+      "title": "File Allocation Methods",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "Every disk is divided into many fixed size blocks, and when a file is created and grows, the file system faces a concrete decision: which physical blocks should this file actually get, and how will the system remember that mapping so the exact same file can be read back correctly the next time it is opened. This single decision, made differently by different file systems, is called the file allocation method, and three classic strategies dominate the history of file systems: contiguous, linked, and indexed allocation."
+        },
+        {
+          "type": "paragraph",
+          "content": "This chapter walks through all three allocation strategies in full: how each one physically lays a file's blocks out on disk, how each one remembers the mapping from a file to its blocks, and the very real tradeoffs each one accepts in exchange for its strengths. It also connects two of these strategies to their real world evolution, the File Allocation Table format that gave FAT and FAT32 their name, and the index block approach that modern file systems like ext4 and NTFS still rely on today through inodes."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409067613-657353250.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409067613-657353250.png",
+          "alt": "file-allocation-methods",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409067613-657353250.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Core Problem: How a File System Finds a File's Blocks",
+          "text": "1. The Core Problem: How a File System Finds a File's Blocks"
+        },
+        {
+          "type": "paragraph",
+          "content": "A disk is not one continuous strip of storage a file can simply claim. It is carved up in advance into many fixed size blocks, often 4KB each, and every file on the disk, no matter how large or small, is ultimately built out of some collection of these blocks. The file system's job is to decide exactly which blocks a given file receives when it is created, and which additional blocks it receives later as it grows."
+        },
+        {
+          "type": "paragraph",
+          "content": "Deciding which blocks belong to a file is only half the problem. The file system must also remember that decision somewhere durable, so that months later, after the disk has been powered off and back on many times, opening the file still returns the exact same bytes in the exact same order. This remembered mapping from a file to its physical blocks is what an allocation method actually is."
+        },
+        {
+          "type": "paragraph",
+          "content": "Three classic answers to this problem exist, and each one makes a different tradeoff between simplicity, access speed, and how gracefully it handles a disk that fills up and empties out over time as files are created and deleted. The rest of this chapter works through all three in order."
+        },
+        {
+          "type": "note",
+          "title": "In one sentence",
+          "content": "A file allocation method is the strategy a file system uses to decide which disk blocks belong to a file, and to remember that mapping, so the file can be read back correctly later."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Method\",\"Core idea\"],\"rows\":[[\"Contiguous\",\"Every file occupies one unbroken run of consecutive blocks\"],[\"Linked\",\"Each block points to the next block in the file, scattered anywhere\"],[\"Indexed\",\"One index block holds direct pointers to every data block of the file\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Contiguous Allocation",
+          "text": "2. Contiguous Allocation"
+        },
+        {
+          "type": "paragraph",
+          "content": "Contiguous allocation is the simplest possible strategy: every file is stored as one single unbroken run of consecutive blocks on disk. If a file needs 5 blocks, the file system finds 5 free blocks sitting right next to each other and hands over the whole run at once. The file's complete location can then be described with just two numbers, the starting block and the length, instead of a long explicit list of every block it owns."
+        },
+        {
+          "type": "paragraph",
+          "content": "This compactness makes contiguous allocation excellent for both sequential and random access. Reading the file from start to finish means reading consecutive blocks off the disk, which is exactly what disk hardware is fastest at. Random access is just as easy: to reach block number N of the file, the file system simply computes start block plus N, an instant arithmetic lookup with no searching required at all."
+        },
+        {
+          "type": "paragraph",
+          "content": "The real weakness is what happens over time. As files are created and deleted in different orders and different sizes, the free space left behind on disk becomes fragmented into scattered small gaps, exactly the external fragmentation problem covered in the dedicated Fragmentation chapter. Eventually the disk can have plenty of free space in total, yet still be unable to satisfy a request for one large contiguous run. Growth is just as awkward: if a file needs one more block but the block immediately following it is already occupied by something else, it cannot simply grow in place."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409067614-91381686.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409067614-91381686.png",
+          "alt": "Contiguous Allocation",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409067614-91381686.png"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068015-224373880.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068015-224373880.png",
+          "alt": "Contiguous Allocation",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068015-224373880.png"
+        },
+        {
+          "type": "note",
+          "title": "Straight from the Fragmentation chapter",
+          "content": "This is external fragmentation in its original, textbook form. Free space exists somewhere, but it is scattered into pieces too small individually to satisfy a request that needs one contiguous run, exactly the pattern the dedicated Fragmentation chapter examines in full detail."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Linked Allocation",
+          "text": "3. Linked Allocation"
+        },
+        {
+          "type": "paragraph",
+          "content": "Linked allocation abandons the requirement that a file's blocks sit next to each other. Instead, a file is stored as a chain of blocks scattered anywhere across the disk, and each block reserves a small amount of space to hold a pointer to the next block in the file. The file's directory entry only needs to remember where the very first block of the chain lives, everything after that is found by following pointers."
+        },
+        {
+          "type": "paragraph",
+          "content": "This solves the contiguous allocation fragmentation problem completely. Any free block anywhere on disk can be added to a file's chain, regardless of where it physically sits, so free space never needs to be arranged into one large run. A file can also grow simply by finding any single free block and linking it onto the end of the chain."
+        },
+        {
+          "type": "paragraph",
+          "content": "The tradeoff is real and shows up in two places. Random access becomes slow, because reaching block number 500 of a file genuinely requires following 500 pointers one at a time starting from the very first block, there is no way to jump directly to it. Reliability is also fragile: a single corrupted pointer anywhere in the chain breaks access to the entire rest of the file from that point onward, since nothing after the broken link can be located anymore."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068016-222270142.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068016-222270142.png",
+          "alt": "Linked Allocation",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068016-222270142.png"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068016-725150790.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068016-725150790.png",
+          "alt": "Linked Allocation",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068016-725150790.png"
+        },
+        {
+          "type": "code",
+          "content": "// reaching block number N under pure linked allocation\n\nblock = file.first_block;\nfor (i = 0; i < N; i++) {\n    block = read_pointer(block);   // one disk read per hop, no shortcuts\n}\n// only now is block number N actually located",
+          "code": "// reaching block number N under pure linked allocation\n\nblock = file.first_block;\nfor (i = 0; i < N; i++) {\n    block = read_pointer(block);   // one disk read per hop, no shortcuts\n}\n// only now is block number N actually located",
+          "codes": {
+            "c": "// reaching block number N under pure linked allocation\n\nblock = file.first_block;\nfor (i = 0; i < N; i++) {\n    block = read_pointer(block);   // one disk read per hop, no shortcuts\n}\n// only now is block number N actually located"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The File Allocation Table, FAT: A Practical Refinement",
+          "text": "4. The File Allocation Table, FAT: A Practical Refinement"
+        },
+        {
+          "type": "paragraph",
+          "content": "FAT allocation is a direct refinement of linked allocation, built to fix its slowest part. Instead of burying the next block pointer inside each individual data block scattered across the disk, FAT keeps every single pointer together in one dedicated table, held in a fixed, easily cached location. This table is literally what gives the FAT and FAT32 file system formats their name."
+        },
+        {
+          "type": "paragraph",
+          "content": "The data blocks themselves are still scattered anywhere on disk, exactly like pure linked allocation, only the pointers have moved. Because the whole table is small enough to be loaded into memory and kept there, the file system can walk an entire chain of pointers using fast memory lookups, needing only one real disk read per data block instead of one disk read per pointer hop."
+        },
+        {
+          "type": "paragraph",
+          "content": "This single change makes random access considerably faster than pure linked allocation, since the chain can be traversed in memory before a single data block is even touched. It keeps every other property of linked allocation intact: any free block anywhere can still be used, and files can still grow by simply adding a new table entry."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-528968099.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-528968099.png",
+          "alt": "The File Allocation Table, FAT: A Practical Refinement",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-528968099.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Pure linked allocation\",\"FAT variant\"],\"rows\":[[\"Where the next pointer lives\",\"Inside each data block itself, scattered across disk\",\"Together in one dedicated table, in a fixed location\"],[\"Cost to walk a chain\",\"One disk read per pointer hop\",\"One fast memory lookup per hop, in the cached table\"],[\"Data blocks on disk\",\"Scattered, any free block can be used\",\"Scattered, any free block can be used\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Indexed Allocation",
+          "text": "5. Indexed Allocation"
+        },
+        {
+          "type": "paragraph",
+          "content": "Indexed allocation takes a different approach to solving the same random access weakness. Instead of chaining blocks together at all, every file gets one dedicated index block of its own, holding an array of pointers that point directly to every one of that file's data blocks. Looking up block number N of the file is a single array lookup into the index block, at index position N, nothing more."
+        },
+        {
+          "type": "paragraph",
+          "content": "This directly matches the direct pointer mechanism the dedicated Inodes chapter covers in far more depth: an inode is, at its core, exactly this kind of index structure, extended with additional metadata and cleverness for handling very large files. Random access under indexed allocation is genuinely fast, since any block number can be resolved with one direct lookup and no chain to follow at all."
+        },
+        {
+          "type": "paragraph",
+          "content": "The cost is modest but real: every file needs its own index block, even a file that only occupies one or two data blocks. For a disk holding enormous numbers of tiny files, that index block overhead adds up, one full block spent purely on pointers for files that barely need any data blocks at all."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-917846063.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-917846063.png",
+          "alt": "Indexed Allocation",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-917846063.png"
+        },
+        {
+          "type": "code",
+          "content": "// reaching block number N under indexed allocation\n\nblock = index_block.pointers[N];   // one direct lookup, no chain to follow",
+          "code": "// reaching block number N under indexed allocation\n\nblock = index_block.pointers[N];   // one direct lookup, no chain to follow",
+          "codes": {
+            "c": "// reaching block number N under indexed allocation\n\nblock = index_block.pointers[N];   // one direct lookup, no chain to follow"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Straight ahead to Inodes",
+          "content": "The index block described here is the same fundamental idea the dedicated Inodes chapter builds on: an inode is an index structure holding direct pointers to a file's data blocks, later extended with indirect pointers to support very large files without wasting space on small ones."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Comparing the Three Methods",
+          "text": "6. Comparing the Three Methods"
+        },
+        {
+          "type": "paragraph",
+          "content": "With all three strategies covered individually, the differences are easiest to hold in memory side by side. The three properties that matter most in practice are random access speed, exposure to fragmentation, and how much extra space the bookkeeping itself costs."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Method\",\"Random access speed\",\"Fragmentation risk\",\"Space overhead\"],\"rows\":[[\"Contiguous\",\"Fast, one arithmetic calculation, start block plus N\",\"High, suffers external fragmentation over time\",\"Very low, just a start block and a length\"],[\"Linked\",\"Slow, must follow N pointers one at a time from the start\",\"None, any free block anywhere can be used\",\"Low, one pointer per data block\"],[\"Indexed\",\"Fast, one direct lookup into the index array\",\"None, any free block anywhere can be used\",\"Moderate, one full index block per file\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "No single method wins on every dimension, which is exactly why file system designers have spent decades refining and combining these ideas rather than treating any one of them as a finished, final answer."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Worked Example: Allocating a 5 Block File",
+          "text": "7. Worked Example: Allocating a 5 Block File"
+        },
+        {
+          "type": "paragraph",
+          "content": "Concrete numbers make the differences easiest to see. Suppose a new file needs exactly 5 blocks, and the question is how each of the three allocation methods would physically lay it out, and what actually happens when something later asks to read block number 3 of that file."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-693474157.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-693474157.png",
+          "alt": "Worked Example: Allocating a 5 Block File",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-693474157.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Method\",\"Physical layout chosen\",\"What reading block 3 requires\"],\"rows\":[[\"Contiguous\",\"Blocks 20 through 24, one unbroken run\",\"Compute start block 20 plus 3, land on block 22 directly\"],[\"Linked\",\"Blocks 7, 40, 12, 55, 2, scattered and chained in that order\",\"Follow the chain from block 7 through 3 pointer hops to reach block 12\"],[\"Indexed\",\"Index block pointing to blocks 9, 71, 30, 5, 88\",\"Read index array position 3 directly, land on block 30\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Under contiguous allocation the answer is pure arithmetic, no search of any kind. Under linked allocation, reaching block 3 means physically reading three separate blocks first just to follow their pointers, before the actual data at block 3 is ever touched. Under indexed allocation the answer is a single lookup into an array that was already loaded when the file was opened."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Why Modern File Systems Use Indexed Allocation",
+          "text": "8. Why Modern File Systems Use Indexed Allocation"
+        },
+        {
+          "type": "paragraph",
+          "content": "Real world file systems in wide use today, ext4 on Linux and NTFS on Windows among them, settled on indexed style allocation as the practical standard, not linked allocation and not pure contiguous allocation. The direct lookup speed of indexed allocation matters enormously for real workloads, where files are opened, seeked into, and read from arbitrary positions constantly."
+        },
+        {
+          "type": "paragraph",
+          "content": "Plain indexed allocation as described so far has its own limit though: a single index block only holds so many pointers before it runs out of room, which caps how large a file can grow. Modern file systems solve this by layering a multilevel indirect block structure on top of the basic index block idea, a handful of pointers point straight to the first several data blocks for speed on small files, while additional pointers point to entire extra index blocks, and even to index blocks of index blocks, for files that grow enormous. This exact layered structure is what the dedicated Inodes chapter explains in complete depth."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-994458872.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-994458872.png",
+          "alt": "Why Modern File Systems Use Indexed Allocation",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068017-994458872.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The result is a design that keeps indexed allocation's fast direct lookups for the common case of small and medium files, while still scaling gracefully up to files far larger than any single index block could describe on its own."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Common Mistakes and Interview Angle",
+          "text": "9. Common Mistakes and Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "A handful of misunderstandings come up repeatedly once this topic reaches practice, and they are worth calling out directly."
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming linked allocation has no real downsides just because it completely avoids external fragmentation. Its random access weakness is a serious, practical cost, not a minor footnote, since reaching a block deep in a large file means physically walking every pointer before it.\",\"Confusing FAT the allocation table concept with FAT32 the specific historical file system format built around that concept. FAT describes the general idea of collecting pointers into one table, while FAT32 is one particular, dated implementation of that idea with its own size limits and rules.\",\"Believing indexed allocation has no cost at all. Every file pays for its own index block, even a file that needs only one data block, so tiny files carry a fixed overhead that contiguous allocation does not.\",\"Forgetting that contiguous allocation's speed advantage assumes a large enough free run actually exists. Once a disk has run for a while and fragmented, that assumption quietly stops holding.\"]",
+          "items": [
+            "Assuming linked allocation has no real downsides just because it completely avoids external fragmentation. Its random access weakness is a serious, practical cost, not a minor footnote, since reaching a block deep in a large file means physically walking every pointer before it.",
+            "Confusing FAT the allocation table concept with FAT32 the specific historical file system format built around that concept. FAT describes the general idea of collecting pointers into one table, while FAT32 is one particular, dated implementation of that idea with its own size limits and rules.",
+            "Believing indexed allocation has no cost at all. Every file pays for its own index block, even a file that needs only one data block, so tiny files carry a fixed overhead that contiguous allocation does not.",
+            "Forgetting that contiguous allocation's speed advantage assumes a large enough free run actually exists. Once a disk has run for a while and fragmented, that assumption quietly stops holding."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Interview angle",
+          "content": "Be ready to compare all three allocation methods from memory along exactly two axes: random access speed and fragmentation behavior. Contiguous is fast but fragments badly over time, linked never fragments but is slow to access randomly and fragile if a pointer breaks, and indexed keeps the speed of contiguous while avoiding fragmentation, at the modest cost of one index block per file, the same idea the dedicated Inodes chapter builds on directly."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every file system in use today, whether on a phone, a laptop, or a server, made this exact decision at design time, and traces a direct line from the three strategies covered in this chapter to the structure it actually ships with."
+        }
+      ]
+    }
+  ]
+}

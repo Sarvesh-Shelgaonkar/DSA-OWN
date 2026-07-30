@@ -1,0 +1,721 @@
+{
+  "slug": "cache-eviction-policies",
+  "title": "Cache Eviction Policies",
+  "content": [
+    {
+      "id": "cache-eviction-policies",
+      "title": "Cache Eviction Policies",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "A cache is fast because it lives in a small, expensive, limited space, usually memory. That space fills up quickly. When it is full and a new item needs to go in, something already in the cache has to come out. The rule that decides what to remove is the eviction policy."
+        },
+        {
+          "type": "paragraph",
+          "content": "This one decision has an outsized effect. Evict the wrong things and your cache is full of items nobody wants, so almost every request misses and falls through to the slow database. Evict the right things and the cache stays full of exactly what is being asked for, so most requests are fast."
+        },
+        {
+          "type": "paragraph",
+          "content": "Eviction policies are the algorithms for making that choice well. This page walks through the common ones, from simple to sophisticated, how to implement the most important one efficiently, and how to choose the right policy for a given workload."
+        },
+        {
+          "type": "paragraph",
+          "content": "Eviction is not a niche concern, it is everywhere. Your CPU evicts cache lines, your operating system evicts memory pages, your database evicts buffer pool pages, your browser evicts cached assets, and a CDN evicts content at the edge. The same idea repeats at every layer of computing."
+        },
+        {
+          "type": "paragraph",
+          "content": "Because it recurs so widely, understanding eviction once pays off across the whole stack, from a Redis instance to the processor in your laptop."
+        },
+        {
+          "type": "paragraph",
+          "content": "The mental model to hold is simple: a small fast store, a stream of requests, and a rule for what to drop when it is full. Everything else is a variation on that."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029032-320187600.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029032-320187600.png",
+          "alt": "When the cache is full, an eviction policy chooses which item to remove for the new one"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What Cache Eviction Is",
+          "text": "1. What Cache Eviction Is"
+        },
+        {
+          "type": "paragraph",
+          "content": "Cache eviction is the process of removing items from a cache to make room for new ones when the cache is full. Because a cache has a fixed, limited capacity, it can never hold everything, so it must constantly decide what to keep and what to discard."
+        },
+        {
+          "type": "paragraph",
+          "content": "An eviction policy is the strategy that answers the question: when the cache is full and we need space, which existing item do we throw out? Different policies answer this differently, and the answer largely determines how effective the cache is."
+        },
+        {
+          "type": "paragraph",
+          "content": "The goal is always the same, to keep the items most likely to be used again and discard the ones least likely to be needed. A perfect policy would keep exactly the items about to be requested, but since we cannot see the future, real policies use the past to guess."
+        },
+        {
+          "type": "list",
+          "content": "[\"Eviction removes items to make room when the cache is full\",\"The policy decides which item to remove\",\"The aim is to keep what will be reused and drop what will not\",\"A good policy keeps the hit rate high, a bad one wastes the cache\"]",
+          "items": [
+            "Eviction removes items to make room when the cache is full",
+            "The policy decides which item to remove",
+            "The aim is to keep what will be reused and drop what will not",
+            "A good policy keeps the hit rate high, a bad one wastes the cache"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "The one line version",
+          "content": "A cache is a small space that fills up, and an eviction policy is the rule for deciding which item to throw out when a new one needs to come in."
+        },
+        {
+          "type": "paragraph",
+          "content": "The concept rests on locality of reference, which comes in two flavours. Temporal locality means an item used now is likely to be used again soon, and spatial locality means items near a used one are likely to be used too. Most eviction policies exploit temporal locality."
+        },
+        {
+          "type": "paragraph",
+          "content": "Keep that word locality in mind, because it is the reason caching and eviction work at all. If accesses were perfectly random, no policy could beat guessing."
+        },
+        {
+          "type": "paragraph",
+          "content": "Real workloads are rarely random though. Web traffic, database access, and user behavior all cluster, which is exactly the locality that makes a good eviction policy valuable."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Core Problem",
+          "text": "2. The Core Problem"
+        },
+        {
+          "type": "paragraph",
+          "content": "The whole difficulty comes from a simple constraint: the cache is smaller than the data. If the cache could hold everything, there would be no eviction and no policy to choose. It is precisely because space is limited that the choice matters."
+        },
+        {
+          "type": "paragraph",
+          "content": "The measure of success is the hit rate, the fraction of requests served from the cache rather than the slow backend. A higher hit rate means more fast responses and less load on the database. The entire job of an eviction policy is to maximise that hit rate."
+        },
+        {
+          "type": "paragraph",
+          "content": "The catch is that the best possible choice would require knowing the future, which item will be needed soonest. Since no policy can see the future, every real policy is a heuristic, using observed behavior like recency or frequency to predict what will be useful."
+        },
+        {
+          "type": "list",
+          "content": "[\"The cache is smaller than the full dataset, so choices are unavoidable\",\"Hit rate is the key metric a policy tries to maximise\",\"The ideal choice needs knowledge of the future, which is impossible\",\"Real policies predict the future from past access patterns\"]",
+          "items": [
+            "The cache is smaller than the full dataset, so choices are unavoidable",
+            "Hit rate is the key metric a policy tries to maximise",
+            "The ideal choice needs knowledge of the future, which is impossible",
+            "Real policies predict the future from past access patterns"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "It is all about prediction",
+          "content": "Every eviction policy is really a prediction engine. It guesses which items will be needed again, using clues from the past, because it cannot know the future."
+        },
+        {
+          "type": "paragraph",
+          "content": "You can make this concrete. If a cache holds a thousand items and serves a workload with a ninety percent hit rate, then only one request in ten pays the slow database cost. Nudging that to ninety five percent halves the expensive misses, which is why small policy improvements matter so much."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is usually a curve here: as you grow the cache, the hit rate climbs steeply at first, then flattens once the cache comfortably holds the working set, the items actually being used in a given period."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is why sizing a cache to the working set matters as much as the policy. A policy can only choose well among the items it is allowed to hold."
+        },
+        {
+          "type": "paragraph",
+          "content": "A useful rule of thumb is to aim for a hit rate high enough that the backend load is comfortable, then stop, since chasing the last percent often costs far more memory than it is worth."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. FIFO",
+          "text": "3. FIFO"
+        },
+        {
+          "type": "paragraph",
+          "content": "FIFO, first in first out, is the simplest policy. It evicts the item that has been in the cache the longest, regardless of how often or how recently it has been used. The cache behaves like a queue: items leave in the order they arrived."
+        },
+        {
+          "type": "paragraph",
+          "content": "Its appeal is simplicity. You only need to track insertion order, which is cheap and easy. There is no bookkeeping on every access."
+        },
+        {
+          "type": "paragraph",
+          "content": "Its weakness is that it ignores usage entirely. An item that was inserted long ago but is used constantly will still be evicted just because it is old, which can throw away exactly the hot data you want to keep."
+        },
+        {
+          "type": "list",
+          "content": "[\"Evicts the oldest inserted item\",\"Simple to implement, just track insertion order\",\"Ignores how often or how recently items are used\",\"Can evict hot data simply because it arrived early\"]",
+          "items": [
+            "Evicts the oldest inserted item",
+            "Simple to implement, just track insertion order",
+            "Ignores how often or how recently items are used",
+            "Can evict hot data simply because it arrived early"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Simple but naive",
+          "content": "FIFO is easy and cheap, but because it ignores actual usage, it often evicts popular items. It is a reasonable baseline, rarely the best choice."
+        },
+        {
+          "type": "paragraph",
+          "content": "FIFO also has a famous quirk called Belady anomaly, where giving it more cache space can actually lower the hit rate, which is deeply counterintuitive and a good sign that arrival order is a poor basis for eviction."
+        },
+        {
+          "type": "paragraph",
+          "content": "Where FIFO does fit is a genuine pipeline or stream, where the oldest item really is the one least likely to be needed again, and where you value dead simple bookkeeping."
+        },
+        {
+          "type": "paragraph",
+          "content": "Many message and log systems evict in FIFO order for exactly this reason: the oldest data is the least relevant and the implementation is trivial."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. LRU: Least Recently Used",
+          "text": "4. LRU: Least Recently Used"
+        },
+        {
+          "type": "paragraph",
+          "content": "LRU is the most widely used eviction policy, and for good reason. It evicts the item that has not been accessed for the longest time, on the assumption that if something has not been used recently, it is unlikely to be used soon."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396028798-270956090.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396028798-270956090.png",
+          "alt": "LRU keeps items ordered by recency and evicts the least recently used"
+        },
+        {
+          "type": "paragraph",
+          "content": "The intuition rests on temporal locality, the observation that recently used data tends to be used again soon. This holds in a huge range of real workloads, from web pages to database rows, which is why LRU works so well in practice."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every time an item is accessed, it becomes the most recently used and moves to the front of the ordering. When space is needed, the item at the back, the least recently used, is evicted."
+        },
+        {
+          "type": "list",
+          "content": "[\"Evicts the item unused for the longest time\",\"Rests on temporal locality: recent items tend to recur\",\"Every access moves an item to the most recently used position\",\"Works well across a wide range of real workloads\"]",
+          "items": [
+            "Evicts the item unused for the longest time",
+            "Rests on temporal locality: recent items tend to recur",
+            "Every access moves an item to the most recently used position",
+            "Works well across a wide range of real workloads"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "The default choice",
+          "content": "LRU is the sensible default for most caches. It captures the common pattern that recently used data is likely to be used again, and it is what Redis, memory caches, and CPUs lean on."
+        },
+        {
+          "type": "paragraph",
+          "content": "One practical detail: true LRU updates ordering on every single access, which is costly at very high throughput. Systems like Redis use an approximate LRU, sampling a few random keys and evicting the least recently used among them, which is nearly as good for a fraction of the cost."
+        },
+        {
+          "type": "paragraph",
+          "content": "Redis exposes this as configurable maxmemory policies, such as allkeys-lru to evict across all keys or volatile-lru to evict only keys with a TTL set, so you pick the behavior that fits your data."
+        },
+        {
+          "type": "paragraph",
+          "content": "At the hardware level, CPU caches evict at the granularity of a cache line, a small fixed block, using approximations of LRU, which is the same idea scaled down to nanoseconds."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is striking that the same recency heuristic works from a CPU cache measured in nanoseconds to a CDN edge cache serving a continent. The scale changes, the intuition does not."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. LFU: Least Frequently Used",
+          "text": "5. LFU: Least Frequently Used"
+        },
+        {
+          "type": "paragraph",
+          "content": "LFU takes a different view. Instead of recency, it tracks how often each item is used and evicts the least frequently used one. The idea is that popular items should stay, even if they were not touched in the last few moments."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279710328-119943839.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279710328-119943839.png",
+          "alt": "LFU counts accesses and evicts the item used least often"
+        },
+        {
+          "type": "paragraph",
+          "content": "LFU shines when there is a stable set of hot items that are consistently popular over time. A frequency count protects those items from being evicted during a brief lull, which recency based LRU might not."
+        },
+        {
+          "type": "paragraph",
+          "content": "Its classic weakness is stale popularity. An item that was accessed heavily in the past builds up a high count, and that count keeps it in the cache long after it has stopped being useful. Good LFU variants add aging, decaying old counts over time, to fix this."
+        },
+        {
+          "type": "list",
+          "content": "[\"Evicts the least frequently used item\",\"Protects a stable set of consistently popular items\",\"Can suffer from stale popularity, where old hot items linger\",\"Often paired with aging to decay old frequency counts\"]",
+          "items": [
+            "Evicts the least frequently used item",
+            "Protects a stable set of consistently popular items",
+            "Can suffer from stale popularity, where old hot items linger",
+            "Often paired with aging to decay old frequency counts"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Frequency over recency",
+          "content": "LFU keeps the items that are popular overall, which beats LRU when popularity is stable, but it needs aging so yesterday hot item does not squat in the cache forever."
+        },
+        {
+          "type": "paragraph",
+          "content": "Aging is usually implemented by periodically halving all counts, or by decaying a count based on time since last use, so recent popularity outweighs ancient popularity."
+        },
+        {
+          "type": "paragraph",
+          "content": "Exact LFU also needs memory to store a count per item, so large scale variants use compact structures like a count min sketch to estimate frequencies cheaply rather than storing an exact number for every key."
+        },
+        {
+          "type": "paragraph",
+          "content": "Redis even offers an LFU mode, allkeys-lfu, with built in decay, for workloads where a stable popular set beats plain recency."
+        },
+        {
+          "type": "paragraph",
+          "content": "The choice between LRU and LFU in Redis is therefore just a configuration flag, so you can measure both against your real traffic and keep whichever gives the better hit rate."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Other Policies",
+          "text": "6. Other Policies"
+        },
+        {
+          "type": "paragraph",
+          "content": "Beyond FIFO, LRU, and LFU, several other policies show up, each suited to particular situations."
+        },
+        {
+          "type": "list",
+          "content": "[\"MRU, most recently used: evicts the most recent item, useful in scanning patterns where recent items are unlikely to be needed again\",\"Random: evicts a random item, which sounds crude but is simple and performs surprisingly well\",\"TTL based: evicts items once they pass an expiry time, tying eviction to freshness rather than usage\",\"Second chance and clock: cheap approximations of LRU that use a reference bit instead of exact ordering\"]",
+          "items": [
+            "MRU, most recently used: evicts the most recent item, useful in scanning patterns where recent items are unlikely to be needed again",
+            "Random: evicts a random item, which sounds crude but is simple and performs surprisingly well",
+            "TTL based: evicts items once they pass an expiry time, tying eviction to freshness rather than usage",
+            "Second chance and clock: cheap approximations of LRU that use a reference bit instead of exact ordering"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "MRU is counterintuitive but real. Consider scanning a large file once from start to finish. The item you just read is the least likely to be read again soon, so evicting the most recent one is actually the smart move."
+        },
+        {
+          "type": "paragraph",
+          "content": "Random eviction deserves respect. It needs no bookkeeping at all, and because it does not systematically make the wrong choice, its hit rate is often close to LRU, which is why some high performance caches use it."
+        },
+        {
+          "type": "note",
+          "title": "No single winner",
+          "content": "There is no universally best policy. MRU wins for scans, random wins for simplicity, TTL wins for freshness. The right one depends entirely on how the data is accessed."
+        },
+        {
+          "type": "paragraph",
+          "content": "The clock algorithm is worth singling out, because it is how many real systems approximate LRU. Items sit in a circle with a reference bit, a hand sweeps around, and it evicts the first item whose bit is unset, giving recently used items a second chance."
+        },
+        {
+          "type": "paragraph",
+          "content": "It captures most of LRU benefit while needing only one bit per item and no ordering updates on access, which is why operating systems use it for page replacement."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is a recurring theme: exact algorithms are elegant on paper, but at scale the cheap approximation that captures most of the benefit almost always wins."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. The Optimal Policy",
+          "text": "7. The Optimal Policy"
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a theoretically perfect policy, and it is worth knowing even though you can never use it. Called the optimal or Belady policy, it evicts the item that will not be needed for the longest time in the future."
+        },
+        {
+          "type": "paragraph",
+          "content": "This gives the highest possible hit rate for any sequence of accesses. The problem, of course, is that it requires knowing the future, which is impossible in a live system. You cannot know which item will be requested next."
+        },
+        {
+          "type": "paragraph",
+          "content": "So why does it matter? Because it is the benchmark. When researchers or engineers evaluate a real policy like LRU, they compare its hit rate against the optimal policy to see how close it gets. It is the yardstick that tells you how much room for improvement exists."
+        },
+        {
+          "type": "list",
+          "content": "[\"The optimal policy evicts what will be used furthest in the future\",\"It achieves the highest possible hit rate\",\"It is impossible to implement, since it needs to see the future\",\"It serves as the benchmark against which real policies are measured\"]",
+          "items": [
+            "The optimal policy evicts what will be used furthest in the future",
+            "It achieves the highest possible hit rate",
+            "It is impossible to implement, since it needs to see the future",
+            "It serves as the benchmark against which real policies are measured"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "The impossible ideal",
+          "content": "Belady optimal policy is the perfect score no real policy can reach. Its value is as a ruler: how close does LRU or LFU get to the best any policy could do."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a neat theoretical property here. LRU and the optimal policy are both stack algorithms, which means adding cache space never hurts their hit rate, so unlike FIFO they are immune to Belady anomaly."
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice, LRU on a workload with good temporal locality gets remarkably close to optimal, which is a big part of why it is trusted as the default."
+        },
+        {
+          "type": "paragraph",
+          "content": "So when someone asks why not just use the optimal policy, the honest answer is that LRU is the practical stand in that gets close without needing a crystal ball."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. LRU vs LFU",
+          "text": "8. LRU vs LFU"
+        },
+        {
+          "type": "paragraph",
+          "content": "The two most important policies, LRU and LFU, represent two different bets about what predicts future use: recency versus frequency."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"LRU\",\"LFU\"],\"rows\":[[\"Evicts based on\",\"How recently used\",\"How often used\"],[\"Best when\",\"Recent items get reused\",\"A stable set stays popular\"],[\"Weakness\",\"A one time scan can flush hot items\",\"Old popular items linger\"],[\"Cost\",\"Track recency order\",\"Track and age counts\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "LRU adapts quickly to changing popularity, since a burst of new accesses immediately promotes those items. Its weakness is a scan: reading a large set of items once can push all the genuinely hot data out of the cache."
+        },
+        {
+          "type": "paragraph",
+          "content": "LFU is more stable and resists scans, because a single access does not outweigh a long history of popularity. Its weakness is the opposite, slowness to forget, so it clings to items that used to be popular. Modern caches often blend the two to get the best of both."
+        },
+        {
+          "type": "paragraph",
+          "content": "A concrete way to feel the difference: for a news site homepage, where the same few articles are hot for hours, LFU keeps them pinned. For a users recent activity feed, where attention shifts constantly, LRU adapts faster. Many caches now use hybrids that lean whichever way the workload does."
+        },
+        {
+          "type": "paragraph",
+          "content": "If you cannot characterise the workload up front, an adaptive policy that tunes itself, like ARC, removes the guesswork by shifting between recency and frequency as it observes traffic."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Implementing LRU Efficiently",
+          "text": "9. Implementing LRU Efficiently"
+        },
+        {
+          "type": "paragraph",
+          "content": "LRU is asked about constantly in interviews, because implementing it in constant time is a neat data structures problem. The naive approach, scanning to find the least recently used item, is too slow at O of n per operation."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279712928-556613977.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785279712928-556613977.png",
+          "alt": "LRU in constant time uses a hash map for lookup and a doubly linked list for ordering"
+        },
+        {
+          "type": "paragraph",
+          "content": "The efficient design combines two structures. A hash map gives O of one lookup from a key to its node. A doubly linked list keeps the items in recency order, with the most recent at the front and the least recent at the back."
+        },
+        {
+          "type": "code",
+          "content": "// on access: move the node to the front (most recently used)\n// on insert when full: remove the tail (least recently used)\nclass LRUCache {\n  constructor(capacity) { this.cap = capacity; this.map = new Map(); }\n  get(key) {\n    if (!this.map.has(key)) return -1;\n    const val = this.map.get(key);\n    this.map.delete(key); this.map.set(key, val); // move to newest\n    return val;\n  }\n  put(key, val) {\n    if (this.map.has(key)) this.map.delete(key);\n    else if (this.map.size >= this.cap) this.map.delete(this.map.keys().next().value); // evict oldest\n    this.map.set(key, val);\n  }\n}",
+          "code": "// on access: move the node to the front (most recently used)\n// on insert when full: remove the tail (least recently used)\nclass LRUCache {\n  constructor(capacity) { this.cap = capacity; this.map = new Map(); }\n  get(key) {\n    if (!this.map.has(key)) return -1;\n    const val = this.map.get(key);\n    this.map.delete(key); this.map.set(key, val); // move to newest\n    return val;\n  }\n  put(key, val) {\n    if (this.map.has(key)) this.map.delete(key);\n    else if (this.map.size >= this.cap) this.map.delete(this.map.keys().next().value); // evict oldest\n    this.map.set(key, val);\n  }\n}",
+          "codes": {
+            "javascript": "// on access: move the node to the front (most recently used)\n// on insert when full: remove the tail (least recently used)\nclass LRUCache {\n  constructor(capacity) { this.cap = capacity; this.map = new Map(); }\n  get(key) {\n    if (!this.map.has(key)) return -1;\n    const val = this.map.get(key);\n    this.map.delete(key); this.map.set(key, val); // move to newest\n    return val;\n  }\n  put(key, val) {\n    if (this.map.has(key)) this.map.delete(key);\n    else if (this.map.size >= this.cap) this.map.delete(this.map.keys().next().value); // evict oldest\n    this.map.set(key, val);\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "This gives O of one for both get and put. The hash map finds the node instantly, and the linked list lets you move a node to the front or drop the tail without shifting anything. In many languages a built in structure, like a linked hash map, does this for you."
+        },
+        {
+          "type": "note",
+          "title": "The interview classic",
+          "content": "Design an LRU cache means hash map plus doubly linked list for O of one operations. It is one of the most common data structure interview questions, so the pattern is worth knowing cold."
+        },
+        {
+          "type": "paragraph",
+          "content": "The version above uses a JavaScript Map, which conveniently preserves insertion order, so re inserting a key moves it to the newest position. In an interview you might instead spell out an explicit doubly linked list plus hash map to show you understand the mechanics."
+        },
+        {
+          "type": "paragraph",
+          "content": "Two follow ups often come next: making it thread safe, which needs locking or a concurrent structure, and Java built in LinkedHashMap, which implements access ordered LRU out of the box."
+        },
+        {
+          "type": "paragraph",
+          "content": "For production use you would reach for a battle tested cache library rather than your own class, but being able to build the core from a hash map and a linked list is what interviewers want to see."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Advanced Policies",
+          "text": "10. Advanced Policies"
+        },
+        {
+          "type": "paragraph",
+          "content": "Real world caches at scale often use policies smarter than plain LRU or LFU, designed to combine their strengths and avoid their weaknesses."
+        },
+        {
+          "type": "list",
+          "content": "[\"ARC, adaptive replacement cache: balances recency and frequency automatically, tuning itself to the workload\",\"Two Q: uses two queues to separate items seen once from items seen repeatedly, resisting scans\",\"W-TinyLFU: a modern policy using a small admission filter plus LFU, giving very high hit rates with little memory\",\"Segmented LRU: splits the cache into a probationary and a protected segment to guard hot items\"]",
+          "items": [
+            "ARC, adaptive replacement cache: balances recency and frequency automatically, tuning itself to the workload",
+            "Two Q: uses two queues to separate items seen once from items seen repeatedly, resisting scans",
+            "W-TinyLFU: a modern policy using a small admission filter plus LFU, giving very high hit rates with little memory",
+            "Segmented LRU: splits the cache into a probationary and a protected segment to guard hot items"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "These policies exist because plain LRU has a real flaw, its vulnerability to scans, and plain LFU has another, stale popularity. The advanced designs mostly aim to keep LRU adaptivity while adding LFU resistance to one time bursts."
+        },
+        {
+          "type": "paragraph",
+          "content": "You rarely implement these yourself. They matter because high performance caches, like the Caffeine library in Java, use W-TinyLFU by default, so understanding the idea helps you reason about why a modern cache performs the way it does."
+        },
+        {
+          "type": "note",
+          "title": "Why go beyond LRU",
+          "content": "Advanced policies like W-TinyLFU and ARC exist to fix LRU scan weakness and LFU staleness at once. You use them through good cache libraries rather than building them by hand."
+        },
+        {
+          "type": "paragraph",
+          "content": "The shared idea in these advanced policies is admission control. Rather than always inserting a new item and evicting an old one, they first ask whether the new item is even worth admitting, using a cheap frequency estimate, which stops a one time item from evicting a proven popular one."
+        },
+        {
+          "type": "paragraph",
+          "content": "That single insight, decide what to let in, not just what to throw out, is what lets W-TinyLFU beat plain LRU on most real workloads while using very little extra memory."
+        },
+        {
+          "type": "paragraph",
+          "content": "The takeaway is that the frontier of caching moved from what to evict to what to admit, and that shift is what powers the highest hit rate caches in use today."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Eviction vs Expiration",
+          "text": "11. Eviction vs Expiration"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is important not to confuse eviction with expiration, because they solve different problems and often work together."
+        },
+        {
+          "type": "paragraph",
+          "content": "Eviction is about space. It happens when the cache is full and something must be removed to fit a new item. Expiration, driven by a TTL or time to live, is about freshness. An item expires after a set time whether or not the cache is full, because its data is considered stale."
+        },
+        {
+          "type": "list",
+          "content": "[\"Eviction: triggered by lack of space, removes an item to make room\",\"Expiration: triggered by time, removes an item because it is stale\",\"A cache typically uses both, expiring stale data and evicting under pressure\",\"TTL bounds how wrong the cache can be, eviction bounds how much it holds\"]",
+          "items": [
+            "Eviction: triggered by lack of space, removes an item to make room",
+            "Expiration: triggered by time, removes an item because it is stale",
+            "A cache typically uses both, expiring stale data and evicting under pressure",
+            "TTL bounds how wrong the cache can be, eviction bounds how much it holds"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "In practice they combine cleanly. An item might be removed either because its TTL passed, keeping the data fresh, or because the cache filled up and the eviction policy chose it. The two mechanisms handle the two independent concerns of freshness and capacity."
+        },
+        {
+          "type": "note",
+          "title": "Two different jobs",
+          "content": "Expiration keeps data fresh, eviction keeps the cache within its size. They are separate mechanisms, and most caches run both at the same time."
+        },
+        {
+          "type": "paragraph",
+          "content": "Expiration itself comes in two styles. Lazy expiration checks whether an item is stale only when it is requested, while active expiration runs a background sweep to remove expired items proactively. Redis, for example, uses a mix of both."
+        },
+        {
+          "type": "paragraph",
+          "content": "The practical upshot is that an item can leave a cache for either reason, and a complete design decides both a TTL for freshness and an eviction policy for capacity."
+        },
+        {
+          "type": "paragraph",
+          "content": "Getting this split right avoids a classic confusion where people try to keep data fresh by shrinking the cache, when a TTL is the correct tool for freshness and size is a separate lever."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Choosing an Eviction Policy",
+          "text": "12. Choosing an Eviction Policy"
+        },
+        {
+          "type": "paragraph",
+          "content": "The right policy depends almost entirely on your access pattern, so the first step is to understand how your data is used."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029028-628015580.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396029028-628015580.png",
+          "alt": "A simple decision path for choosing an eviction policy"
+        },
+        {
+          "type": "list",
+          "content": "[\"Recent items tend to be reused: LRU, the safe default\",\"A stable set of items stays hot over time: LFU, ideally with aging\",\"You scan large datasets once: MRU or a scan resistant policy\",\"You want simplicity with decent results: FIFO or random\",\"Data has a natural freshness limit: add TTL expiration on top\"]",
+          "items": [
+            "Recent items tend to be reused: LRU, the safe default",
+            "A stable set of items stays hot over time: LFU, ideally with aging",
+            "You scan large datasets once: MRU or a scan resistant policy",
+            "You want simplicity with decent results: FIFO or random",
+            "Data has a natural freshness limit: add TTL expiration on top"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "For most systems, LRU is the pragmatic default and a fine starting point. You only need something fancier when you can measure that LRU is underperforming, for example when scans are flushing your hot data, at which point a scan resistant policy like W-TinyLFU or Two Q is worth the complexity."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Start with LRU. Move to LFU or an advanced policy only when your measured hit rate and access pattern show that recency alone is not enough."
+        },
+        {
+          "type": "paragraph",
+          "content": "Whatever policy you pick, size the cache to comfortably hold the working set first, because the best policy in the world cannot help a cache that is far too small and evicting constantly."
+        },
+        {
+          "type": "paragraph",
+          "content": "And revisit the choice as the workload changes. A policy that was ideal at launch can become a poor fit as access patterns shift, which is why the truly adaptive policies exist."
+        },
+        {
+          "type": "paragraph",
+          "content": "In short, treat the policy as a decision to revisit with data, not a one time choice frozen at design time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Common Mistakes and Considerations",
+          "text": "13. Common Mistakes and Considerations"
+        },
+        {
+          "type": "paragraph",
+          "content": "Eviction seems simple but there are several traps that quietly hurt cache performance."
+        },
+        {
+          "type": "list",
+          "content": "[\"Choosing a policy without knowing the access pattern, so it fights the workload\",\"Ignoring the scan problem, letting a big one time read flush all the hot data from an LRU cache\",\"Using plain LFU without aging, so stale popular items never leave\",\"Confusing eviction with expiration and forgetting to also bound freshness with a TTL\",\"Setting the cache too small, so eviction churns constantly and the hit rate collapses\",\"Not measuring the hit rate, so you never notice the policy is performing poorly\"]",
+          "items": [
+            "Choosing a policy without knowing the access pattern, so it fights the workload",
+            "Ignoring the scan problem, letting a big one time read flush all the hot data from an LRU cache",
+            "Using plain LFU without aging, so stale popular items never leave",
+            "Confusing eviction with expiration and forgetting to also bound freshness with a TTL",
+            "Setting the cache too small, so eviction churns constantly and the hit rate collapses",
+            "Not measuring the hit rate, so you never notice the policy is performing poorly"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The unifying theme is to measure and match. Measure your hit rate, understand your access pattern, and match the policy to it. A cache with the wrong policy or the wrong size can be worse than no cache at all, because it adds cost and complexity while barely improving speed."
+        },
+        {
+          "type": "note",
+          "title": "Measure the hit rate",
+          "content": "The single most important habit is watching the cache hit rate. It tells you immediately whether your policy and size are working, long before users feel the slow, cache missing path."
+        },
+        {
+          "type": "paragraph",
+          "content": "Two related failures are worth naming. A cold cache after a restart has nothing useful in it, so every request misses until it warms up, and a mass eviction can trigger a stampede where many requests rush the database at once. Both have their own dedicated pages in this section."
+        },
+        {
+          "type": "paragraph",
+          "content": "The lesson is that eviction does not live in isolation. It interacts with warming, invalidation, and stampede protection, which together make a cache reliable rather than just fast."
+        },
+        {
+          "type": "paragraph",
+          "content": "Seen that way, the eviction policy is one gear in a larger caching machine, and the following pages cover the gears it meshes with."
+        },
+        {
+          "type": "paragraph",
+          "content": "If you take one practical habit away, let it be this: pick LRU, size the cache to the working set, watch the hit rate, and only reach for something cleverer when the numbers tell you to."
+        },
+        {
+          "type": "paragraph",
+          "content": "That simple discipline handles the overwhelming majority of real caching needs, and it keeps you from over engineering a policy the workload never needed."
+        },
+        {
+          "type": "paragraph",
+          "content": "The fancy policies are there when you need them, but a well sized LRU cache that you actually measure will already put you ahead of most systems."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "14. HLD Interview: How to Talk About This",
+          "text": "14. HLD Interview: How to Talk About This"
+        },
+        {
+          "type": "paragraph",
+          "content": "Eviction policies come up both as a design consideration and as a direct coding question, so it pays to be fluent in both."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Default to LRU:</strong> I use LRU as the standard eviction policy, because recently used data is usually reused, and it is what most caches and libraries default to."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Know the tradeoff:</strong> I can explain LRU versus LFU as recency versus frequency, and note that LRU is vulnerable to scans while LFU can cling to stale popular items."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Implement it cleanly:</strong> If asked to build an LRU cache, I use a hash map plus a doubly linked list for O of one get and put, which is the expected answer."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Separate freshness from space:</strong> I distinguish TTL expiration, which keeps data fresh, from eviction, which bounds size, and mention that a real cache uses both together."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mention approximate LRU:</strong> I note that production caches like Redis use an approximate, sampled LRU rather than exact ordering, which shows I know how the theory meets real performance constraints."
+        }
+      ]
+    }
+  ]
+}

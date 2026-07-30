@@ -1,0 +1,242 @@
+{
+  "title": "Multithreading Basics",
+  "slug": "multithreading-basics",
+  "content": [
+    {
+      "id": "multithreading-basics",
+      "title": "Multithreading Basics",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "Multithreading is not something that happens to a program by accident. It is a deliberate design choice: you decide to split a single program into multiple threads so it can do more at once and stay responsive while it works. Once you understand exactly why you would make that choice, and what it costs you in return, the rest of concurrent programming starts to make sense."
+        },
+        {
+          "type": "paragraph",
+          "content": "This chapter explains the two very different reasons a developer reaches for multithreading, walks through a worked example for each one, introduces thread pools as the pattern real software actually uses, and is honest about the price multithreading makes you pay in return, the risk of race conditions, which the Synchronization module covers in full."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What Multithreading Actually Means",
+          "text": "1. What Multithreading Actually Means"
+        },
+        {
+          "type": "paragraph",
+          "content": "A thread is a single sequential path of execution inside a process, and every process starts life with exactly one. Multithreading means a program deliberately creates additional threads inside itself, so that more than one path of execution is alive and progressing at the same time, all sharing the same memory and the same set of open files."
+        },
+        {
+          "type": "note",
+          "title": "Not the default",
+          "content": "Programs are single threaded unless a developer explicitly asks for more. Multithreading is always a decision made in the source code, never something the operating system adds on its own."
+        },
+        {
+          "type": "paragraph",
+          "content": "Almost every reason to make that decision falls into one of two completely different buckets, and mixing them up is the single biggest source of confusion when people first learn about threads."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Motivation\",\"What it actually buys you\",\"Needs more than one core\"],\"rows\":[[\"Responsiveness and overlap\",\"Keeps the program reacting while slow work happens somewhere else\",\"No, it helps even on a single core machine\"],[\"True speedup\",\"Finishes the same CPU bound work in less wall clock time\",\"Yes, real hardware parallelism is required\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Motivation One: Responsiveness and Overlap",
+          "text": "2. Motivation One: Responsiveness and Overlap"
+        },
+        {
+          "type": "paragraph",
+          "content": "The first reason to use more than one thread has nothing to do with having extra processor cores. It is about never letting the entire program sit frozen just because one particular task is slow. Whenever a thread is waiting on something outside the CPU, such as a disk write, a network reply, or the user clicking something, it is not actually using the processor at all. If that waiting thread is the only thread in the program, the whole program appears to freeze even though the CPU itself is sitting idle. A second thread lets useful work continue during exactly that idle gap."
+        },
+        {
+          "type": "heading3",
+          "content": "Worked example: a desktop app saving a large file",
+          "text": "Worked example: a desktop app saving a large file"
+        },
+        {
+          "type": "paragraph",
+          "content": "Picture a desktop application with a single user interface thread. A user works on a large document for an hour and then clicks save. Writing that document to disk might take several seconds if the file is large or the disk is slow. If the same single thread that draws the window and handles clicks is also the one doing that write, the entire application freezes for those seconds. The window stops redrawing, buttons stop responding, and the operating system may even show a spinning cursor that tells the user the app has stopped answering."
+        },
+        {
+          "type": "paragraph",
+          "content": "Now add a second thread. The user interface thread keeps running exactly as before, still redrawing the window and responding to clicks, while a separate worker thread performs the slow disk write in the background. The moment the save button is clicked, the interface thread hands the job to the worker thread and immediately goes back to listening for input. The user can keep scrolling and typing while the file quietly finishes saving behind the scenes."
+        },
+        {
+          "type": "note",
+          "title": "The point is not raw speed",
+          "content": "The save itself does not finish any faster with two threads than with one, the disk still takes the same number of seconds. What changes is that the rest of the application stays free to keep working while that wait happens."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Motivation Two: True Speedup",
+          "text": "3. Motivation Two: True Speedup"
+        },
+        {
+          "type": "paragraph",
+          "content": "The second reason is the opposite kind of problem. Some work is not slow because it is waiting on a disk or a network, it is slow because there is a large amount of pure computation to get through, and the processor is genuinely busy the entire time. This kind of work is called CPU bound. Splitting CPU bound work across threads only helps if there is more than one processor core available to actually execute those threads at the same literal instant. On a single core machine, the operating system can still switch rapidly between threads, but only one instruction stream is ever running at any given moment, so splitting CPU bound work into more threads does not make it finish any sooner."
+        },
+        {
+          "type": "heading3",
+          "content": "Worked example: resizing one hundred images",
+          "text": "Worked example: resizing one hundred images"
+        },
+        {
+          "type": "paragraph",
+          "content": "Suppose a program needs to resize one hundred images and each image takes roughly the same amount of time to process. Run on a machine with four processor cores, the work can be split into four equal batches of twenty five images, with one thread assigned to each batch. Because each core can genuinely execute its own thread at the same time as the other three, all four batches make progress simultaneously. The whole job, which would have taken some amount of time T on a single thread, now finishes in roughly T divided by four, a real, measurable speedup of close to four times."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Threads used\",\"Images per thread\",\"Approximate total time\"],\"rows\":[[\"1\",\"100\",\"T\"],[\"4\",\"25 each\",\"about T over 4\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "This only works because the images are independent",
+          "content": "Resizing one image never depends on the result of resizing another, so the one hundred images can be split apart and handled in any order on any thread. Work that depends on earlier steps cannot be split this cleanly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Seeing It on a Timeline",
+          "text": "4. Seeing It on a Timeline"
+        },
+        {
+          "type": "paragraph",
+          "content": "The difference between the two motivations is easiest to see by drawing the timelines side by side. Picture two tasks, task A and task B. In a single threaded program, task B cannot even begin until task A finishes completely, including any time task A spends blocked and waiting on something slow. In a multithreaded program, task A and task B run on separate threads, so task B can make progress during exactly the stretch where task A is blocked and doing nothing useful."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408415713-371665158.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408415713-371665158.png",
+          "alt": "Seeing It on a Timeline",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785408415713-371665158.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The gap in the top timeline is wasted time from task B's point of view, it is ready to run but has no thread to run on. The bottom timeline closes that gap by giving task B its own thread, so it fills exactly the stretch where task A was blocked rather than idle."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Thread Pools: The Practical Pattern",
+          "text": "5. Thread Pools: The Practical Pattern"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is tempting to imagine that a heavily multithreaded program creates a brand new thread every time it has a new task to do. In practice almost nobody writes code that way, because creating a thread is not free. The operating system has to allocate a stack for it, register it with the scheduler, and set up bookkeeping for it, and all of that takes real time and real memory. If a program creates and destroys thousands of short lived threads, that overhead can end up costing more than the actual work the threads were created to do."
+        },
+        {
+          "type": "paragraph",
+          "content": "The standard practical pattern instead is a thread pool, a fixed, reusable group of worker threads created once, up front, before any tasks arrive. Tasks are placed on a shared queue, and each worker thread pulls the next available task off that queue, runs it, and then goes back to waiting for another one. The cost of creating the threads is paid exactly once, no matter how many thousands of tasks eventually flow through the pool."
+        },
+        {
+          "type": "heading3",
+          "content": "The image resizing example, revisited",
+          "text": "The image resizing example, revisited"
+        },
+        {
+          "type": "paragraph",
+          "content": "The one hundred image resize job from earlier is a natural fit for a thread pool of four worker threads. Rather than creating one hundred separate threads, the program creates four worker threads up front and places all one hundred resize tasks on a shared queue. Each worker pulls a task, resizes that image, and immediately goes back for the next one, so the four threads stay busy until the queue is empty."
+        },
+        {
+          "type": "code",
+          "content": "// A fixed thread pool of 4 workers processing 100 image resize tasks\nExecutorService pool = Executors.newFixedThreadPool(4);\n\nfor (Image img : images) {          // 100 images queued up\n    pool.submit(() -> resize(img)); // each task waits for a free worker\n}\n\npool.shutdown();\npool.awaitTermination(1, TimeUnit.HOURS);\n// only 4 threads were ever created, no matter how many images there are",
+          "code": "// A fixed thread pool of 4 workers processing 100 image resize tasks\nExecutorService pool = Executors.newFixedThreadPool(4);\n\nfor (Image img : images) {          // 100 images queued up\n    pool.submit(() -> resize(img)); // each task waits for a free worker\n}\n\npool.shutdown();\npool.awaitTermination(1, TimeUnit.HOURS);\n// only 4 threads were ever created, no matter how many images there are",
+          "codes": {
+            "java": "// A fixed thread pool of 4 workers processing 100 image resize tasks\nExecutorService pool = Executors.newFixedThreadPool(4);\n\nfor (Image img : images) {          // 100 images queued up\n    pool.submit(() -> resize(img)); // each task waits for a free worker\n}\n\npool.shutdown();\npool.awaitTermination(1, TimeUnit.HOURS);\n// only 4 threads were ever created, no matter how many images there are"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. The Real Cost: Race Conditions",
+          "text": "6. The Real Cost: Race Conditions"
+        },
+        {
+          "type": "paragraph",
+          "content": "Multithreading is never free, and the price is not really about processor cycles. Because threads inside the same process share the same memory, two threads can end up reading and writing the very same variable at the same time. If that sharing is not handled carefully, the result depends on the exact, unpredictable order in which the operating system happens to run the two threads, which is called a race condition. The program might work perfectly for weeks and then produce a wrong answer, a corrupted value, or a crash the one time the threads happen to interleave in an unlucky order."
+        },
+        {
+          "type": "note",
+          "title": "Why this is the hard part",
+          "content": "A single threaded program only ever has one thing happening at a time, so its behavior is repeatable and easy to reason about. The moment a second thread starts touching shared memory, the number of possible orderings explodes, and a bug that only shows up once in ten thousand runs is exactly the kind that survives testing and reaches production."
+        },
+        {
+          "type": "paragraph",
+          "content": "Race conditions are the main reason multithreaded code has a reputation for being harder to get right than single threaded code. Avoiding them is not something multithreading gives you automatically, it is something a developer has to design for explicitly using tools such as locks and other synchronization primitives, which the Synchronization module covers in full."
+        },
+        {
+          "type": "blockQuote",
+          "content": "More threads means more opportunities for two threads to disagree about the state of shared memory at the exact same moment."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Amdahl's Law: Why More Threads Is Not Always Faster",
+          "text": "7. Amdahl's Law: Why More Threads Is Not Always Faster"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is natural to assume that doubling the number of threads should roughly double the speed of a job, but real programs almost never scale that cleanly. Amdahl's law captures why: every program has some portion of its work that simply cannot be split across threads, such as reading the initial input or combining the final results, and that unparallelizable portion puts a hard ceiling on the best possible speedup no matter how many threads or cores are thrown at the rest."
+        },
+        {
+          "type": "paragraph",
+          "content": "Intuitively, once the parallel portion of the work is split across enough threads, it stops being the bottleneck, the fixed, sequential portion is. Adding a ninth or tenth thread to a job that is already spread across eight barely helps, because those extra threads are racing to finish a shrinking slice of work while the sequential portion sits exactly where it always was."
+        },
+        {
+          "type": "note",
+          "title": "A quick intuition",
+          "content": "If ten percent of a job must run sequentially no matter what, the other ninety percent can be sped up as much as you like and the job will still never run more than ten times faster overall, because that ten percent alone takes a tenth of the original time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Common Mistakes",
+          "text": "8. Common Mistakes"
+        },
+        {
+          "type": "list",
+          "content": "[\"Assuming more threads always means a faster program, even for work that is not actually splittable or is limited by a slow disk or network rather than the processor.\",\"Creating a brand new thread for every small task instead of reusing a thread pool, so the overhead of thread creation ends up larger than the work itself.\",\"Ignoring the coordination cost between threads. Every time threads must wait on each other or protect shared data, that coordination eats into the speedup a thread pool was supposed to deliver.\",\"Adding threads on a single core machine expecting CPU bound work to run faster, when only responsiveness improves and true speedup does not.\"]",
+          "items": [
+            "Assuming more threads always means a faster program, even for work that is not actually splittable or is limited by a slow disk or network rather than the processor.",
+            "Creating a brand new thread for every small task instead of reusing a thread pool, so the overhead of thread creation ends up larger than the work itself.",
+            "Ignoring the coordination cost between threads. Every time threads must wait on each other or protect shared data, that coordination eats into the speedup a thread pool was supposed to deliver.",
+            "Adding threads on a single core machine expecting CPU bound work to run faster, when only responsiveness improves and true speedup does not."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. The Interview Angle",
+          "text": "9. The Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "A strong interview answer about multithreading does not stop at claiming it makes programs faster. The sharper answer names which of the two motivations is actually in play. If the question is about a user interface staying smooth while a file uploads, the honest answer is responsiveness and overlap, and it would still help even on a single core machine. If the question is about crunching a large dataset faster on a multi core server, the honest answer is true speedup, and it depends entirely on having real hardware parallelism to exploit. Being able to say which one applies, and why, is usually more impressive than any amount of syntax knowledge about how to spawn a thread."
+        },
+        {
+          "type": "paragraph",
+          "content": "It is also worth being ready to immediately follow up with the cost. Multithreading trades a performance or responsiveness win for the risk of race conditions, and mentioning that tradeoff unprompted signals that you understand multithreading as a design decision rather than as a syntax trick."
+        }
+      ]
+    }
+  ]
+}

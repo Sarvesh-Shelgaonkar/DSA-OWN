@@ -1,0 +1,530 @@
+{
+  "slug": "context-sharing",
+  "title": "Context Sharing",
+  "content": [
+    {
+      "id": "context-sharing",
+      "title": "Context Sharing",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "The earlier Shared Context lesson looked at one host juggling several MCP servers inside a single process. This lesson looks at something different, sharing context across two entirely separate systems that are not part of the same process at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "Two agents built by different teams, running on different machines, or owned by different companies sometimes need to hand work to each other. Whatever one of them learned has to travel across that gap on purpose."
+        },
+        {
+          "type": "paragraph",
+          "text": "We will look at exporting a context snapshot, importing it safely, the drift that creeps in when sharing is not deliberate, and the boundaries that decide what one system is even allowed to see."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. From One Host to Two Separate Systems",
+          "id": "ctxshare-two-systems"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578949187-201057718.png",
+          "alt": "One host shares context across two separate systems",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "In the Shared Context lesson, one host held every server connection, so building a unified picture was the host job alone."
+        },
+        {
+          "type": "paragraph",
+          "text": "Here there is no shared host. System A and System B are different processes, maybe different companies, with no memory in common by default."
+        },
+        {
+          "type": "paragraph",
+          "text": "Anything System A knows stays inside System A until someone writes code to move it across."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of that context arrives for free. It has to be packaged, sent, and understood on the other side."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A support agent handing a ticket to a billing agent in another service",
+            "A research agent resuming its work on a different machine after a restart",
+            "Your company agent calling into a partner company agent",
+            "A mobile app agent syncing state with a cloud agent it is not always connected to"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. What a Context Snapshot Is",
+          "id": "ctxshare-what-is-snapshot"
+        },
+        {
+          "type": "paragraph",
+          "text": "A context snapshot is a frozen, point in time copy of what one system currently knows, packaged so another system can read it."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is not the live, in memory object from the earlier lesson. It is a plain, serialized artifact meant to travel."
+        },
+        {
+          "type": "paragraph",
+          "text": "Think of it as a small, self contained file, not a live connection or a shared database."
+        },
+        {
+          "type": "note",
+          "title": "A snapshot is a copy, not a live link",
+          "content": "Once exported, a snapshot stops changing. If System A keeps working after export, its live state and the exported snapshot start to disagree immediately."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Why Sharing Is Never Automatic",
+          "id": "ctxshare-never-automatic"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two separate processes do not share memory, so nothing crosses the gap unless a piece of code deliberately sends it."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is true even for two copies of the exact same agent framework running on two different servers."
+        },
+        {
+          "type": "paragraph",
+          "text": "The earlier lesson solved coordination by routing everything through one host. Across systems, there is no host to route through, only messages you choose to send."
+        },
+        {
+          "type": "paragraph",
+          "text": "That gap is exactly why exporting and importing snapshots deserves its own careful design, rather than being an afterthought."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Exporting a Context Snapshot",
+          "id": "ctxshare-exporting"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578951705-131917689.png",
+          "alt": "System A exports a context snapshot through an access boundary filter to System B",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Exporting means choosing exactly which fields matter to the other system, then serializing them into a plain format like JSON."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keep the format boring on purpose. Plain JSON with a version number travels far better than a language specific object."
+        },
+        {
+          "type": "paragraph",
+          "text": "A version number in the export lets the importer reject anything it does not know how to read yet."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def export_snapshot(state):\n    return {\n        \"snapshot_id\": generate_id(),\n        \"version\": 1,\n        \"source_system\": \"order-agent\",\n        \"created_at\": now_iso(),\n        \"scope\": [\"order_status\", \"customer_id\"],\n        \"payload\": {\n            \"order_status\": state[\"order_status\"],\n            \"customer_id\": state[\"customer_id\"],\n        },\n    }"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Importing a Snapshot on the Receiving Side",
+          "id": "ctxshare-importing"
+        },
+        {
+          "type": "paragraph",
+          "text": "Importing means reading that JSON and turning it into whatever internal shape the receiving system needs."
+        },
+        {
+          "type": "paragraph",
+          "text": "Treat an incoming snapshot like any external input. Validate its shape before trusting a single field inside it."
+        },
+        {
+          "type": "paragraph",
+          "text": "If validation fails, reject the snapshot loudly rather than silently filling in guesses for the missing pieces."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def import_snapshot(raw):\n    if raw.get(\"version\") != 1:\n        raise ValueError(\"unsupported snapshot version\")\n    if \"payload\" not in raw:\n        raise ValueError(\"snapshot missing payload\")\n    return raw[\"payload\"]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Anatomy of a Snapshot",
+          "id": "ctxshare-anatomy"
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful snapshot has a handful of standard fields, not just the raw data itself."
+        },
+        {
+          "type": "paragraph",
+          "text": "Skipping any of these fields tends to show up later as a confusing bug that is hard to trace back."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Field\",\"Purpose\"],\"rows\":[[\"snapshot_id\",\"Unique id so both sides can refer to this exact export\"],[\"version\",\"Format version, so the importer knows what shape to expect\"],[\"source_system\",\"Which system produced this snapshot\"],[\"created_at\",\"When the snapshot was taken, used to judge freshness\"],[\"scope\",\"Which fields are included, so nothing is assumed silently\"],[\"payload\",\"The actual data the receiving system needs\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. The Drift Problem",
+          "id": "ctxshare-drift"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578955434-349610721.png",
+          "alt": "A shared snapshot can drift away from the live source over time",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Drift is what happens when two systems start from the same snapshot, then keep changing independently without telling each other."
+        },
+        {
+          "type": "paragraph",
+          "text": "System A marks an order shipped. System B, holding an older snapshot, still thinks the order is pending."
+        },
+        {
+          "type": "paragraph",
+          "text": "Nothing crashes when this happens. The two systems just quietly disagree until someone acts on the wrong one."
+        },
+        {
+          "type": "paragraph",
+          "text": "The longer that gap goes unnoticed, the more expensive it becomes to untangle later."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Sharing Has to Be Deliberate",
+          "id": "ctxshare-deliberate"
+        },
+        {
+          "type": "paragraph",
+          "text": "Deliberate sharing means export and import happen on purpose, triggered by a specific event, not by guessing."
+        },
+        {
+          "type": "paragraph",
+          "text": "Accidental sharing looks like one system quietly reading another system database or log files directly."
+        },
+        {
+          "type": "paragraph",
+          "text": "A direct database read might feel convenient, but it skips every check a real export step would have done."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Export on a clear trigger, such as a handoff or a scheduled sync, never silently in the background",
+            "Give every snapshot a version so both sides agree on its shape",
+            "Require the importing system to explicitly accept a snapshot before acting on it"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Freshness and Expiry",
+          "id": "ctxshare-freshness"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578960365-121148873.png",
+          "alt": "A fresh snapshot is compared against an expired snapshot",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every snapshot should carry a created_at, and ideally an expires_at, so the receiver knows how old it might be."
+        },
+        {
+          "type": "paragraph",
+          "text": "A snapshot that is minutes old deserves more trust than one that is several days old."
+        },
+        {
+          "type": "paragraph",
+          "text": "A reasonable rule of thumb is to size the expiry window to how quickly the underlying data actually changes."
+        },
+        {
+          "type": "note",
+          "title": "Old snapshots are a hint, not a fact",
+          "content": "If a snapshot is older than the task can tolerate, the receiving system should ask the source for a fresh one rather than acting on stale numbers."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Keeping Two Systems in Sync Over Time",
+          "id": "ctxshare-ongoing-sync"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single export and import is simple. Keeping two systems aligned over weeks of ongoing work is the harder problem."
+        },
+        {
+          "type": "paragraph",
+          "text": "There are three common approaches, and each trades simplicity for freshness differently."
+        },
+        {
+          "type": "paragraph",
+          "text": "None of these approaches is wrong. The right choice depends on how quickly the shared facts actually go stale."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Re-export after every change, which stays freshest but adds constant overhead",
+            "Sync on a fixed schedule, which is simple but allows a window of drift",
+            "Push an event the moment something meaningful changes, which balances both"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Resolving Conflicts When Snapshots Disagree",
+          "id": "ctxshare-conflicts"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578963742-428111096.png",
+          "alt": "Snapshot A and snapshot B disagree and need a resolution rule",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Sooner or later, both systems will hold a different answer to the same question."
+        },
+        {
+          "type": "paragraph",
+          "text": "Decide the tie breaking rule before it happens, not during an argument between two services in production."
+        },
+        {
+          "type": "paragraph",
+          "text": "Common rules include trusting whichever snapshot has the newest timestamp, or naming one system the permanent source of truth for a given field."
+        },
+        {
+          "type": "paragraph",
+          "text": "Whatever the rule, write it down where both teams can see it, not just in one engineer head."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Access Boundaries Between Systems",
+          "id": "ctxshare-boundaries"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578966853-1846605.png",
+          "alt": "An access boundary decides exactly what crosses between two systems",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "An access boundary defines exactly what one system is allowed to see from another, not just what it is technically able to fetch."
+        },
+        {
+          "type": "paragraph",
+          "text": "Being able to reach a field over the network does not mean the receiving system should be shown that field."
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful question to ask for every field is whether the other system truly needs it to do its job."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Deciding What Crosses the Boundary",
+          "id": "ctxshare-scope"
+        },
+        {
+          "type": "paragraph",
+          "text": "Scope every snapshot down to only what the specific task on the other side actually needs."
+        },
+        {
+          "type": "paragraph",
+          "text": "A support agent handing off to a billing agent should share the customer id and the issue summary, not the customer entire internal history."
+        },
+        {
+          "type": "paragraph",
+          "text": "When in doubt, leave a field out. It is far easier to add access later than to claw back something already shared."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Category\",\"Typically Shared\",\"Usually Kept Internal\"],\"rows\":[[\"Identifiers\",\"Customer id, order id\",\"Internal database primary keys\"],[\"Task Data\",\"Issue summary, current status\",\"Full conversation transcript\"],[\"Preferences\",\"Explicit user choices\",\"Internal risk scores or flags\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Authenticating a Snapshot",
+          "id": "ctxshare-authenticating"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784578968932-336532263.png",
+          "alt": "A snapshot is authenticated before the receiving system trusts it",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A snapshot crossing a boundary between companies deserves the same scrutiny as any external API call."
+        },
+        {
+          "type": "paragraph",
+          "text": "Sign the export, or send it over an authenticated channel, so the receiver knows it came from who it claims and was not altered in transit."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Logging Every Export and Import",
+          "id": "ctxshare-logging"
+        },
+        {
+          "type": "paragraph",
+          "text": "Keep a record of every snapshot sent and received, along with who requested it and when."
+        },
+        {
+          "type": "paragraph",
+          "text": "That log is what lets a team trace, after the fact, the exact moment two systems started to disagree."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "ctxshare-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a research agent, System A, that gathers findings, and a drafting agent, System B, that writes them up. They run as two separate services."
+        },
+        {
+          "type": "paragraph",
+          "text": "System A finishes its research pass and exports a snapshot for System B to pick up."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def export_research_snapshot(findings):\n    return {\n        \"snapshot_id\": \"rs-2031\",\n        \"version\": 1,\n        \"source_system\": \"research-agent\",\n        \"created_at\": \"2026-07-07T09:15:00Z\",\n        \"expires_at\": \"2026-07-07T21:15:00Z\",\n        \"scope\": [\"topic\", \"key_points\", \"sources\"],\n        \"payload\": findings,\n    }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "System B receives the JSON over a queue, validates the version and expiry, then imports only the fields it needs."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "function importResearchSnapshot(raw) {\n  if (raw.version !== 1) throw new Error(\"unsupported version\");\n  const expiry = new Date(raw.expires_at);\n  if (Date.now() > expiry.getTime()) throw new Error(\"snapshot expired\");\n  return raw.payload;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Because both sides agreed on the same versioned shape ahead of time, System B can start drafting immediately without guessing what System A meant."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "ctxshare-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Sharing the live object directly instead of a frozen, versioned snapshot",
+            "Skipping validation on import because the data came from a system you trust",
+            "Leaving out a created_at field, so nobody can judge how stale the data is",
+            "Letting one system read another system database directly instead of going through an explicit export",
+            "Sharing more fields than the receiving task actually needs",
+            "Never deciding a conflict rule, so the two systems silently disagree",
+            "Assuming a one time sync is enough for a relationship that keeps changing"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "ctxshare-practice"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Write an export function for a scheduling agent that hands a confirmed meeting time to a notifications agent",
+            "Add an expires_at check to an import function and decide what should happen when a snapshot has expired",
+            "Design a scope list for a snapshot shared between a support agent and a refunds agent, deciding what stays internal",
+            "Sketch the conflict rule you would use if two systems both claim to have the newest order status"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "ctxshare-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Crossing from one host to two separate systems turns context sharing from an internal bookkeeping problem into a deliberate contract, export, import, freshness, and scope all have to be decided on purpose."
+        },
+        {
+          "type": "paragraph",
+          "text": "Get that contract right and two systems can collaborate cleanly. Skip it, and they will quietly drift apart until the gap becomes someone incident."
+        }
+      ]
+    }
+  ]
+}

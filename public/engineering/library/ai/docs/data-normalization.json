@@ -1,0 +1,465 @@
+{
+  "slug": "data-normalization",
+  "title": "Data Normalization",
+  "content": [
+    {
+      "id": "data-normalization",
+      "title": "Data Normalization",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Two lessons from now you are going to standardize a column. Right now you are going to normalize one. People throw these two words around like they mean the same thing, in blog posts, in interview answers, sometimes even in library docs, and it causes real, avoidable confusion. They are not the same operation. Normalization rescales a numeric column into a fixed, bounded range, almost always 0 to 1. Standardization centers a column around a mean of 0 with a standard deviation of 1, and it has no fixed upper or lower bound at all. Related problems, genuinely different math, genuinely different results. Get that straight before anything else in this lesson, and the next one will click a lot faster."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663852393-420749043.png",
+          "alt": "A raw column of mixed range values flowing through min max normalization into a stable 0 to 1 range",
+          "caption": "The whole lesson in one picture: rescale the range, stabilize the model.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Introduction",
+          "id": "introduction"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is what this lesson actually covers. You will see why scale matters at all, why an algorithm that computes distances or runs gradient descent can get badly misled by a column that happens to range in the millions next to one that ranges from 0 to 1. Then the min max formula itself, worked by hand on a tiny column so the mechanic is completely obvious before any library gets involved. Then the pandas one-liner version, followed by the standard scikit-learn way with MinMaxScaler, and why you will reach for the library version in any real pipeline. Then two gotchas that matter a lot in practice: the exact same fit-on-train-only rule you already learned in the missing value imputation lesson, and a vulnerability specific to min max normalization, its sensitivity to outliers, tied back to what you learned in the outlier detection lesson."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Normalization rescales a column into a fixed, bounded range, most commonly 0 to 1, using the column's min and max",
+            "Standardization, covered in the very next lesson, centers a column around a mean of 0 with a standard deviation of 1 and has no fixed bound",
+            "Distance based algorithms like k-nearest neighbors and k-means, and anything trained with gradient descent, get distorted by unscaled features",
+            "The formula is simple: subtract the min from a value, then divide by the max minus the min, and the result always lands between 0 and 1",
+            "MinMaxScaler from scikit-learn is the standard tool for real pipelines, using the same fit and transform split you already met with SimpleImputer",
+            "Fitting a scaler on your full dataset, including test rows, is data leakage, the exact same mistake covered in the missing value imputation lesson",
+            "Min max normalization depends entirely on two single values, the min and the max, which makes it unusually sensitive to a single extreme outlier"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is the distinction laid out side by side, worth bookmarking mentally since the two terms get confused constantly."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Normalization (min max)\",\"Standardization\"],\"rows\":[[\"What it does\",\"Rescales values into a fixed bounded range, almost always 0 to 1\",\"Centers values around a mean of 0 with a standard deviation of 1\"],[\"Formula\",\"x minus min, divided by max minus min\",\"x minus mean, divided by standard deviation\"],[\"Resulting range\",\"Always bounded, 0 to 1 by default\",\"Not bounded, values can land anywhere\"],[\"What it depends on\",\"The min and max of the column\",\"The mean and standard deviation of the column\"],[\"Sensitivity to outliers\",\"Very high, one extreme value stretches the whole range\",\"Lower, though mean and standard deviation still shift somewhat\"],[\"Common scikit-learn tool\",\"MinMaxScaler\",\"StandardScaler\"],[\"Good fit for\",\"Algorithms expecting a bounded input, like neural network layers or pixel values\",\"Algorithms assuming roughly normal, unbounded input, like linear regression or PCA\"]]}"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663855906-966876627.png",
+          "alt": "The same raw column branching into normalization producing a fixed 0 to 1 range and standardization producing an unbounded mean 0 result",
+          "caption": "Same starting column, two different destinations. Do not mix them up.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Why Scale Matters For Many ML Algorithms",
+          "id": "why-scale-matters-for-many-ml-algorithms"
+        },
+        {
+          "type": "paragraph",
+          "text": "A lot of machine learning algorithms do not just look at a feature's value, they do math directly on top of it, math that assumes every feature is roughly on the same footing. When that assumption breaks, because one column ranges from 0 to 1 and another ranges from 0 to 1,000,000, the algorithm does not politely ignore the mismatch. It lets the larger range quietly take over, and it does that purely because of scale, not because that feature is actually more important."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663854417-618277762.png",
+          "alt": "Feature A ranging 0 to 1 and feature B ranging 0 to 1000000 both feeding a distance calculation, with feature B alone deciding the result",
+          "caption": "A tiny, genuinely important feature gets drowned out by a huge, careless one.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.1 Distance Based Algorithms",
+          "id": "distance-based-algorithms"
+        },
+        {
+          "type": "paragraph",
+          "text": "Algorithms like k-nearest neighbors and k-means clustering decide who is close to whom by computing a distance between rows, usually Euclidean distance, which means squaring the difference in every feature and adding them up. If one feature's differences are typically single digits and another feature's differences are typically in the hundreds of thousands, that second feature dominates the sum almost entirely, no matter what the first feature actually represents."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import numpy as np\n\npoint_a = np.array([0.2, 50000])   # [feature_1, feature_2]\npoint_b = np.array([0.9, 52000])\n\ndiff = point_a - point_b\nsquared = diff ** 2\nprint(squared)          # [0.49, 4000000.0]  feature_2 swamps feature_1 completely\nprint(np.sqrt(squared.sum()))   # distance is essentially just feature_2's difference"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Look at those squared differences. Feature 1 moved by 0.7 and contributed 0.49 to the total. Feature 2 moved by 2000 and contributed four million. The overall distance is, for all practical purposes, just measuring feature 2. Feature 1 might be the single most predictive column in your whole dataset and this calculation would never know it, purely because of the units it happens to be measured in."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "2.2 Gradient Descent And Unscaled Features",
+          "id": "gradient-descent-and-unscaled-features"
+        },
+        {
+          "type": "paragraph",
+          "text": "Gradient descent has a version of the same problem. It nudges every weight in the direction that reduces the loss, and the size of that nudge is tied to the scale of the input feature that weight multiplies. A feature sitting in the millions produces gradients that are enormous compared to a feature sitting between 0 and 1, so the optimizer ends up taking wildly uneven steps across different weights. In practice this shows up as slow, unstable, zig zagging training that takes far longer to converge than it should, sometimes it does not converge at all without a carefully tuned learning rate."
+        },
+        {
+          "type": "note",
+          "title": "Scale is not the same thing as importance",
+          "content": "Nothing about a feature ranging in the millions makes it more informative than a feature ranging from 0 to 1. It only means the units happen to be bigger. Distance calculations and gradient descent cannot tell the difference between scale and importance on their own, which is exactly the gap normalization exists to close."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. The Min-Max Formula",
+          "id": "the-min-max-formula"
+        },
+        {
+          "type": "paragraph",
+          "text": "The fix is a small formula. For any value x in a column, the min max normalized version of it is x minus the column's minimum, divided by the column's maximum minus its minimum."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "x_normalized = (x - column_min) / (column_max - column_min)"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663857401-144133008.png",
+          "alt": "The value 70 having 50 subtracted to get 20, then divided by a range of 40, landing on a normalized result of 0.5",
+          "caption": "Same formula, walked through one step at a time.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.1 Why It Always Lands Between 0 And 1",
+          "id": "why-it-always-lands-between-0-and-1"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is worth sitting with for a second because it explains the whole point of the formula. Plug in x equals the column's minimum, and you get min minus min, over max minus min, which is 0 divided by anything, always 0. Plug in x equals the column's maximum, and you get max minus min, over max minus min, which is that same number divided by itself, always 1. Anything strictly between the min and the max produces a fraction strictly between 0 and 1, and the ordering of values never changes, the smallest value always still maps to the smallest normalized value. That is the entire guarantee: the minimum of the original column always becomes exactly 0, the maximum always becomes exactly 1, and everything else lines up proportionally in between."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "3.2 A Worked Example By Hand",
+          "id": "a-worked-example-by-hand"
+        },
+        {
+          "type": "paragraph",
+          "text": "Nothing beats doing this once by hand before you ever call a library. Say you have five quiz scores out of 100: 62, 75, 88, 91, and 99. The minimum is 62, the maximum is 99, so the range, max minus min, is 37."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Raw score\",\"Score minus min (62)\",\"Divided by range (37)\",\"Normalized value\"],\"rows\":[[\"62\",\"0\",\"0 / 37\",\"0.000\"],[\"75\",\"13\",\"13 / 37\",\"0.351\"],[\"88\",\"26\",\"26 / 37\",\"0.703\"],[\"91\",\"29\",\"29 / 37\",\"0.784\"],[\"99\",\"37\",\"37 / 37\",\"1.000\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "The lowest score, 62, lands exactly on 0. The highest score, 99, lands exactly on 1. Every score in between lands proportionally, 88 is fairly close to the top of the original range and it ends up fairly close to 1 as well. Check it in plain python before reaching for anything else, just to prove the formula to yourself."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "scores = [62, 75, 88, 91, 99]\nlo, hi = min(scores), max(scores)\n\nnormalized = [(x - lo) / (hi - lo) for x in scores]\nprint(normalized)\n# [0.0, 0.3513513513513513, 0.7027027027027027, 0.7837837837837838, 1.0]"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663858865-334531608.png",
+          "alt": "A raw quiz score column ranging from 62 to 99 being rescaled into a normalized column ranging from 0 to 1",
+          "caption": "Same five scores, same order, brand new scale.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Doing It Directly In Pandas",
+          "id": "doing-it-directly-in-pandas"
+        },
+        {
+          "type": "paragraph",
+          "text": "The exact same formula translates directly into a pandas one-liner, using the Series methods you already know, .min() and .max()."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import pandas as pd\n\ndf = pd.DataFrame({\"score\": [62, 75, 88, 91, 99]})\n\ndf[\"score_normalized\"] = (df[\"score\"] - df[\"score\"].min()) / (df[\"score\"].max() - df[\"score\"].min())\nprint(df)\n\n#    score  score_normalized\n# 0     62          0.000000\n# 1     75          0.351351\n# 2     88          0.702703\n# 3     91          0.783784\n# 4     99          1.000000"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Same numbers as the hand calculation, just computed across the whole column at once instead of one value at a time. This is genuinely fine for quick exploration in a notebook. Where it starts to fall short is a real pipeline, where you need to compute min and max once on training data and reapply those exact same two numbers to new data later, which is a job pandas alone was not really built for. That is exactly what the next section fixes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. The scikit-learn Way: MinMaxScaler",
+          "id": "the-scikit-learn-way-minmaxscaler"
+        },
+        {
+          "type": "paragraph",
+          "text": "scikit-learn ships MinMaxScaler, a preprocessing tool that does the exact same min max math but wraps it in the same fit and transform interface you already used with SimpleImputer in the missing value imputation lesson."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.1 The Fit And Transform Interface",
+          "id": "the-fit-and-transform-interface"
+        },
+        {
+          "type": "paragraph",
+          "text": "fit looks at whatever data you hand it, computes the min and the max for each column, and stores those two numbers inside the scaler object. transform then takes those already computed numbers and applies the formula to whatever data you pass in next, without recomputing anything. fit_transform is just a convenience that does both in one call, useful the very first time you use it on training data."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from sklearn.preprocessing import MinMaxScaler\n\nscores = pd.DataFrame({\"score\": [62, 75, 88, 91, 99]})\n\nscaler = MinMaxScaler()\nscaled = scaler.fit_transform(scores[[\"score\"]])\nprint(scaled.ravel())\n# [0.0, 0.35135135, 0.7027027, 0.78378378, 1.0]\n\nprint(scaler.data_min_, scaler.data_max_)   # [62.] [99.]  the two numbers it learned and stored"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Identical output to the manual calculation and the pandas version, which is exactly what you want to see. The scaler learned the min of 62 and the max of 99 and stored them on itself as data_min_ and data_max_."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.2 Why The Library Version Wins In A Real Pipeline",
+          "id": "why-the-library-version-wins-in-a-real-pipeline"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two concrete reasons you will reach for MinMaxScaler over the pandas one-liner once you move past a notebook. First, it shares the exact same fit and transform interface as every other scikit-learn preprocessor, SimpleImputer, StandardScaler, OneHotEncoder, all of it, so it drops cleanly into a Pipeline object alongside the rest of your preprocessing steps and the model itself, no special casing required. Second, a fitted scaler is just an object. You can pickle it, save it to disk, and load it back up weeks later to apply that exact same learned min and max to brand new incoming data, without ever needing the original training set again. A pandas one-liner recomputes min and max from whatever DataFrame you feed it, which is exactly the wrong behavior once new data starts arriving after training."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "5.3 Scaling To A Different Range",
+          "id": "scaling-to-a-different-range"
+        },
+        {
+          "type": "paragraph",
+          "text": "0 to 1 is the default and by far the most common choice, but it is not the only option. MinMaxScaler accepts a feature_range argument if some downstream step genuinely needs a different bounded range, negative 1 to 1 shows up sometimes for certain neural network activation functions. The formula underneath does not change, it just rescales the 0 to 1 result into whatever range you asked for."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "scaler_neg1_1 = MinMaxScaler(feature_range=(-1, 1))\nscaled = scaler_neg1_1.fit_transform(scores[[\"score\"]])\nprint(scaled.ravel())\n# [-1.0, -0.2972973, 0.40540541, 0.56756757, 1.0]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Same five quiz scores from earlier, same underlying min and max, just stretched to land between negative 1 and 1 instead of 0 and 1. Unless you have a specific reason tied to the model you are feeding, the plain 0 to 1 default is almost always the right call."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Data Leakage: Fit On Train Only",
+          "id": "data-leakage-fit-on-train-only"
+        },
+        {
+          "type": "paragraph",
+          "text": "You already met this exact problem in the missing value imputation lesson, and the rule carries over here word for word. Fit the scaler on your training data only, then use that already fitted scaler to transform both the training data and the test data. Never fit on the full dataset before splitting it, and never refit on test data. Computing min and max from rows that include your test set lets information about those supposedly unseen rows leak into a number your model training depends on, the exact same data leakage covered in that earlier lesson, just showing up in a scaler instead of an imputer this time."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663860402-961826507.png",
+          "alt": "Training data feeding into scaler.fit, with the scaler learning and storing min and max from training rows only",
+          "caption": "fit only ever looks at training rows. Test data has not entered the picture yet.",
+          "size": "medium"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663862454-164426033.png",
+          "alt": "A fitted scaler holding a stored min and max being applied to transform test data without recomputing anything",
+          "caption": "transform reuses the numbers learned from training. It never recomputes from test rows.",
+          "size": "medium"
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from sklearn.model_selection import train_test_split\n\n# WRONG: fitting before the split lets test rows influence the min and max\nscaler_wrong = MinMaxScaler()\nscaler_wrong.fit(X[[\"feature\"]])            # X still contains the test rows here\nX_scaled_wrong = scaler_wrong.transform(X[[\"feature\"]])\n\n# RIGHT: split first, fit only on the training rows\nX_train, X_test = train_test_split(X, test_size=0.2, random_state=42)\nscaler_right = MinMaxScaler()\nscaler_right.fit(X_train[[\"feature\"]])       # only ever sees training rows\nX_train[\"feature\"] = scaler_right.transform(X_train[[\"feature\"]])\nX_test[\"feature\"] = scaler_right.transform(X_test[[\"feature\"]])"
+          }
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663864027-723435926.png",
+          "alt": "The full dataset including test rows being fit before splitting, letting test information leak into the scaler and inflating the validation score",
+          "caption": "This is data leakage, wearing a slightly different outfit than it did in the imputation lesson.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "Same leakage rule, different preprocessor",
+          "content": "If you already internalized fit on train only, transform on both from the missing value imputation lesson, you have nothing new to learn here conceptually. MinMaxScaler, StandardScaler, any encoder, they all follow the identical rule. Fitting on anything that includes test or production data quietly inflates how good your model looks during evaluation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Outlier Sensitivity: Why Order Matters",
+          "id": "outlier-sensitivity-why-order-matters"
+        },
+        {
+          "type": "paragraph",
+          "text": "Min max normalization has a specific weak spot the comparison table earlier already hinted at. The formula depends entirely on exactly two numbers from the whole column, the min and the max. Change either one of those two numbers and every single normalized value in the column shifts, because the entire 0 to 1 range gets redefined around them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "7.1 One Outlier Compresses Everything",
+          "id": "one-outlier-compresses-everything"
+        },
+        {
+          "type": "paragraph",
+          "text": "Picture a column of otherwise ordinary values, say 10, 12, 15, 18, and 20, sitting alongside one wildly extreme outlier, 10000. That single outlier becomes the new max, and it drags the whole range out to nearly 10000, while every ordinary value that used to look spread out and meaningfully different from each other now gets squeezed into a tiny sliver right next to 0."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "values = pd.DataFrame({\"v\": [10, 12, 15, 18, 20, 10000]})\n\nscaler = MinMaxScaler()\nscaled = scaler.fit_transform(values)\nprint(scaled.ravel())\n# [0.0, 0.0002, 0.0005, 0.0008, 0.001, 1.0]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Look at that output. Five values that used to be clearly, usefully different from one another, 10 through 20, all get flattened into numbers so close to 0 that a model would struggle to tell them apart at all. Only the outlier gets to use any meaningful chunk of the 0 to 1 range. That is the whole column's spread getting sacrificed for one bad value."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663865495-616287358.png",
+          "alt": "Five normal values from 10 to 20 alongside one extreme outlier at 10000, with the min max formula squeezing all the normal values into a tiny sliver near 0",
+          "caption": "One extreme value, and the rest of the column effectively stops mattering.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "7.2 Handle Outliers Before You Normalize, Not After",
+          "id": "handle-outliers-before-you-normalize-not-after"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is precisely why the outlier detection lesson matters here and not just on its own. Find and deal with a genuine outlier first, using the IQR or z-score approach you already learned there, cap it, remove the row, or transform the column, and only then run min max normalization on what remains. Normalize first and you have baked the distortion permanently into the 0 to 1 range before you ever get a clean look at it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663867151-406992710.png",
+          "alt": "Detecting and handling outliers first, then applying min max normalization afterward, resulting in the full 0 to 1 range being used meaningfully",
+          "caption": "Outlier handling comes first. Normalizing a still dirty column just locks the damage in.",
+          "size": "medium"
+        },
+        {
+          "type": "note",
+          "title": "Min max is more outlier sensitive than standardization",
+          "content": "This is the practical reason the comparison table earlier flagged outlier sensitivity as a real difference between the two techniques. Standardization uses the mean and standard deviation, which shift some when an outlier is present but not nearly as violently as a min or a max can. If your data has real, uninvestigated outliers, that is a strong signal to deal with them, using what you already know from the outlier detection lesson, before choosing either scaling method."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Worked Example: MinMaxScaler On A Train And Test Split",
+          "id": "worked-example-minmaxscaler-on-a-train-and-test-split"
+        },
+        {
+          "type": "paragraph",
+          "text": "Time to put the whole pipeline together on something closer to a real dataset, a small set of house square footage values, split into a training portion and a held out test portion, scaled the correct way. shuffle is turned off here on purpose, just so the split is easy to verify by hand instead of depending on a random draw."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import pandas as pd\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.preprocessing import MinMaxScaler\n\ndf = pd.DataFrame({\n    \"square_feet\": [1250, 900, 2100, 1500, 850, 1800, 1100, 1650, 2400, 1400]\n})\n\nX_train, X_test = train_test_split(df, test_size=0.3, shuffle=False)\n\nscaler = MinMaxScaler()\nscaler.fit(X_train[[\"square_feet\"]])                       # learn min and max from training rows only\n\nX_train[\"scaled\"] = scaler.transform(X_train[[\"square_feet\"]])\nX_test[\"scaled\"] = scaler.transform(X_test[[\"square_feet\"]])   # reuse the same learned min and max\n\nprint(\"learned min:\", scaler.data_min_[0], \" learned max:\", scaler.data_max_[0])\nprint(X_train)\nprint(X_test)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "With shuffle off, the first seven rows become the training set and the last three become the test set, in the exact order they appear above. The scaler fits on those seven training rows only, learning a min of 850 and a max of 2100, a range of 1250."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Split\",\"square_feet\",\"scaled value\"],\"rows\":[[\"train\",\"1250\",\"0.320\"],[\"train\",\"900\",\"0.040\"],[\"train\",\"2100\",\"1.000\"],[\"train\",\"1500\",\"0.520\"],[\"train\",\"850\",\"0.000\"],[\"train\",\"1800\",\"0.760\"],[\"train\",\"1100\",\"0.200\"],[\"test\",\"1650\",\"0.640\"],[\"test\",\"2400\",\"1.240\"],[\"test\",\"1400\",\"0.440\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "The training rows land cleanly between 0 and 1, because the scaler's min and max came directly from those seven rows. The test rows get scaled using that same training min and max, not their own. Two of the three test rows land comfortably inside 0 to 1. The third, 2400 square feet, is larger than anything the scaler saw during training, so it scales to 1.240, past the top of the range. That is expected, correct behavior, not a bug. It is the honest cost of never letting the scaler peek at test data, a genuinely larger house shows up as a value past 1 instead of quietly redefining the whole scale."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1783663868944-680785937.png",
+          "alt": "Training data being fit and transformed by MinMaxScaler while test data is only transformed, reusing the min and max learned from training",
+          "caption": "One fit call, two transform calls, and both splits end up on the same honest scale.",
+          "size": "medium"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Summary And What's Next",
+          "id": "summary-and-whats-next"
+        },
+        {
+          "type": "paragraph",
+          "text": "Min max normalization solves one specific, common problem: features living on wildly different scales distorting distance calculations and gradient updates for reasons that have nothing to do with which feature actually matters. It does that by rescaling a column into a fixed range using nothing but the column's own min and max. Standardization, up next, solves a related but genuinely different problem, and reaches for a different pair of numbers, the mean and the standard deviation, to do it."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Concern\",\"Handled in this lesson\",\"Handled next\"],\"rows\":[[\"Fixed range like 0 to 1\",\"Yes, min max normalization\",\"No\"],[\"Mean of 0, standard deviation of 1\",\"No\",\"Yes, data standardization\"],[\"Fit on train only, transform on both\",\"Yes, same rule as imputation\",\"Yes, identical rule applies again\"],[\"Sensitive to a single extreme outlier\",\"Very sensitive, depends on min and max directly\",\"Somewhat less sensitive, but still worth handling outliers first\"]]}"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Normalization rescales a column into a fixed bounded range, most often 0 to 1, using x minus min divided by max minus min",
+            "Standardization centers a column around a mean of 0 with a standard deviation of 1 and has no fixed bound, that is next, not the same technique",
+            "Distance based algorithms like k-nearest neighbors and k-means, and anything trained with gradient descent, get distorted when features sit on very different scales",
+            "The min always maps to exactly 0 and the max always maps to exactly 1, which is why the formula always produces a value between those two bounds",
+            "MinMaxScaler is the standard scikit-learn tool, sharing the same fit and transform interface as SimpleImputer, and it can be saved and reapplied to new data later",
+            "Fit the scaler on training data only, then transform both training and test data with it, fitting on the full dataset before splitting is data leakage",
+            "A single extreme outlier can compress every normal value into a tiny sliver near 0, which is exactly why outliers get handled before normalizing, not after"
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

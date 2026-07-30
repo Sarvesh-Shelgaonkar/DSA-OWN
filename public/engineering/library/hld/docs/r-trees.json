@@ -1,0 +1,538 @@
+{
+  "slug": "r-trees",
+  "title": "R-Trees",
+  "content": [
+    {
+      "id": "r-trees",
+      "title": "R-Trees",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Say you run a food delivery app and every rider's live location is a point on a map. Support wants a feature: tap anywhere on the map and instantly tell them which delivery zone that point falls inside, out of a few thousand zone polygons drawn across the city."
+        },
+        {
+          "type": "paragraph",
+          "content": "Checking every polygon one by one for every tap works fine with ten zones. It falls apart with ten thousand, especially when this same lookup has to run for every rider update, every few seconds, for thousands of riders at once."
+        },
+        {
+          "type": "paragraph",
+          "content": "The zones are not points, they are rectangles and irregular shapes, and they can be scattered anywhere and any size. You need a structure that can index shapes like this and answer &quot;what's near this location&quot; without scanning everything."
+        },
+        {
+          "type": "paragraph",
+          "content": "That structure is an R-tree. It is the workhorse behind spatial indexes in PostGIS, mapping platforms, and pretty much anything that needs to query rectangles, polygons, or points fast at scale."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "An R-tree is a tree structure built to index objects in two dimensional space, or higher, so you can quickly answer questions like &quot;what overlaps this region&quot; or &quot;what's the nearest object to this point.&quot;"
+        },
+        {
+          "type": "paragraph",
+          "content": "The objects don't have to be points. They can be rectangles, roads, building footprints, delivery zones, anything that can be wrapped in a bounding box. That's the R in R-tree: rectangle."
+        },
+        {
+          "type": "blockQuote",
+          "content": "An R-tree groups nearby objects together into bounding rectangles, then organizes those rectangles into a height balanced tree, similar in spirit to a B-tree but built for space instead of sorted keys."
+        },
+        {
+          "type": "paragraph",
+          "content": "If you already know B-trees, most of the R-tree's shape will feel familiar. Fixed height, nodes that hold multiple entries, splits when a node overflows. The twist is that instead of comparing keys, every decision is based on geometry: does this box overlap that box, and by how much would this box need to grow."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. What an R-Tree Actually Is",
+          "text": "2. What an R-Tree Actually Is"
+        },
+        {
+          "type": "paragraph",
+          "content": "Picture your delivery zones scattered across the city. Instead of storing them as one flat list, an R-tree groups zones that sit near each other and draws a rectangle around each group. That rectangle is called a minimum bounding rectangle, or MBR, the smallest axis aligned box that fully contains everything inside it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Minimum bounding rectangles",
+          "text": "2.1 Minimum bounding rectangles"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every entry in an R-tree, whether it's an actual object or a pointer to a child node, is stored alongside its MBR. A leaf node holds the real objects and their exact bounding boxes. An internal node holds pointers to child nodes, along with an MBR big enough to cover everything that child subtree contains."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785397016261-24946128.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785397016261-24946128.png",
+          "alt": "Three nearby points grouped and wrapped in a single minimum bounding rectangle",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785397016261-24946128.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Nothing here says the objects inside an MBR can't be far apart within that box, or that two different MBRs can't overlap each other. Both can happen, and that's a deliberate trade-off you'll see the consequences of later."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Height balanced like a B-tree",
+          "text": "2.2 Height balanced like a B-tree"
+        },
+        {
+          "type": "paragraph",
+          "content": "One level up, the same trick repeats. A handful of MBRs that sit near each other get wrapped in a bigger parent MBR, and that parent becomes an entry in the next level up. Keep doing this and you end up with a tree where every leaf sits at exactly the same depth."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785397016263-410922397.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785397016263-410922397.png",
+          "alt": "Several child MBRs grouped together under one larger parent MBR",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785397016263-410922397.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "That's the height balanced part. Just like a B-tree, every node has a minimum and maximum number of entries, commonly something like 4 to 9 or 40 to 100 depending on the implementation, and the tree rebalances itself on every insert and delete so it never gets lopsided."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306116716-700544337.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306116716-700544337.png",
+          "alt": "R-tree with a root MBR pointing to two child MBRs, each pointing to their own leaf entries",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306116716-700544337.png"
+        },
+        {
+          "type": "note",
+          "title": "This is not a spatial partition",
+          "content": "A quad tree carves up space itself into fixed, non-overlapping regions. An R-tree carves up the data into groups, and the rectangles around those groups can and do overlap. Keep that distinction in mind, it explains a lot of the differences later in this lesson."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. How Insertion Works",
+          "text": "3. How Insertion Works"
+        },
+        {
+          "type": "paragraph",
+          "content": "Inserting a new object into an R-tree means walking down from the root, picking one child at each level, until you reach a leaf and drop the object in. The only real decision is which child to pick at each step."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Choosing the subtree with least enlargement",
+          "text": "3.1 Choosing the subtree with least enlargement"
+        },
+        {
+          "type": "paragraph",
+          "content": "At every internal node, you look at each child's MBR and ask: if I put this new object under this child, how much would that child's rectangle need to grow to still cover it? You pick whichever child needs the smallest enlargement."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306119460-292869061.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306119460-292869061.png",
+          "alt": "New object compared against two candidate MBRs, chosen subtree needs the smaller enlargement",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306119460-292869061.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The intuition is simple. Enlarging a rectangle as little as possible keeps rectangles tight, and tight rectangles mean fewer false positives during search later on. If two children would need the exact same enlargement, most implementations break the tie by picking the one with the smaller area to begin with."
+        },
+        {
+          "type": "paragraph",
+          "content": "This repeats level by level. Pick the best child at the root, descend into it, pick the best child there, and so on until you land on a leaf. Along the way, every ancestor's MBR gets enlarged just enough to still contain the new object."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Splitting an overflowing node",
+          "text": "3.2 Splitting an overflowing node"
+        },
+        {
+          "type": "paragraph",
+          "content": "Leaves and internal nodes both have a maximum capacity. Insert one entry past that limit and the node overflows. When that happens, the R-tree splits the node into two, dividing its entries between them so that both resulting MBRs are as small and as non-overlapping as possible."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306121178-31307571.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306121178-31307571.png",
+          "alt": "An overflowing node splitting into two smaller nodes, each holding half the entries",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306121178-31307571.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Finding the mathematically best split is expensive, so real implementations use heuristics. A simple one picks the two entries that would waste the most area if forced into the same rectangle, seeds the two new nodes with those, then assigns the rest one at a time to whichever seed needs less enlargement."
+        },
+        {
+          "type": "paragraph",
+          "content": "The split doesn't stop at one node. If the parent was already full, adding a pointer to the new sibling can overflow the parent too, and the split cascades upward exactly like it does in a B-tree. If the root itself splits, the tree grows one level taller, and a brand new root is created above it."
+        },
+        {
+          "type": "note",
+          "title": "Splits are the expensive part",
+          "content": "Insertion itself is cheap, a few comparisons per level. Splits are where the real cost and the real design decisions live, since a bad split leaves you with bloated, overlapping rectangles that slow down every future search."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. How Search and Range Queries Work",
+          "text": "4. How Search and Range Queries Work"
+        },
+        {
+          "type": "paragraph",
+          "content": "A range query gives the tree a query rectangle and asks for everything that overlaps it. The search starts at the root and only recurses into a child if that child's MBR overlaps the query rectangle. Any child whose MBR is completely outside the query gets skipped, along with everything underneath it."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306122722-90418379.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306122722-90418379.png",
+          "alt": "Search recursing into an overlapping MBR while skipping a sibling MBR that does not overlap",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306122722-90418379.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Skipping subtrees that cannot overlap",
+          "text": "4.1 Skipping subtrees that cannot overlap"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the entire performance win of the structure. A single overlap check on a parent MBR can rule out an enormous subtree in one comparison, without touching a single object inside it. The bigger and denser your dataset, the more this pruning matters."
+        },
+        {
+          "type": "paragraph",
+          "content": "Once the search reaches a leaf whose MBR overlaps the query, it checks each actual object stored there against the query rectangle, since a leaf's MBR overlapping doesn't guarantee every object inside it does too."
+        },
+        {
+          "type": "paragraph",
+          "content": "Nearest neighbor queries work on a similar principle. Instead of a fixed query box, the search keeps track of the closest match found so far and prunes any subtree whose MBR is already farther away than that best distance, so it never has to visit hopeless branches."
+        },
+        {
+          "type": "note",
+          "title": "Overlap is not containment",
+          "content": "A query overlapping an MBR doesn't mean everything inside that MBR overlaps the query too. You always need that final check against the real objects in a leaf, the MBR check is just a fast way to decide whether it's worth looking at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. R-Tree vs Quad-Tree",
+          "text": "5. R-Tree vs Quad-Tree"
+        },
+        {
+          "type": "paragraph",
+          "content": "Both structures index spatial data and both prune during search, but they get there very differently, and knowing exactly where they diverge is the kind of detail that separates a decent interview answer from a sharp one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Overlapping regions vs strict partitioning",
+          "text": "5.1 Overlapping regions vs strict partitioning"
+        },
+        {
+          "type": "paragraph",
+          "content": "A quad tree splits space itself into four fixed quadrants that never overlap, no matter what data lives in them. An R-tree doesn't touch space directly at all, it groups the data into rectangles, and those rectangles are free to overlap each other since they're shaped by the data, not by a fixed grid."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306124295-397038159.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306124295-397038159.png",
+          "alt": "R-tree with overlapping bounding rectangles next to a quad tree with strict non-overlapping quadrants",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306124295-397038159.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Balanced vs not necessarily balanced",
+          "text": "5.2 Balanced vs not necessarily balanced"
+        },
+        {
+          "type": "paragraph",
+          "content": "An R-tree is height balanced by construction, every leaf sits at the same depth, because it rebalances on insert exactly like a B-tree. A quad tree has no such guarantee. A dense cluster of points in one corner of the map can push that corner many levels deeper than a sparse area elsewhere in the same tree."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"R-tree\",\"Quad-tree\"],\"rows\":[[\"What it indexes\",\"Rectangles, polygons, points, anything with a bounding box\",\"Mostly points, or shapes approximated by their bounding box\"],[\"Space handling\",\"Groups data into rectangles that may overlap\",\"Splits space itself into fixed, non overlapping quadrants\"],[\"Balance\",\"Always height balanced, like a B-tree\",\"Can grow unevenly deep in dense areas\"],[\"Best fit\",\"Databases indexing arbitrary shapes, like PostGIS\",\"Uniform point data, game engines, collision detection\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Neither one is strictly better. R-trees earn their keep the moment your data is made of shapes rather than points, or when you need guaranteed balanced performance regardless of how clustered the data gets."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Worked Example: Delivery Zone Polygons",
+          "text": "6. Worked Example: Delivery Zone Polygons"
+        },
+        {
+          "type": "paragraph",
+          "content": "Back to the delivery app. You have four thousand zone polygons covering a city, and every rider's GPS ping needs to resolve to exactly one zone, dozens of times per second across thousands of riders."
+        },
+        {
+          "type": "paragraph",
+          "content": "Each zone polygon gets wrapped in its MBR and inserted into the R-tree. Nearby zones, say all the zones in one neighborhood, naturally end up grouped under the same parent MBR, because insertion always picks the subtree needing the least enlargement, and nearby shapes need less enlargement from each other than distant ones do."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306126493-33062038.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306126493-33062038.png",
+          "alt": "A delivery point checked against one zone polygon that contains it and another that does not",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306126493-33062038.png"
+        },
+        {
+          "type": "example-box",
+          "title": "Resolving a rider's location to a zone",
+          "text": "A rider's GPS ping comes in as a single point. You query the R-tree with a tiny box around that point. The search descends only into MBRs that overlap this box, which in a well built tree is usually just one or two branches out of thousands. At the leaf, you run the exact point-in-polygon test only against the handful of candidate zones the tree handed you, instead of all four thousand."
+        },
+        {
+          "type": "paragraph",
+          "content": "Without the R-tree, resolving one ping means testing it against every polygon in the city. With the R-tree, it means testing it against a small handful your MBR overlap checks already narrowed down. That difference is what makes this feature viable at real time, per rider, scale."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. A Simple R-Tree Implementation",
+          "text": "7. A Simple R-Tree Implementation"
+        },
+        {
+          "type": "paragraph",
+          "content": "Production R-trees, like the one inside PostGIS, have years of tuning behind their split heuristics. But the core mechanics fit in a small amount of code. Here's a simplified version that captures insertion by least enlargement and overlap based search."
+        },
+        {
+          "type": "code",
+          "content": "function area(r) {\n  return Math.max(0, r.maxX - r.minX) * Math.max(0, r.maxY - r.minY);\n}\n\nfunction enlarge(r, obj) {\n  return {\n    minX: Math.min(r.minX, obj.minX),\n    minY: Math.min(r.minY, obj.minY),\n    maxX: Math.max(r.maxX, obj.maxX),\n    maxY: Math.max(r.maxY, obj.maxY),\n  };\n}\n\nfunction enlargementNeeded(r, obj) {\n  return area(enlarge(r, obj)) - area(r);\n}\n\nfunction overlaps(a, b) {\n  return a.minX <= b.maxX && a.maxX >= b.minX &&\n         a.minY <= b.maxY && a.maxY >= b.minY;\n}",
+          "code": {
+            "language": "javascript",
+            "content": "function area(r) {\n  return Math.max(0, r.maxX - r.minX) * Math.max(0, r.maxY - r.minY);\n}\n\nfunction enlarge(r, obj) {\n  return {\n    minX: Math.min(r.minX, obj.minX),\n    minY: Math.min(r.minY, obj.minY),\n    maxX: Math.max(r.maxX, obj.maxX),\n    maxY: Math.max(r.maxY, obj.maxY),\n  };\n}\n\nfunction enlargementNeeded(r, obj) {\n  return area(enlarge(r, obj)) - area(r);\n}\n\nfunction overlaps(a, b) {\n  return a.minX <= b.maxX && a.maxX >= b.minX &&\n         a.minY <= b.maxY && a.maxY >= b.minY;\n}"
+          },
+          "codes": {
+            "javascript": "function area(r) {\n  return Math.max(0, r.maxX - r.minX) * Math.max(0, r.maxY - r.minY);\n}\n\nfunction enlarge(r, obj) {\n  return {\n    minX: Math.min(r.minX, obj.minX),\n    minY: Math.min(r.minY, obj.minY),\n    maxX: Math.max(r.maxX, obj.maxX),\n    maxY: Math.max(r.maxY, obj.maxY),\n  };\n}\n\nfunction enlargementNeeded(r, obj) {\n  return area(enlarge(r, obj)) - area(r);\n}\n\nfunction overlaps(a, b) {\n  return a.minX <= b.maxX && a.maxX >= b.minX &&\n         a.minY <= b.maxY && a.maxY >= b.minY;\n}"
+          }
+        },
+        {
+          "type": "code",
+          "content": "class RTreeNode {\n  constructor(isLeaf, maxEntries = 4) {\n    this.isLeaf = isLeaf;\n    this.maxEntries = maxEntries;\n    this.entries = []; // { mbr, data } for leaves, { mbr, child } for internal nodes\n    this.mbr = null;\n  }\n\n  insert(entry) {\n    if (this.isLeaf) {\n      this.entries.push(entry);\n    } else {\n      const best = this.entries.reduce((a, b) =>\n        enlargementNeeded(a.mbr, entry.mbr) <= enlargementNeeded(b.mbr, entry.mbr) ? a : b\n      );\n      best.child.insert(entry);\n      best.mbr = enlarge(best.mbr, entry.mbr);\n    }\n    if (this.entries.length > this.maxEntries) this.split();\n  }\n\n  search(query, found = []) {\n    for (const e of this.entries) {\n      if (!overlaps(e.mbr, query)) continue; // skip non overlapping subtree entirely\n      if (this.isLeaf) found.push(e.data);\n      else e.child.search(query, found);\n    }\n    return found;\n  }\n}",
+          "code": {
+            "language": "javascript",
+            "content": "class RTreeNode {\n  constructor(isLeaf, maxEntries = 4) {\n    this.isLeaf = isLeaf;\n    this.maxEntries = maxEntries;\n    this.entries = []; // { mbr, data } for leaves, { mbr, child } for internal nodes\n    this.mbr = null;\n  }\n\n  insert(entry) {\n    if (this.isLeaf) {\n      this.entries.push(entry);\n    } else {\n      const best = this.entries.reduce((a, b) =>\n        enlargementNeeded(a.mbr, entry.mbr) <= enlargementNeeded(b.mbr, entry.mbr) ? a : b\n      );\n      best.child.insert(entry);\n      best.mbr = enlarge(best.mbr, entry.mbr);\n    }\n    if (this.entries.length > this.maxEntries) this.split();\n  }\n\n  search(query, found = []) {\n    for (const e of this.entries) {\n      if (!overlaps(e.mbr, query)) continue; // skip non overlapping subtree entirely\n      if (this.isLeaf) found.push(e.data);\n      else e.child.search(query, found);\n    }\n    return found;\n  }\n}"
+          },
+          "codes": {
+            "javascript": "class RTreeNode {\n  constructor(isLeaf, maxEntries = 4) {\n    this.isLeaf = isLeaf;\n    this.maxEntries = maxEntries;\n    this.entries = []; // { mbr, data } for leaves, { mbr, child } for internal nodes\n    this.mbr = null;\n  }\n\n  insert(entry) {\n    if (this.isLeaf) {\n      this.entries.push(entry);\n    } else {\n      const best = this.entries.reduce((a, b) =>\n        enlargementNeeded(a.mbr, entry.mbr) <= enlargementNeeded(b.mbr, entry.mbr) ? a : b\n      );\n      best.child.insert(entry);\n      best.mbr = enlarge(best.mbr, entry.mbr);\n    }\n    if (this.entries.length > this.maxEntries) this.split();\n  }\n\n  search(query, found = []) {\n    for (const e of this.entries) {\n      if (!overlaps(e.mbr, query)) continue; // skip non overlapping subtree entirely\n      if (this.isLeaf) found.push(e.data);\n      else e.child.search(query, found);\n    }\n    return found;\n  }\n}"
+          }
+        },
+        {
+          "type": "note",
+          "title": "This skips the hard part on purpose",
+          "content": "Real R-trees, including the R*-tree variant, spend most of their complexity on smarter splitting: minimizing overlap between the two new nodes, not just their combined area. The sketch above uses whatever grouping falls out of insertion order, which is fine for learning the shape of the algorithm but not for production."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Where R-Trees Show Up in Real Systems",
+          "text": "8. Where R-Trees Show Up in Real Systems"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 PostGIS and spatial databases",
+          "text": "8.1 PostGIS and spatial databases"
+        },
+        {
+          "type": "paragraph",
+          "content": "PostGIS, the spatial extension for PostgreSQL, uses an R-tree, wrapped inside the generalized search tree framework, as the default index for its geometry and geography columns. Every &quot;find rows whose polygon intersects this box&quot; query rides on exactly the mechanics you just read about."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306128630-556788312.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306128630-556788312.png",
+          "alt": "A map application querying PostGIS, which uses an R-tree index to return nearby results",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306128630-556788312.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is why questions like &quot;find all warehouses within 5 kilometers&quot; or &quot;find every parcel that touches this road&quot; run fast even on tables with tens of millions of geometries, as long as there's a spatial index on that column."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Mapping platforms: roads, buildings, polygons",
+          "text": "8.2 Mapping platforms: roads, buildings, polygons"
+        },
+        {
+          "type": "paragraph",
+          "content": "Mapping platforms index far more than points. Roads are line strings, buildings and zones are polygons, and all of it needs to answer &quot;what's visible in this map viewport&quot; as you pan and zoom. An R-tree handles this naturally because it was built around bounding boxes, not points, from the start."
+        },
+        {
+          "type": "list",
+          "content": "[\"Rendering a map viewport, only the roads and buildings whose MBR overlaps the visible screen area get drawn.\",\"Reverse geocoding, given a latitude and longitude, find which administrative boundary polygon contains it.\",\"Routing engines, quickly find road segments near a given coordinate before running the actual pathfinding.\"]",
+          "items": [
+            "Rendering a map viewport, only the roads and buildings whose MBR overlaps the visible screen area get drawn.",
+            "Reverse geocoding, given a latitude and longitude, find which administrative boundary polygon contains it.",
+            "Routing engines, quickly find road segments near a given coordinate before running the actual pathfinding."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. R-Trees in System Design Interviews",
+          "text": "9. R-Trees in System Design Interviews"
+        },
+        {
+          "type": "paragraph",
+          "content": "R-trees come up whenever a design problem involves geography: ride hailing, delivery zone assignment, store locators, geofencing, or anything that stores polygons instead of just latitude and longitude pairs."
+        },
+        {
+          "type": "paragraph",
+          "content": "The signal an interviewer is listening for is whether you reach for a spatial index at all instead of proposing a linear scan with a distance filter, and whether you can explain why an R-tree specifically fits when the data includes shapes, not just points."
+        },
+        {
+          "type": "list",
+          "content": "[\"Say plainly what you're indexing: points, bounding boxes, or full polygons, since that decides whether an R-tree or a simpler structure like geohash fits better.\",\"Mention that most real deployments don't hand roll this, they lean on PostGIS or a managed spatial database that already implements it correctly.\",\"Be ready to explain the insertion and search mechanics in plain terms if pushed, least enlargement to insert, overlap pruning to search.\"]",
+          "items": [
+            "Say plainly what you're indexing: points, bounding boxes, or full polygons, since that decides whether an R-tree or a simpler structure like geohash fits better.",
+            "Mention that most real deployments don't hand roll this, they lean on PostGIS or a managed spatial database that already implements it correctly.",
+            "Be ready to explain the insertion and search mechanics in plain terms if pushed, least enlargement to insert, overlap pruning to search."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Trade-offs and Limitations",
+          "text": "10. Trade-offs and Limitations"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.1 Overlap between MBRs",
+          "text": "10.1 Overlap between MBRs"
+        },
+        {
+          "type": "paragraph",
+          "content": "Because sibling MBRs can overlap, a single query point can legitimately fall inside more than one of them, forcing the search to descend into multiple branches to be sure it hasn't missed anything. Heavily overlapping trees, usually the result of bad splits or highly clustered data, lose a lot of their pruning advantage."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306130698-935246159.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306130698-935246159.png",
+          "alt": "A query point falling inside two overlapping MBRs, forcing the search down both branches",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306130698-935246159.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.2 R*-trees and other variants",
+          "text": "10.2 R*-trees and other variants"
+        },
+        {
+          "type": "paragraph",
+          "content": "The R*-tree is the most widely used improvement. Its splitting heuristic actively minimizes overlap between the resulting nodes rather than just their combined area, and it occasionally reinserts a few entries instead of always splitting, which keeps the tree noticeably tighter over time. Most production spatial indexes, PostGIS included, are really R*-trees under the hood."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Indexes arbitrary shapes, not just points, including polygons and roads\",\"Sibling rectangles can overlap, which can force multiple branches to be searched\"],[\"Always height balanced, so worst case query cost stays predictable\",\"Split quality directly determines real world performance, naive splits hurt badly\"],[\"Well proven in production databases like PostGIS via the R*-tree\",\"More complex to implement correctly than a quad tree or a geohash grid\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. R-Tree vs Quad-Tree vs Geohash: Picking One",
+          "text": "11. R-Tree vs Quad-Tree vs Geohash: Picking One"
+        },
+        {
+          "type": "paragraph",
+          "content": "All three answer the same broad question, what's near this location or region, but they fit different shapes of data and different constraints."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306132589-492910162.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306132589-492910162.png",
+          "alt": "Decision flow choosing between R-tree, quad tree, and geohash based on data shape",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785306132589-492910162.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Situation\",\"Better fit\"],\"rows\":[[\"Data is rectangles, polygons, or roads, not just points\",\"R-tree\"],[\"Data is points with wildly uneven density across the map\",\"Quad tree\"],[\"Data is points and you want simple string based sharding or caching keys\",\"Geohash\"],[\"You're already on Postgres and need a spatial index today\",\"R-tree, via PostGIS\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "These aren't mutually exclusive in a real system",
+          "content": "It's common to use geohash as a coarse, cheap sharding key across servers, and run an R-tree inside each shard for the precise geometry queries. Pick based on what a given layer of the system actually needs."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Key Takeaways",
+          "text": "12. Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"An R-tree indexes rectangles, polygons, and points by grouping nearby objects into minimum bounding rectangles, then organizing those MBRs into a height balanced tree.\",\"Insertion walks down picking the child that needs the least enlargement, and splits a node into two whenever it overflows past its capacity.\",\"Search only recurses into subtrees whose MBR overlaps the query, skipping everything else without inspecting it.\",\"Unlike a quad tree, an R-tree's rectangles can overlap and it stays height balanced by construction, closer in spirit to a B-tree than to a spatial grid.\",\"PostGIS and most spatial databases use an R*-tree, an overlap minimizing variant, as their default spatial index.\",\"Reach for an R-tree whenever the data you're indexing is shapes, not just points, or when you need guaranteed balanced query performance regardless of clustering.\"]",
+          "items": [
+            "An R-tree indexes rectangles, polygons, and points by grouping nearby objects into minimum bounding rectangles, then organizing those MBRs into a height balanced tree.",
+            "Insertion walks down picking the child that needs the least enlargement, and splits a node into two whenever it overflows past its capacity.",
+            "Search only recurses into subtrees whose MBR overlaps the query, skipping everything else without inspecting it.",
+            "Unlike a quad tree, an R-tree's rectangles can overlap and it stays height balanced by construction, closer in spirit to a B-tree than to a spatial grid.",
+            "PostGIS and most spatial databases use an R*-tree, an overlap minimizing variant, as their default spatial index.",
+            "Reach for an R-tree whenever the data you're indexing is shapes, not just points, or when you need guaranteed balanced query performance regardless of clustering."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "blockQuote",
+          "content": "An R-tree is a B-tree that learned geometry: group what's nearby, bound it tightly, and never bother looking where the query couldn't possibly reach."
+        },
+        {
+          "type": "paragraph",
+          "content": "Once that clicks, spotting when a design question needs a spatial index, and specifically an R-tree over a quad tree or geohash, gets a lot easier."
+        }
+      ]
+    }
+  ]
+}

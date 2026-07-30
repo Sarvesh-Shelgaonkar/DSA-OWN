@@ -1,0 +1,680 @@
+{
+  "slug": "file-storage",
+  "title": "File Storage",
+  "content": [
+    {
+      "id": "file-storage",
+      "title": "File Storage",
+      "blocks": [
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "File storage is one of the oldest and most familiar ways of organizing data. It presents information the way most engineers first learned to think about computers: as folders that contain files, and files that contain bytes. A file has a name, it lives inside a directory, and that directory usually lives inside another directory."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson looks at file storage as a system design building block. We will define what it actually is at the protocol level, contrast it with object storage and block storage, walk through real systems like NFS, Amazon EFS, and Azure Files, and then work through a concrete example of multiple application servers sharing one file system for uploaded documents."
+        },
+        {
+          "type": "blockQuote",
+          "content": "File storage organizes data as named files inside a hierarchical directory tree, accessed through file system protocols such as NFS or SMB."
+        },
+        {
+          "type": "note",
+          "title": "Why this matters",
+          "content": "Almost every legacy enterprise application, every shared drive, and a large share of content management systems assume a traditional file system underneath them. Understanding file storage is understanding why those systems behave the way they do at scale."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285129660-803430589.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285129660-803430589.png",
+          "alt": "A hierarchical folder tree with a root directory containing a docs folder and an images folder, each holding named files"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Core Concept",
+          "text": "2. Core Concept"
+        },
+        {
+          "type": "paragraph",
+          "content": "At its core, file storage is built around three ideas: a hierarchy, a name, and a path. The hierarchy is a tree of directories. Every file sits inside exactly one directory at any point in time, and every directory except the root sits inside exactly one parent directory."
+        },
+        {
+          "type": "paragraph",
+          "content": "A file is identified not by an arbitrary key but by a path that describes its location in that tree, for example slash var slash www slash uploads slash invoice one two three dot pdf. To read that file, the operating system walks the path component by component, checking permissions and resolving each directory entry until it reaches the final file."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 The directory as an index",
+          "text": "2.1 The directory as an index"
+        },
+        {
+          "type": "paragraph",
+          "content": "A directory is really just a small database that maps names to inodes or file records. When you list a directory, the file system reads that mapping and returns the names it finds. When you open a file by path, the file system performs a lookup at every level of the hierarchy, one directory at a time, until the target is found."
+        },
+        {
+          "type": "list",
+          "content": "[\"The path is the address. There is no separate flat namespace.\",\"Directories can be nested arbitrarily deep, which is both the strength and the weakness of the model.\",\"Metadata such as owner, permissions, and modification time is attached to each file and each directory individually.\"]",
+          "items": [
+            "The path is the address. There is no separate flat namespace.",
+            "Directories can be nested arbitrarily deep, which is both the strength and the weakness of the model.",
+            "Metadata such as owner, permissions, and modification time is attached to each file and each directory individually."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Files as byte streams with random access",
+          "text": "2.2 Files as byte streams with random access"
+        },
+        {
+          "type": "paragraph",
+          "content": "Unlike an object in object storage, which is normally treated as an immutable blob that you replace wholesale, a file in file storage is a mutable byte stream. An application can open a file, seek to byte offset four thousand, and overwrite ten bytes in place, then close it. This random access read and write model is central to how file storage is used by traditional software."
+        },
+        {
+          "type": "note",
+          "title": "Practical implication",
+          "content": "Databases, log appenders, and office document editors all rely on being able to modify part of a file without rewriting the whole thing. This is a natural fit for file storage and a poor fit for object storage."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Key Properties",
+          "text": "3. Key Properties"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Hierarchical namespace",
+          "text": "3.1 Hierarchical namespace"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every file lives at a specific path inside a tree of folders. Renaming a directory near the root of the tree effectively renames every file underneath it, because the path changes for all of them. This is a defining trait that both object storage and block storage lack."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 POSIX style semantics",
+          "text": "3.2 POSIX style semantics"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most file storage systems used in Linux and Unix environments implement, or try to approximate, POSIX file semantics. POSIX defines a contract for how operations like open, read, write, rename, and delete behave, including strong guarantees about ordering and visibility of changes across processes."
+        },
+        {
+          "type": "list",
+          "content": "[\"A write that completes must be visible to any process that opens the file afterward.\",\"Rename operations are atomic, a reader never sees a half renamed file.\",\"File permissions follow an owner, group, and other model with read, write, and execute bits.\",\"Directory listings reflect the current state of the directory at the moment they are read.\"]",
+          "items": [
+            "A write that completes must be visible to any process that opens the file afterward.",
+            "Rename operations are atomic, a reader never sees a half renamed file.",
+            "File permissions follow an owner, group, and other model with read, write, and execute bits.",
+            "Directory listings reflect the current state of the directory at the moment they are read."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "POSIX compliance is a spectrum",
+          "content": "Not every network file system fully honors POSIX semantics under concurrent access. NFS, for instance, historically relaxed some guarantees for performance, which is why file locking across NFS has a long and complicated history."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.3 Locking and concurrent access",
+          "text": "3.3 Locking and concurrent access"
+        },
+        {
+          "type": "paragraph",
+          "content": "Because multiple processes, and in a network setting multiple machines, may open the same file at the same time, file storage systems provide locking mechanisms. Advisory locks let cooperating applications coordinate access voluntarily. Mandatory locks are enforced by the file system itself and block conflicting access outright."
+        },
+        {
+          "type": "paragraph",
+          "content": "Network File System uses a separate protocol called Network Lock Manager for this purpose, while SMB has locking built directly into the core protocol. Either way, when two writers contend for the same file, one of them waits."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285131687-138831307.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285131687-138831307.png",
+          "alt": "A first writer acquiring an exclusive lock on a file while a second writer requesting the same lock waits until it is released"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.4 Permissions and access control",
+          "text": "3.4 Permissions and access control"
+        },
+        {
+          "type": "paragraph",
+          "content": "Access control in file storage is usually expressed per directory and per file using owner, group, and other permission bits, optionally extended with access control lists for finer grained rules. Navigating the hierarchy itself requires permission too: a user needs execute permission on every directory along a path to reach a file, even if they have full read permission on the file itself."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Protocols: NFS and SMB",
+          "text": "4. Protocols: NFS and SMB"
+        },
+        {
+          "type": "paragraph",
+          "content": "File storage is almost always accessed over a network using one of two dominant protocols. Network File System, commonly called NFS, is the standard in Unix and Linux environments. Server Message Block, commonly called SMB, is the standard in Windows environments and is also what powers Windows file sharing and Azure Files."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 How NFS works",
+          "text": "4.1 How NFS works"
+        },
+        {
+          "type": "paragraph",
+          "content": "A client mounts a remote directory exported by an NFS server so that it appears as a local directory inside the client machine own file system tree. From that point on, every open, read, write, and close on that mounted path is translated into remote procedure calls sent to the server."
+        },
+        {
+          "type": "code",
+          "content": "# On the client machine, mount a remote NFS export as if it were local\nsudo mount -t nfs 10.0.4.12:/exports/uploads /mnt/uploads\n\n# The remote directory now behaves like a local folder\nls /mnt/uploads\necho \"new file content\" > /mnt/uploads/report.txt",
+          "code": {
+            "language": "bash",
+            "content": "# On the client machine, mount a remote NFS export as if it were local\nsudo mount -t nfs 10.0.4.12:/exports/uploads /mnt/uploads\n\n# The remote directory now behaves like a local folder\nls /mnt/uploads\necho \"new file content\" > /mnt/uploads/report.txt"
+          },
+          "codes": {
+            "bash": "# On the client machine, mount a remote NFS export as if it were local\nsudo mount -t nfs 10.0.4.12:/exports/uploads /mnt/uploads\n\n# The remote directory now behaves like a local folder\nls /mnt/uploads\necho \"new file content\" > /mnt/uploads/report.txt"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The client caches some metadata for performance, but every write eventually has to reach the server, and every reader on a different client needs to see that write within a bounded amount of time. This is the core tension in any network file system: caching for speed versus correctness for consistency."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285133292-681055576.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285133292-681055576.png",
+          "alt": "A client application opening a file, reading bytes, and writing bytes against an NFS server over the network"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 How SMB works",
+          "text": "4.2 How SMB works"
+        },
+        {
+          "type": "paragraph",
+          "content": "SMB, sometimes still called CIFS from an earlier version, works on similar principles but with a richer set of built in features around locking, authentication through Active Directory, and change notification, where a client can ask to be told when a file it cares about changes."
+        },
+        {
+          "type": "list",
+          "content": "[\"NFS is the default choice on Linux servers and is what Amazon EFS speaks natively.\",\"SMB is the default choice on Windows servers and is what Azure Files speaks natively, alongside NFS support for Linux clients.\",\"Both protocols support mounting a remote export so it appears as a normal local directory.\"]",
+          "items": [
+            "NFS is the default choice on Linux servers and is what Amazon EFS speaks natively.",
+            "SMB is the default choice on Windows servers and is what Azure Files speaks natively, alongside NFS support for Linux clients.",
+            "Both protocols support mounting a remote export so it appears as a normal local directory."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 A short reading example against a mounted path",
+          "text": "4.3 A short reading example against a mounted path"
+        },
+        {
+          "type": "code",
+          "content": "// Node.js reading a file from a mounted network file system\n// No special client library is needed, it looks exactly like local disk access\nconst fs = require('fs');\n\nconst data = fs.readFileSync('/mnt/uploads/invoice-1042.pdf');\nconsole.log('read', data.length, 'bytes from the shared mount');\n",
+          "code": {
+            "language": "javascript",
+            "content": "// Node.js reading a file from a mounted network file system\n// No special client library is needed, it looks exactly like local disk access\nconst fs = require('fs');\n\nconst data = fs.readFileSync('/mnt/uploads/invoice-1042.pdf');\nconsole.log('read', data.length, 'bytes from the shared mount');\n"
+          },
+          "codes": {
+            "javascript": "// Node.js reading a file from a mounted network file system\n// No special client library is needed, it looks exactly like local disk access\nconst fs = require('fs');\n\nconst data = fs.readFileSync('/mnt/uploads/invoice-1042.pdf');\nconsole.log('read', data.length, 'bytes from the shared mount');\n"
+          }
+        },
+        {
+          "type": "note",
+          "title": "This is the appeal of file storage",
+          "content": "Existing code that was written to read and write local files can run against network file storage with zero changes, because the mount makes the remote export look identical to a local directory."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Real Systems",
+          "text": "5. Real Systems"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 On premises NFS servers and NAS appliances",
+          "text": "5.1 On premises NFS servers and NAS appliances"
+        },
+        {
+          "type": "paragraph",
+          "content": "Network attached storage appliances, often shortened to NAS, are dedicated machines whose only job is to export file systems over NFS or SMB to the rest of the network. Vendors such as NetApp and Dell built entire product lines around this idea, packaging redundant disks, RAID controllers, and a specialized operating system tuned purely for serving files fast."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Amazon Elastic File System",
+          "text": "5.2 Amazon Elastic File System"
+        },
+        {
+          "type": "paragraph",
+          "content": "Amazon EFS is a managed NFS file system that can be mounted by many EC2 instances, containers, and Lambda functions at the same time. It grows and shrinks automatically as data is added or removed, so there is no volume to resize by hand. Under the hood it distributes data across many storage servers and availability zones, which is what lets thousands of clients mount the same file system concurrently."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.3 Azure Files",
+          "text": "5.3 Azure Files"
+        },
+        {
+          "type": "paragraph",
+          "content": "Azure Files offers fully managed file shares accessible over SMB and NFS, and it can be mounted directly by Windows, Linux, and macOS machines, or accessed through the Azure File Sync agent to cache a copy on premises for faster local access."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.4 Traditional shared drives",
+          "text": "5.4 Traditional shared drives"
+        },
+        {
+          "type": "paragraph",
+          "content": "The department shared drive that most people have used at some point in their career, the one mapped to a letter like Z on Windows, is file storage in its most familiar form. It is exactly the same model as EFS or Azure Files, just running on a single server in a server room instead of across a managed, distributed backend."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Typical Use Cases",
+          "text": "6. Typical Use Cases"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Shared file systems for teams and applications",
+          "text": "6.1 Shared file systems for teams and applications"
+        },
+        {
+          "type": "paragraph",
+          "content": "Whenever multiple people or multiple application instances need to read and write the same set of files, and the files themselves benefit from being organized into folders, file storage is the natural fit. Home directories, shared project folders, and build artifact caches are classic examples."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 Content management systems",
+          "text": "6.2 Content management systems"
+        },
+        {
+          "type": "paragraph",
+          "content": "Many content management systems, including older versions of WordPress plugins and enterprise document management platforms, were built assuming a real file system underneath them. They write uploaded media directly with standard file operations, expect to organize content into folders by date or category, and sometimes expect to watch a folder for new files."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.3 Legacy applications",
+          "text": "6.3 Legacy applications"
+        },
+        {
+          "type": "paragraph",
+          "content": "A large share of enterprise software predates cloud native storage entirely. These applications call standard file operations like open, read, write, and rename directly against paths, with no concept of an object store client library or a bucket. Moving them to object storage would mean rewriting how they talk to storage. Pointing them at a mounted file system requires no code changes at all."
+        },
+        {
+          "type": "list",
+          "content": "[\"ERP systems that write batch export files to a shared folder for downstream processing.\",\"Media rendering pipelines that expect frame files to sit in a folder structure by project and shot.\",\"Scientific computing clusters where many compute nodes read the same input dataset from a shared mount.\"]",
+          "items": [
+            "ERP systems that write batch export files to a shared folder for downstream processing.",
+            "Media rendering pipelines that expect frame files to sit in a folder structure by project and shot.",
+            "Scientific computing clusters where many compute nodes read the same input dataset from a shared mount."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. File Storage vs Object Storage vs Block Storage",
+          "text": "7. File Storage vs Object Storage vs Block Storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "These three storage models are often confused because all of them ultimately store bytes on disks. The real difference is in the abstraction exposed to the application, and that abstraction shapes everything from scalability to cost to the kinds of applications each one suits."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285135208-833566469.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285135208-833566469.png",
+          "alt": "Three addressing models side by side: hierarchical path in file storage, flat bucket and key in object storage, raw block number in block storage"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"File Storage\",\"Object Storage\",\"Block Storage\"],\"rows\":[[\"Unit of data\",\"File inside a directory path\",\"Object identified by a flat key\",\"Fixed size block on a raw volume\"],[\"Namespace\",\"Hierarchical tree of folders\",\"Flat, bucket plus key\",\"No namespace, addressed by block number\"],[\"Typical access\",\"Open, read, write, seek, rename\",\"Put, get, delete whole object\",\"Read and write raw blocks\"],[\"Mutability\",\"In place partial updates\",\"Usually replace the whole object\",\"In place block level updates\"],[\"Protocol\",\"NFS or SMB\",\"HTTP based REST API\",\"iSCSI or a virtual block device\"],[\"Scale ceiling\",\"Limited by a file server head or cluster\",\"Effectively unbounded, massively distributed\",\"Limited to a single attached volume\"],[\"Example systems\",\"NFS, NAS, Amazon EFS, Azure Files\",\"Amazon S3, Google Cloud Storage\",\"Amazon EBS, Azure managed disks\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Why file storage is harder to scale",
+          "text": "7.1 Why file storage is harder to scale"
+        },
+        {
+          "type": "paragraph",
+          "content": "Object storage sidesteps the hierarchy entirely. A key like reports slash 2026 slash q1 dot pdf looks like a path, but the object store treats the whole string as one flat identifier with no real parent directory to manage. There is no rename-a-folder operation that touches millions of children, because there are no folders, only keys that happen to contain slashes."
+        },
+        {
+          "type": "paragraph",
+          "content": "File storage cannot make that simplification, because the hierarchy is not cosmetic, it is the actual data model. Every directory is a real structure that must stay consistent, every rename of a folder is a real metadata operation, and every client mounting the same export expects POSIX consistency guarantees across a network."
+        },
+        {
+          "type": "example-box",
+          "title": "A rename that object storage cannot even express",
+          "text": "Renaming the folder slash projects slash alpha to slash projects slash beta in a file system is a single metadata operation, but conceptually it changes the path of every file underneath it. In an object store, there is no equivalent single operation. Achieving the same result means copying every object under the old key prefix to a new key prefix and deleting the old ones, which for a million objects can take a long time and cost real money in request charges."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Scaling Challenges",
+          "text": "8. Scaling Challenges"
+        },
+        {
+          "type": "paragraph",
+          "content": "The properties that make file storage convenient are exactly what make it hard to scale to object storage levels of throughput. Three specific problems show up repeatedly in production."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Metadata bottlenecks",
+          "text": "8.1 Metadata bottlenecks"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every open, every directory listing, and every permission check touches metadata. A single busy directory with hundreds of thousands of files can become a hotspot, because every client asking to list or open something inside it contends for the same metadata structures. Object storage largely avoids this because a flat key lookup does not require walking a tree of directory entries."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Locking overhead under concurrency",
+          "text": "8.2 Locking overhead under concurrency"
+        },
+        {
+          "type": "paragraph",
+          "content": "When many clients write to the same file, or even to files in the same directory, lock contention grows. A file lock held by one client blocks every other client that needs the same file, and coordinating locks across a network, rather than within a single machine, adds latency to every operation that needs one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.3 A single logical namespace is a scaling limit",
+          "text": "8.3 A single logical namespace is a scaling limit"
+        },
+        {
+          "type": "paragraph",
+          "content": "Even distributed file systems like Amazon EFS, which scale storage capacity and throughput automatically behind the scenes, still present one logical, POSIX consistent namespace to clients. Maintaining that single consistent view across many storage nodes requires coordination that a flat, eventually simpler object namespace does not need."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285136824-768538564.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285136824-768538564.png",
+          "alt": "Thousands of clients funneling requests through a single file server, creating metadata and lock contention"
+        },
+        {
+          "type": "note",
+          "title": "Rule of thumb",
+          "content": "If your workload needs a directory hierarchy, in place partial writes, and POSIX file semantics, accept the scaling ceiling that comes with file storage. If your workload is really just storing and retrieving whole blobs by an arbitrary identifier, object storage will scale further with less operational effort."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Worked Example",
+          "text": "9. Worked Example"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consider a document management feature inside a web application. Users upload PDFs and Word documents, and those files need to be readable by whichever application server happens to handle the next request, since the deployment runs behind a load balancer with multiple stateless instances."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.1 The setup",
+          "text": "9.1 The setup"
+        },
+        {
+          "type": "list",
+          "content": "[\"Three application servers run identical copies of the same service behind a load balancer.\",\"A single Amazon EFS file system is created and mounted at slash mnt slash uploads on all three servers.\",\"The application writes uploaded files directly to that mounted path using ordinary file write calls.\",\"Any of the three servers can later read any file, because the mount points at the same underlying file system.\"]",
+          "items": [
+            "Three application servers run identical copies of the same service behind a load balancer.",
+            "A single Amazon EFS file system is created and mounted at slash mnt slash uploads on all three servers.",
+            "The application writes uploaded files directly to that mounted path using ordinary file write calls.",
+            "Any of the three servers can later read any file, because the mount points at the same underlying file system."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285138303-627209150.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785285138303-627209150.png",
+          "alt": "Three application servers each mounting the same shared file system so any of them can read a file another one wrote"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.2 What happens on upload",
+          "text": "9.2 What happens on upload"
+        },
+        {
+          "type": "paragraph",
+          "content": "A user uploads contract.pdf through application server two. That server writes the bytes to slash mnt slash uploads slash contract dot pdf on its local mount point. Behind the scenes, that write is sent over the network to the EFS file system, not to local disk. Because all three servers share the same mount, application server one and three can immediately open the same path and read the same bytes, no replication step or cache invalidation required on the application side."
+        },
+        {
+          "type": "code",
+          "content": "// Application server handling an upload, using a normal local file write\nconst fs = require('fs');\nconst path = require('path');\n\napp.post('/upload', (req, res) => {\n  const dest = path.join('/mnt/uploads', req.file.originalname);\n  fs.writeFileSync(dest, req.file.buffer);\n  res.json({ status: 'saved', path: dest });\n});",
+          "code": {
+            "language": "javascript",
+            "content": "// Application server handling an upload, using a normal local file write\nconst fs = require('fs');\nconst path = require('path');\n\napp.post('/upload', (req, res) => {\n  const dest = path.join('/mnt/uploads', req.file.originalname);\n  fs.writeFileSync(dest, req.file.buffer);\n  res.json({ status: 'saved', path: dest });\n});"
+          },
+          "codes": {
+            "javascript": "// Application server handling an upload, using a normal local file write\nconst fs = require('fs');\nconst path = require('path');\n\napp.post('/upload', (req, res) => {\n  const dest = path.join('/mnt/uploads', req.file.originalname);\n  fs.writeFileSync(dest, req.file.buffer);\n  res.json({ status: 'saved', path: dest });\n});",
+            "javascript_read": "// A different application server, reading the same file later\nconst fs = require('fs');\n\napp.get('/download/:name', (req, res) => {\n  const filePath = '/mnt/uploads/' + req.params.name;\n  res.sendFile(filePath);\n});"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "9.3 Why this works without extra plumbing",
+          "text": "9.3 Why this works without extra plumbing"
+        },
+        {
+          "type": "paragraph",
+          "content": "The application code has no idea it is talking to a network file system. It calls the same file write and file read functions it would call against local disk. The mount is what does the real work, translating those calls into NFS requests behind the scenes. This is exactly the appeal described earlier: legacy style code runs unmodified against shared network storage."
+        },
+        {
+          "type": "note",
+          "title": "Where this can go wrong",
+          "content": "If two application servers try to write the same file name at nearly the same moment, whichever write finishes last wins, unless the application adds its own locking or uses unique file names per upload. File storage gives you the mechanism for locking, but it does not automatically prevent every race condition in application logic built on top of it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Trade-offs vs Object Storage",
+          "text": "10. Trade-offs vs Object Storage"
+        },
+        {
+          "type": "paragraph",
+          "content": "Choosing file storage over object storage for a given workload is a real trade-off, not a free upgrade. The following breakdown assumes the same workload, shared uploaded documents accessed by multiple application servers, and compares the two approaches directly."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Existing file based application code runs with no changes, since it already expects open, read, write, and seek.\",\"Scales further with distance from a single logical namespace, meaning very large deployments hit metadata and lock contention sooner than object storage would.\"],[\"Natural fit for hierarchical organization, such as folders per customer or per project.\",\"Generally more expensive per gigabyte than object storage at the same durability level.\"],[\"Strong consistency and POSIX semantics make concurrent access predictable for cooperating processes.\",\"Requires managing mounts, network file system clients, and sometimes lock managers, adding operational surface area.\"],[\"In place partial file updates are efficient, useful for logs, databases, and large documents edited incrementally.\",\"Cross region replication and multi region access patterns are less mature than the equivalent object storage features.\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.1 When to pick file storage",
+          "text": "10.1 When to pick file storage"
+        },
+        {
+          "type": "list",
+          "content": "[\"The application was written against a real file system and rewriting it to use an object storage API is not practical right now.\",\"Multiple processes need to edit parts of the same file concurrently, not just replace the whole thing.\",\"A genuine folder hierarchy with fine grained permissions per folder is part of the requirement, not just a naming convention.\"]",
+          "items": [
+            "The application was written against a real file system and rewriting it to use an object storage API is not practical right now.",
+            "Multiple processes need to edit parts of the same file concurrently, not just replace the whole thing.",
+            "A genuine folder hierarchy with fine grained permissions per folder is part of the requirement, not just a naming convention."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "10.2 When to pick object storage instead",
+          "text": "10.2 When to pick object storage instead"
+        },
+        {
+          "type": "list",
+          "content": "[\"Files are written once and read many times, with no in place editing.\",\"The workload needs to scale to millions or billions of objects with minimal operational overhead.\",\"Cost per gigabyte at scale matters more than POSIX compatibility.\"]",
+          "items": [
+            "Files are written once and read many times, with no in place editing.",
+            "The workload needs to scale to millions or billions of objects with minimal operational overhead.",
+            "Cost per gigabyte at scale matters more than POSIX compatibility."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Interview Angle",
+          "text": "11. Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "When file storage comes up in a system design interview, it is rarely the headline answer for a brand new, internet scale service. Most interviewers expect object storage for things like user uploaded images or video, precisely because of the scaling ceiling discussed above."
+        },
+        {
+          "type": "paragraph",
+          "content": "File storage becomes the right answer, and a good one, when the question involves legacy systems, a requirement for POSIX semantics, or multiple compute nodes that need a genuinely shared, mutable working directory, for example a rendering farm or a batch processing cluster reading a shared input dataset."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "11.1 Good talking points to raise",
+          "text": "11.1 Good talking points to raise"
+        },
+        {
+          "type": "list",
+          "content": "[\"Explain why the hierarchical namespace is a real constraint, not just a stylistic difference from object storage.\",\"Mention that file storage gives POSIX locking, which object storage generally does not provide at all.\",\"Bring up a concrete managed option, such as Amazon EFS or Azure Files, rather than only discussing raw NFS.\",\"Acknowledge the trade-off explicitly: file storage buys compatibility and semantics, it costs scale headroom and money.\"]",
+          "items": [
+            "Explain why the hierarchical namespace is a real constraint, not just a stylistic difference from object storage.",
+            "Mention that file storage gives POSIX locking, which object storage generally does not provide at all.",
+            "Bring up a concrete managed option, such as Amazon EFS or Azure Files, rather than only discussing raw NFS.",
+            "Acknowledge the trade-off explicitly: file storage buys compatibility and semantics, it costs scale headroom and money."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "A common trap",
+          "content": "Do not reach for file storage just because the data conceptually has folders. Object storage keys can contain slashes and can be listed by prefix, which fakes a folder view well enough for most applications that only ever write and read whole files."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Summary",
+          "text": "12. Summary"
+        },
+        {
+          "type": "paragraph",
+          "content": "File storage organizes data as named files inside a hierarchical directory tree and exposes it through file system protocols such as NFS or SMB. It supports random access reads and writes, POSIX style permissions, and file locking, which makes it a natural home for legacy applications, shared team drives, and any workload that genuinely needs a mutable, hierarchical file system rather than a flat key value interface."
+        },
+        {
+          "type": "paragraph",
+          "content": "The cost of that convenience is a lower scaling ceiling than object storage, driven by metadata contention and the overhead of maintaining a single consistent namespace across many clients. Systems like Amazon EFS and Azure Files push that ceiling much higher than a single NAS appliance ever could, but they do not remove it entirely."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Choose file storage when the application needs a real hierarchy and POSIX semantics. Choose object storage when it just needs to store and retrieve whole blobs at very large scale."
+        },
+        {
+          "type": "list",
+          "content": "[\"File storage: hierarchical paths, POSIX semantics, NFS or SMB, mutable in place writes.\",\"Object storage: flat keys, HTTP API, immutable whole object writes, effectively unbounded scale.\",\"Block storage: raw blocks on a single attached volume, the lowest level abstraction of the three.\"]",
+          "items": [
+            "File storage: hierarchical paths, POSIX semantics, NFS or SMB, mutable in place writes.",
+            "Object storage: flat keys, HTTP API, immutable whole object writes, effectively unbounded scale.",
+            "Block storage: raw blocks on a single attached volume, the lowest level abstraction of the three."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,335 @@
+{
+  "title": "Journaling",
+  "slug": "journaling",
+  "content": [
+    {
+      "id": "journaling",
+      "title": "Journaling",
+      "blocks": [
+        {
+          "type": "lead",
+          "content": "Journaling is the mechanism that protects a file system's internal structures from crashes and power loss. Without it, an operation interrupted halfway through can leave a disk in a corrupted, inconsistent state that no application can safely trust. With it, recovery after an unclean shutdown takes seconds instead of the long scan of the entire disk that used to be the only option."
+        },
+        {
+          "type": "paragraph",
+          "content": "This chapter walks through the exact problem journaling solves, a concrete example of the kind of corruption it prevents, the older full disk check approach it replaced, how the write ahead logging idea actually works, the three journaling modes real file systems offer, how crash recovery replays or discards journal entries, and why journaling is not a substitute for backups."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068480-645134006.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068480-645134006.png",
+          "alt": "journaling",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068480-645134006.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Problem: Operations That Need Several Disk Writes",
+          "text": "1. The Problem: Operations That Need Several Disk Writes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Many operations that feel like a single action to a user actually require several separate updates to the underlying disk structures. Moving a file, for example, might need a new directory entry created in the destination folder, the old directory entry removed from the source folder, the file's inode link count adjusted, and in some cases data blocks allocated or freed. Each of these is a distinct write to a distinct location on disk, and the operating system issues them one after another, not all at once."
+        },
+        {
+          "type": "paragraph",
+          "content": "This matters because a computer can lose power or crash at literally any instant, including the instant between two of these writes. If the first write has reached the disk but the second has not, the file system is left holding a set of structures that no longer agree with each other. This is not a rare edge case or a theoretical worry invented for a textbook. It is a serious, everyday reliability problem, and every general purpose file system has to solve it somehow, because disks lose power, laptops get their batteries pulled, and servers crash."
+        },
+        {
+          "type": "paragraph",
+          "content": "The danger scales with how commonly the affected operations happen. File creation, deletion, renaming, growing a file, and truncating a file all involve multiple coordinated writes. A file system that gets this wrong even occasionally will, over the lifetime of a busy server or a laptop, eventually corrupt itself."
+        },
+        {
+          "type": "note",
+          "title": "In one sentence",
+          "content": "A single user visible file operation often hides several independent disk writes underneath, and a crash between any two of them can leave the file system inconsistent."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068481-640667406.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068481-640667406.png",
+          "alt": "The Problem: Operations That Need Several Disk Writes",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068481-640667406.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. A Concrete Example: Deleting a File Goes Wrong",
+          "text": "2. A Concrete Example: Deleting a File Goes Wrong"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consider deleting a file, which sounds like one action but is really at least two underlying updates. First, the directory entry that points at the file has to be removed, so the file no longer appears when the folder is listed. Second, the file's inode and the data blocks it owns have to be marked free, so that space can be reused by future files. These are two separate writes to two separate parts of the disk."
+        },
+        {
+          "type": "paragraph",
+          "content": "Now trace what happens if the machine crashes between these two writes. If the directory entry is removed first and the crash happens before the inode and blocks are freed, the file system ends up with an orphaned inode: a chunk of disk space that is still marked as in use, permanently unreachable because nothing points at it anymore. That space is leaked until a repair tool finds it. If the order is reversed instead, freeing the inode and blocks first, and the crash happens before the directory entry is removed, the result is worse: the directory entry still points at an inode that has been marked free and may already have been handed out to a brand new file. Reading through the old entry can now return garbage or someone else's data."
+        },
+        {
+          "type": "paragraph",
+          "content": "Neither outcome is cosmetic. An orphaned inode wastes space silently, and a dangling directory entry pointing at reused storage is a genuine data corruption bug that can expose one file's contents through another file's name. Multiply this by every delete, create, rename, and write that was in flight at the moment of a crash, and it becomes clear why file systems cannot simply hope crashes happen at convenient times."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068481-993155479.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068481-993155479.png",
+          "alt": "A Concrete Example: Deleting a File Goes Wrong",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068481-993155479.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Crash Timing\",\"Directory Entry\",\"Inode / Blocks\",\"Result\"],\"rows\":[[\"Crash after removing the entry, before freeing the inode\",\"Removed\",\"Still marked in use\",\"Orphaned inode, leaked disk space\"],[\"Crash after freeing the inode, before removing the entry\",\"Still present\",\"Marked free, may be reused\",\"Dangling entry can point at another file's data\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Why this is not hypothetical",
+          "content": "Every general purpose file system performs thousands of multi step operations per minute under normal use, and real machines really do lose power and crash. A file system that cannot recover cleanly from this will corrupt itself in production, not just in a classroom example."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Old Answer: A Full Consistency Check",
+          "text": "3. The Old Answer: A Full Consistency Check"
+        },
+        {
+          "type": "paragraph",
+          "content": "Before journaling existed, file systems handled this problem after the fact. On the next boot following an unclean shutdown, a consistency check utility, most famously fsck on Unix like systems, would scan the entire disk. It walked every directory entry, every inode, and every block allocation bitmap, cross checking them against each other to find anything that did not add up: an inode with no directory entry pointing at it, a directory entry pointing at a free inode, blocks marked both free and in use, and so on."
+        },
+        {
+          "type": "paragraph",
+          "content": "When it found a mismatch, fsck would repair it as best it could, sometimes by freeing an orphaned inode, sometimes by moving an unreachable file into a special lost and found directory so a human could decide what to do with it. This worked, and for smaller disks it was an entirely reasonable approach."
+        },
+        {
+          "type": "paragraph",
+          "content": "The honest problem is that it does not scale. A full consistency check has to touch metadata across the entire disk, not just the files that were being modified at the moment of the crash. As disks grew from megabytes to gigabytes to terabytes, the time an fsck run took grew right along with them. On a large modern disk, a full scan can take a very long time, sometimes hours, during which the file system is unusable. For a server that is supposed to stay available around the clock, an hours long mandatory scan after every unclean shutdown is simply not acceptable."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068481-174317534.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068481-174317534.png",
+          "alt": "The Old Answer: A Full Consistency Check",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068481-174317534.png"
+        },
+        {
+          "type": "note",
+          "title": "The core inefficiency",
+          "content": "fsck has to examine metadata across the whole disk to find damage that, realistically, could only exist near the handful of operations that were actually in progress when the crash happened. Scanning everything to find a tiny, localized problem is the part that does not scale."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. The Core Idea: Write It Down Before You Do It",
+          "text": "4. The Core Idea: Write It Down Before You Do It"
+        },
+        {
+          "type": "paragraph",
+          "content": "Journaling fixes the scaling problem by changing when and where information about a change gets written. Before the file system touches any of its real, permanent structures, it first writes a small, compact log entry, the journal entry, describing exactly what it is about to do. Only once that log entry has been written to disk and confirmed durable does the file system go ahead and apply the actual changes to the real directory entries, inodes, and block bitmaps."
+        },
+        {
+          "type": "paragraph",
+          "content": "This ordering is the entire trick. The journal entry acts as a statement of intent that survives a crash even if the real update does not finish. If a crash happens before the journal entry is fully written, nothing has actually changed yet as far as the real file system is concerned, so there is nothing to fix. If a crash happens after the journal entry is committed but before the real changes are fully applied, the file system knows exactly what it was in the middle of doing, because the journal entry says so, and it can simply finish the job on the next boot."
+        },
+        {
+          "type": "paragraph",
+          "content": "The payoff is that recovery no longer needs to inspect the whole disk. It only needs to look at the journal, which is typically a small, fixed size, circular region of the disk reserved for exactly this purpose. Reading a small journal and finishing or discarding a handful of entries takes a fraction of a second, regardless of how big the disk is."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068764-814986945.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068764-814986945.png",
+          "alt": "The Core Idea: Write It Down Before You Do It",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068764-814986945.png"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. The Three Journaling Modes",
+          "text": "5. The Three Journaling Modes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Not every byte that changes needs to be journaled, and real file systems offer a choice of how much protection to buy, because more protection generally costs more performance. Linux's ext3 and ext4 file systems, among others, expose this choice directly as three journaling modes."
+        },
+        {
+          "type": "heading3",
+          "content": "Writeback mode",
+          "text": "Writeback mode"
+        },
+        {
+          "type": "paragraph",
+          "content": "In writeback mode, only metadata changes, directory entries, inode fields, block bitmaps, are journaled. The actual file data is written straight to its final location on disk with no ordering guarantee relative to the metadata journal entry. This is the fastest of the three modes, because it journals the least amount of information and imposes the fewest ordering constraints. The honest tradeoff is that it offers the weakest guarantee: after a crash, the file system structures will be consistent, but the data inside a file that was being written at the time of the crash can still be wrong, missing, or even contain leftover data from a previously deleted file."
+        },
+        {
+          "type": "heading3",
+          "content": "Ordered mode",
+          "text": "Ordered mode"
+        },
+        {
+          "type": "paragraph",
+          "content": "Ordered mode also journals only metadata, but adds one crucial rule: the actual file data must be written to disk before the corresponding metadata journal entry is allowed to commit. This closes the worst gap in writeback mode. A crash can never leave a file metadata pointing at data that was never written, because the data write is guaranteed to have happened first. Ordered mode is the practical middle ground between speed and safety, and it is the actual default on many real systems, including ext3 and ext4."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068764-362163976.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068764-362163976.png",
+          "alt": "Ordered mode",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068764-362163976.png"
+        },
+        {
+          "type": "heading3",
+          "content": "Full journaling (data journaling) mode",
+          "text": "Full journaling (data journaling) mode"
+        },
+        {
+          "type": "paragraph",
+          "content": "Full journaling, sometimes called data journaling, goes further and writes both the metadata and the actual file data itself into the journal, not just a description of the metadata change. This gives the strongest guarantee of the three modes: after a crash, both the file system structures and the file contents that were being written can be recovered from the journal. The real cost has to be stated plainly: data effectively gets written twice, once into the journal and once again to its final location on disk. For workloads with heavy or large writes, this roughly doubles the write traffic and is meaningfully slower than the other two modes."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068765-700218945.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068765-700218945.png",
+          "alt": "Full journaling data journaling mode",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068765-700218945.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Mode\",\"What Gets Journaled\",\"Guarantee After Crash\",\"Performance\"],\"rows\":[[\"Writeback\",\"Metadata only, no ordering with data\",\"Metadata consistent, but file data can still be wrong or stale\",\"Fastest\"],[\"Ordered\",\"Metadata only, but data must land before metadata commits\",\"Metadata consistent, data never points at garbage\",\"Balanced, common default\"],[\"Full / Data journaling\",\"Metadata and the actual file data\",\"Strongest, both structures and data recoverable\",\"Slowest, data written twice\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Which one is actually used",
+          "content": "Ordered mode is the default journaling mode for ext3 and ext4 on most Linux distributions, because it gives most of the safety of full journaling at close to the speed of writeback mode. Full journaling is reserved for workloads that specifically demand it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Crash Recovery: Replay or Discard",
+          "text": "6. Crash Recovery: Replay or Discard"
+        },
+        {
+          "type": "paragraph",
+          "content": "The payoff of all this bookkeeping shows up the next time the file system is mounted after an unclean shutdown. Instead of scanning the whole disk, the file system reads only its journal, which is small and quick to examine regardless of how large the underlying disk is."
+        },
+        {
+          "type": "paragraph",
+          "content": "For each entry found in the journal, there are really only two possible situations. If an entry was fully written and committed to the journal but the corresponding real change had not yet been confirmed as applied, the file system replays it: it reapplies exactly the change the entry describes, finishing the job the crash interrupted. If an entry was only partially written to the journal itself, meaning the crash happened while the journal entry was still being written, that entry is incomplete and cannot be trusted, so it is simply discarded. Discarding it is safe precisely because the file system real structures were never touched for that entry in the first place."
+        },
+        {
+          "type": "paragraph",
+          "content": "Either outcome, replaying a complete entry or discarding an incomplete one, brings the file system back to a fully consistent state. The entire process reads and processes only the journal, not the rest of the disk, which is why it finishes in a fraction of a second even on very large storage devices."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068765-62527776.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068765-62527776.png",
+          "alt": "Crash Recovery: Replay or Discard",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068765-62527776.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"Mount detects the file system was not shut down cleanly.\",\"The journal is read from its fixed location on disk.\",\"Fully committed entries are replayed to finish their changes.\",\"Partially written entries are discarded entirely.\",\"The file system is marked clean and mounted normally.\"]",
+          "items": [
+            "Mount detects the file system was not shut down cleanly.",
+            "The journal is read from its fixed location on disk.",
+            "Fully committed entries are replayed to finish their changes.",
+            "Partially written entries are discarded entirely.",
+            "The file system is marked clean and mounted normally."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Journaling Is Not a Backup",
+          "text": "7. Journaling Is Not a Backup"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is worth being precise about what journaling actually protects, because this is a genuinely common point of confusion. Journaling protects the file system's own internal structural consistency across a crash. It guarantees that the directory entries, inodes, and block bitmaps agree with each other after an unclean shutdown, and that any operation in progress at the moment of the crash either finishes cleanly or never appears to have started."
+        },
+        {
+          "type": "paragraph",
+          "content": "What journaling does not do is protect the data itself from being lost through other causes. If a user deletes the wrong file on purpose, journaling will happily and correctly record that deletion and make it permanent, because from the file system point of view that was a perfectly valid, successfully completed operation. If the physical disk fails entirely, its platters scratched or its flash cells destroyed, the journal is stored on that same disk and is destroyed right along with everything else. None of this is what journaling was built to solve."
+        },
+        {
+          "type": "paragraph",
+          "content": "Protecting against accidental deletion, user error, or outright hardware failure requires an actual backup, a separate copy of the data stored somewhere else entirely. Journaling and backups solve different problems, and neither one can substitute for the other."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068765-120859354.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068765-120859354.png",
+          "alt": "Journaling Is Not a Backup",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/diagrams/1785409068765-120859354.png"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Threat\",\"Protected By Journaling\",\"Protected By Backup\"],\"rows\":[[\"Crash or power loss mid operation\",\"Yes\",\"Not directly\"],[\"User accidentally deletes a file\",\"No\",\"Yes\"],[\"Physical disk failure destroys the drive\",\"No\",\"Yes, if stored elsewhere\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "A distinction worth stating plainly",
+          "content": "Journaling is a consistency and durability mechanism, not a backup mechanism. Treating a journaling file system as if it were a backup strategy is one of the most common and costly misunderstandings in this area."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Real World Examples",
+          "text": "8. Real World Examples"
+        },
+        {
+          "type": "paragraph",
+          "content": "Journaling is not a niche feature, it is standard in essentially every mainstream general purpose file system in use today. ext3 introduced journaling to the Linux ext file system family, and ext4 continued it with the same three mode choice described above. Windows' NTFS has its own transaction log mechanism, conceptually the same idea, that journals metadata changes so the file system can recover quickly after a crash without a full disk scan. Both systems exist specifically because the fsck style full scan approach stopped being practical as drives grew large."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"File System\",\"Journaling Mechanism\",\"Notes\"],\"rows\":[[\"ext3 / ext4\",\"Journaling block device layer (JBD/JBD2)\",\"Supports writeback, ordered, and full modes; ordered is the common default\"],[\"NTFS\",\"Log File Service transaction log\",\"Journals metadata changes for fast recovery after a crash\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Common Mistakes and the Interview Angle",
+          "text": "9. Common Mistakes and the Interview Angle"
+        },
+        {
+          "type": "list",
+          "content": "[\"Believing journaling is a substitute for backups, when it solves a completely different problem: internal consistency across a crash, not protection against deletion or drive failure.\",\"Assuming all three journaling modes offer the same guarantee, when writeback, ordered, and full journaling make genuinely different tradeoffs between speed and how much is protected.\",\"Thinking journaling means a crash can never lose any data at all, when in reality it guarantees structural consistency, and only full journaling mode also protects file data that was in flight.\",\"Forgetting that the journal itself lives on the same physical disk, so it does nothing to help if that disk fails entirely.\"]",
+          "items": [
+            "Believing journaling is a substitute for backups, when it solves a completely different problem: internal consistency across a crash, not protection against deletion or drive failure.",
+            "Assuming all three journaling modes offer the same guarantee, when writeback, ordered, and full journaling make genuinely different tradeoffs between speed and how much is protected.",
+            "Thinking journaling means a crash can never lose any data at all, when in reality it guarantees structural consistency, and only full journaling mode also protects file data that was in flight.",
+            "Forgetting that the journal itself lives on the same physical disk, so it does nothing to help if that disk fails entirely."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Interview angle",
+          "content": "Be ready to state, in one or two sentences, exactly what problem journaling solves: recovering file system consistency quickly after a crash without scanning the entire disk. Then be ready to name all three journaling modes, writeback, ordered, and full, and explain the specific tradeoff each one makes."
+        },
+        {
+          "type": "paragraph",
+          "content": "Journaling turned file system recovery from a slow scan of the entire disk into a fast, predictable routine that touches only what actually changed near the crash. Understanding it means understanding both what it guarantees, and just as importantly, what it deliberately leaves for real backups to handle."
+        }
+      ]
+    }
+  ]
+}

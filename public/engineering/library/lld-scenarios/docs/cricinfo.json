@@ -1,0 +1,773 @@
+{
+  "problemId": "p-cricinfo",
+  "title": "Cricinfo",
+  "slug": "cricinfo",
+  "sections": [
+    {
+      "id": "content",
+      "title": "Content"
+    }
+  ],
+  "content": [
+    {
+      "id": "content",
+      "title": "Content",
+      "blocks": [
+        {
+          "type": "heading1",
+          "text": "1. Problem Statement",
+          "content": "1. Problem Statement"
+        },
+        {
+          "type": "paragraph",
+          "text": "<div style=\"border:2px solid #5b5fc7;border-radius:14px;padding:18px 22px;background:rgba(91,95,199,0.07);margin:4px 0 8px 0;\"><p style=\"margin:0 0 12px 0;\">Design the core scoring engine behind a <strong>live cricket score and commentary platform like Cricinfo</strong>: a scorer records what happens on every single ball bowled, and the platform continuously shows the current score, wickets, overs, and which batsman is on strike. The distinguishing idea is that <strong>nothing about the current match state is stored directly</strong>. Every delivery is appended to an immutable, ordered log, and the total runs, wickets, overs completed, and strike rotation are all <strong>derived by replaying that log</strong> from the start of the innings.</p><img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920904544-76529767.png\" alt=\"A scorer records a delivery, which is appended to an event log; the current match state is derived by replaying that entire log\" style=\"width:100%;border-radius:8px;margin:4px 0 14px 0;\" /><ul style=\"margin:0 0 12px 1.25em;padding:0;list-style:disc;\"><li style=\"margin:4px 0;\"><strong>Actors:</strong> Scorer (records each delivery), MatchService (the core orchestrator).</li><li style=\"margin:4px 0;\"><strong>Scope:</strong> ball-by-ball delivery recording, legal-versus-extra delivery handling, and state derivation for a single innings.</li></ul><p style=\"border-left:3px solid #5b5fc7;padding-left:12px;font-style:italic;margin:0 0 12px 0;\">This is the first event-sourcing style design in this problem set: instead of mutating a running score directly, every action is appended to a log, and the current state is always a pure function of replaying that log, the same pattern real scoring systems use so a full ball-by-ball history is never lost.</p></div>"
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "2. Functional Requirements",
+          "content": "2. Functional Requirements"
+        },
+        {
+          "type": "paragraph",
+          "text": "The system must support the following <strong>core capabilities</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Record a delivery:</strong> a scorer logs the runs scored, the delivery type (normal, wide, no-ball), and whether a wicket fell on that ball.",
+            "<strong>Derive current state:</strong> at any point, compute the total runs, wickets, overs completed, balls bowled in the current over, and which batsman is on strike.",
+            "<strong>Distinguish legal from extra deliveries:</strong> wides and no-balls add runs but do not count toward the six legal balls that make up an over.",
+            "<strong>Enforce an overs limit:</strong> once an innings reaches its configured overs limit, no further deliveries can be recorded.",
+            "<strong>Notify on key events:</strong> a wicket falling, an over completing, and the innings completing are all events other parts of a real platform would react to."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "3. Non-Functional Requirements",
+          "content": "3. Non-Functional Requirements"
+        },
+        {
+          "type": "paragraph",
+          "text": "Beyond correctness, the design should hold up along five <strong>quality pillars</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920906411-360205031.png",
+          "metadata": {
+            "alt": "Five non-functional pillars: scalability, extensibility, maintainability, performance, thread safety"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Scalability:</strong> supporting many concurrent matches and innings must not require touching existing recording logic.",
+            "<strong>Extensibility:</strong> new scoring rules (a different extras convention) should plug in without rewriting the service.",
+            "<strong>Maintainability:</strong> scoring rules, notification, and delivery id creation are isolated in their own classes.",
+            "<strong>Performance:</strong> deriving the current state is O(deliveries recorded so far), which stays small for a single innings.",
+            "<strong>Thread safety:</strong> two deliveries recorded for the same innings concurrently must not corrupt the event log's order."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "4. Clarifying Questions",
+          "content": "4. Clarifying Questions"
+        },
+        {
+          "type": "paragraph",
+          "text": "Questions worth asking the interviewer <strong>before designing</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Should byes and leg-byes be modeled as their own delivery types, or is the scope limited to normal deliveries, wides, and no-balls?",
+            "Does a no-ball also grant a free hit on the following delivery, or is that out of scope?",
+            "Should the derived state be recomputed fresh on every request, or cached and incrementally updated for performance at very high query volume?",
+            "Can a delivery be corrected or removed after being recorded, given the append-only log model?",
+            "Should strike rotation account for runs actually run on extras (wides, no-balls), or is that simplified away?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "5. Assumptions & Constraints",
+          "content": "5. Assumptions & Constraints"
+        },
+        {
+          "type": "paragraph",
+          "text": "To keep the design focused, we make these <strong>explicit assumptions</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Delivery types are limited to NORMAL, WIDE, and NO_BALL; byes and leg-byes are noted as a future extension, not implemented.",
+            "A wide or no-ball always adds exactly 1 extra run and never counts toward the six legal balls of an over; runs scored on an extra delivery are also possible (a batsman can still run) but are folded into the total without affecting strike rotation, a deliberate simplification called out explicitly here.",
+            "Strike rotation on a legal, normal delivery follows the standard cricket rule: an odd number of runs rotates strike, an even number does not, and the end of every completed over also rotates strike.",
+            "The delivery log is append-only in this design; correcting a mis-recorded delivery is noted as a future improvement, not implemented.",
+            "Each innings has a configurable overs limit; once reached, no further deliveries can be recorded for that innings."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "6. Core Entities",
+          "content": "6. Core Entities"
+        },
+        {
+          "type": "paragraph",
+          "text": "The design centers on <strong>four core entities</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920908508-765774434.png",
+          "metadata": {
+            "alt": "Core entities: Match, Innings, Delivery, DeliveryType, and a derived Match State"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Match:</strong> a top-level contest between two teams, containing one or more innings.",
+            "<strong>Innings:</strong> owns the append-only log of deliveries for one team's batting turn.",
+            "<strong>Delivery:</strong> a single, immutable event describing one ball bowled: runs scored, delivery type, and whether a wicket fell.",
+            "<strong>MatchState:</strong> not a stored entity but a computed value, derived fresh by replaying an innings's delivery log."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "7. Relationships Between Entities",
+          "content": "7. Relationships Between Entities"
+        },
+        {
+          "type": "paragraph",
+          "text": "These entities connect through a small set of <strong>well-defined relationships</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920910134-469280705.png",
+          "metadata": {
+            "alt": "A match contains many innings; an innings logs many deliveries in append-only order; state is derived from that log"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Match to Innings</strong> is one-to-many.",
+            "<strong>Innings to Delivery</strong> is one-to-many and strictly ordered, appended in the sequence balls were actually bowled.",
+            "<strong>Innings to MatchState</strong> is a derivation, not a stored relationship: the state is recomputed from the delivery log, not persisted independently of it."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "8. UML Class Diagram",
+          "content": "8. UML Class Diagram"
+        },
+        {
+          "type": "paragraph",
+          "text": "The class diagram below shows the <strong>full static structure</strong>, including the Strategy and Observer interfaces:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920923289-422300512.png",
+          "metadata": {
+            "alt": "UML class diagram for the Cricinfo style live scoring engine"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "9. Design Patterns Used",
+          "content": "9. Design Patterns Used"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three patterns keep scoring rules, notification, and id creation <strong>decoupled from the core service</strong>."
+        },
+        {
+          "type": "heading2",
+          "text": "9.1 Strategy Pattern (Scoring Rules)",
+          "content": "9.1 Strategy Pattern (Scoring Rules)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> which delivery types count as a legal ball, and how many extra runs each earns, is a rules decision that could plausibly vary (a different tournament format experimenting with different extras conventions) independently of how the delivery log itself is stored and replayed."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920911784-84436734.png",
+          "metadata": {
+            "alt": "ScoringRuleStrategy interface with StandardScoringRuleStrategy defining legal-ball and extra-run rules per delivery type"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> a new rules variant is a new strategy implementation, with zero changes to MatchService. <strong>What it solves:</strong> it isolates a rules decision that could change per format from the stable log-replay mechanics."
+        },
+        {
+          "type": "heading2",
+          "text": "9.2 Observer Pattern (Notifications)",
+          "content": "9.2 Observer Pattern (Notifications)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> a wicket falling, an over completing, and an innings completing are exactly the moments a real live-scoring platform pushes an update to millions of watching fans."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920913318-349153543.png",
+          "metadata": {
+            "alt": "MatchObserver interface notified by MatchService on every key scoring event"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> MatchService does not need to know who is listening. <strong>What it solves:</strong> it decouples the core recording workflow from side effects like push notifications and commentary updates."
+        },
+        {
+          "type": "heading2",
+          "text": "9.3 Factory Pattern (Delivery Creation)",
+          "content": "9.3 Factory Pattern (Delivery Creation)"
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why needed:</strong> delivery id generation should not be scattered across calling code."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920914849-374209413.png",
+          "metadata": {
+            "alt": "DeliveryFactory generating sequential delivery ids"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "<strong>Why it is the best fit:</strong> every delivery is created through one consistent path. <strong>What it solves:</strong> centralizes id-generation rules so they cannot drift or collide."
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "10. Class Design",
+          "content": "10. Class Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "Each class has a single, clear <strong>responsibility</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Delivery:</strong> attributes deliveryId, runsScored, deliveryType, isWicket; responsibility: represent one immutable event.",
+            "<strong>DeliveryFactory:</strong> method createDelivery(runs, type, isWicket); responsibility: generate sequential delivery ids.",
+            "<strong>Innings:</strong> attributes inningsId, battingTeam, bowlingTeam, deliveries, complete; responsibility: own the append-only event log for one batting turn.",
+            "<strong>MatchState:</strong> a plain computed result object; responsibility: represent the derived totals at a point in time.",
+            "<strong>MatchService:</strong> the orchestrator; responsibility: append deliveries, enforce the overs limit, derive state by replay, and notify observers."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "11. Interface Design",
+          "content": "11. Interface Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two interfaces keep the design <strong>open for extension</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920916503-801756954.png",
+          "metadata": {
+            "alt": "ScoringRuleStrategy and MatchObserver interfaces with their key methods"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>ScoringRuleStrategy:</strong> isLegalDelivery(type) and extraRuns(type): abstract away exactly which deliveries count toward an over and how many extras they earn.",
+            "<strong>MatchObserver:</strong> onDeliveryRecorded / onWicketFallen / onOverCompleted / onInningsCompleted: abstracts away who reacts to lifecycle events."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "12. Sequence Diagrams",
+          "content": "12. Sequence Diagrams"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three flows below cover a <strong>normal scoring delivery</strong>, a <strong>wide that does not count toward the over</strong>, and the <strong>innings-complete rejection once the overs limit is reached</strong>."
+        },
+        {
+          "type": "heading2",
+          "text": "12.1 Normal Scoring Delivery",
+          "content": "12.1 Normal Scoring Delivery"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920925298-29626104.png",
+          "metadata": {
+            "alt": "A normal delivery is appended to the log, and the replayed state shows increased runs and one more legal ball"
+          }
+        },
+        {
+          "type": "heading2",
+          "text": "12.2 Wide Delivery Does Not Count as a Legal Ball",
+          "content": "12.2 Wide Delivery Does Not Count as a Legal Ball"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920927169-900369949.png",
+          "metadata": {
+            "alt": "A wide adds an extra run but does not advance the over, since it is not a legal delivery"
+          }
+        },
+        {
+          "type": "heading2",
+          "text": "12.3 Innings Complete, Further Deliveries Rejected",
+          "content": "12.3 Innings Complete, Further Deliveries Rejected"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920929120-523639847.png",
+          "metadata": {
+            "alt": "Once the overs limit is reached, a further delivery attempt is rejected"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "13. Important Workflows",
+          "content": "13. Important Workflows"
+        },
+        {
+          "type": "paragraph",
+          "text": "The <strong>end-to-end recording workflow</strong>, alongside its rejection branch, looks like this:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920918152-472972503.png",
+          "metadata": {
+            "alt": "Record a delivery, reject if the innings is already complete, append to the log, replay to derive state, and mark complete once the overs limit is hit"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Happy path:</strong> record delivery → innings not yet complete → append to log → replay entire log → return updated state.",
+            "<strong>Completion path:</strong> record delivery → this delivery brings legal ball count to the overs limit → mark innings complete → notify.",
+            "<strong>Rejection path:</strong> record delivery → innings already marked complete → rejected."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "14. Public APIs / Methods",
+          "content": "14. Public APIs / Methods"
+        },
+        {
+          "type": "paragraph",
+          "text": "The service exposes a <strong>small, intention-revealing API</strong>:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>recordDelivery(inningsId, runsScored, deliveryType, isWicket):</strong> appends a delivery event and returns the freshly derived match state, or throws if the innings is already complete.",
+            "<strong>getCurrentState(inningsId):</strong> replays the delivery log and returns the current derived state without recording anything new."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "15. Exception Handling",
+          "content": "15. Exception Handling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Three custom exceptions cover the <strong>realistic failure modes</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920919921-698978666.png",
+          "metadata": {
+            "alt": "InningsCompleteException, InvalidDeliveryException, InvalidInningsException"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>InningsCompleteException:</strong> a delivery is recorded after the overs limit has already been reached.",
+            "<strong>InvalidDeliveryException:</strong> a negative runs value or other malformed delivery input.",
+            "<strong>InvalidInningsException:</strong> an unknown innings id."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "16. Concurrency Considerations",
+          "content": "16. Concurrency Considerations"
+        },
+        {
+          "type": "paragraph",
+          "text": "The <strong>critical race</strong> is two attempts to record the next delivery for the same innings at nearly the same moment."
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920921554-676440644.png",
+          "metadata": {
+            "alt": "Two threads racing to record the next delivery for the same innings; synchronization ensures the log stays in a single, consistent order"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Synchronizing the append-and-derive step per innings ensures deliveries are always appended in a <strong>single, well-defined order</strong>, which matters enormously here since the entire derived state depends on replaying the log in exactly the order balls were actually bowled."
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "17. Extensibility Discussion",
+          "content": "17. Extensibility Discussion"
+        },
+        {
+          "type": "paragraph",
+          "text": "The pattern choices make several <strong>future features</strong> low-friction to add:"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A new scoring rules variant (a tournament experimenting with different extras conventions) is a new ScoringRuleStrategy implementation.",
+            "A new notification channel (push notifications, live commentary feed) is a new MatchObserver implementation.",
+            "Adding byes and leg-byes as new delivery types only requires extending the enum and the strategy's rules, not restructuring the log or replay mechanism.",
+            "Caching the derived state and updating it incrementally per delivery, rather than replaying the full log every time, is a natural performance optimization that does not change the public API at all."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "18. SOLID Principles Applied",
+          "content": "18. SOLID Principles Applied"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Single Responsibility:</strong> Innings owns the log, ScoringRuleStrategy decides legality and extras, MatchObserver reacts to events, each for one reason to change.",
+            "<strong>Open/Closed:</strong> new scoring rules or notification behavior extends via new classes, not edits to MatchService.",
+            "<strong>Liskov Substitution:</strong> any ScoringRuleStrategy or MatchObserver implementation can replace another without breaking the service.",
+            "<strong>Interface Segregation:</strong> MatchObserver exposes only the four lifecycle callbacks a listener actually needs.",
+            "<strong>Dependency Inversion:</strong> MatchService depends on the ScoringRuleStrategy and MatchObserver interfaces, not concrete classes."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "19. Edge Cases",
+          "content": "19. Edge Cases"
+        },
+        {
+          "type": "list",
+          "items": [
+            "A wide or no-ball with a wicket still needs to increment the wicket count, even though it does not count as a legal ball.",
+            "The very last legal ball of the overs limit still needs to correctly mark the innings complete in the same operation that records it.",
+            "An innings with zero deliveries recorded yet returns a valid, zeroed-out state rather than an error.",
+            "Two consecutive extras (a wide followed immediately by a no-ball) correctly add up their extra runs without either counting toward the over."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "20. Complexity Analysis",
+          "content": "20. Complexity Analysis"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>recordDelivery:</strong> O(1) to append, plus O(n) to replay the log and derive fresh state, where n is deliveries recorded so far in the innings.",
+            "<strong>getCurrentState:</strong> O(n) for the same replay.",
+            "<strong>Space:</strong> O(deliveries per innings) held in memory, growing by exactly one entry per ball bowled."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "21. Database Design",
+          "content": "21. Database Design"
+        },
+        {
+          "type": "paragraph",
+          "text": "A relational schema mirrors the in-memory model directly, with <strong>foreign keys enforcing referential integrity</strong>:"
+        },
+        {
+          "type": "image",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content/1784920930822-700583079.png",
+          "metadata": {
+            "alt": "ER diagram: Match, Innings, Delivery"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "Delivery rows are strictly append-only and ordered by a sequenceNumber column, never updated or deleted, matching the event-sourcing model directly.",
+            "An index on Delivery(inningsId, sequenceNumber) supports fast, in-order replay of a single innings's log."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "22. Improvements & Follow-Up Questions",
+          "content": "22. Improvements & Follow-Up Questions"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Cache the derived state and update it incrementally per delivery instead of replaying the full log on every request, once innings length makes full replay noticeably slow.",
+            "Add byes and leg-byes as additional delivery types.",
+            "Support correcting a mis-recorded delivery by appending a compensating correction event, rather than mutating the log, preserving the append-only guarantee.",
+            "Model a free hit following a no-ball, where a wicket cannot be given except for a run out."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Complete Code Implementation",
+          "content": "Complete Code Implementation"
+        },
+        {
+          "type": "paragraph",
+          "text": "DeliveryType, Delivery and DeliveryFactory:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// The kinds of deliveries that can be bowled.\nenum DeliveryType {\n    NORMAL,  // a standard, legal delivery\n    WIDE,    // an illegal delivery, adds an extra run\n    NO_BALL  // an illegal delivery, adds an extra run\n}\n\n// A single, immutable event describing one ball bowled.\nclass Delivery {\n    private final String deliveryId;      // unique id, e.g. D1\n    private final int runsScored;          // runs scored off this delivery\n    private final DeliveryType deliveryType; // normal, wide, or no-ball\n    private final boolean isWicket;          // whether a wicket fell on this ball\n\n    public Delivery(String deliveryId, int runsScored, DeliveryType deliveryType, boolean isWicket) {\n        this.deliveryId = deliveryId;       // store id\n        this.runsScored = runsScored;        // store runs\n        this.deliveryType = deliveryType;     // store type\n        this.isWicket = isWicket;              // store wicket flag\n    }\n\n    public String getDeliveryId() { return deliveryId; }         // id getter\n    public int getRunsScored() { return runsScored; }              // runs getter\n    public DeliveryType getDeliveryType() { return deliveryType; }   // type getter\n    public boolean isWicket() { return isWicket; }                    // wicket getter\n}\n\n// Creates deliveries with sequential ids.\nclass DeliveryFactory {\n    private int counter = 0; // running id counter across all deliveries created\n\n    public Delivery createDelivery(int runsScored, DeliveryType deliveryType, boolean isWicket) {\n        counter++;                                                    // bump id counter\n        return new Delivery(\"D\" + counter, runsScored, deliveryType, isWicket); // e.g. D1\n    }\n}",
+            "python": "from enum import Enum\n\n# The kinds of deliveries that can be bowled.\nclass DeliveryType(Enum):\n    NORMAL = \"NORMAL\"     # a standard, legal delivery\n    WIDE = \"WIDE\"          # an illegal delivery, adds an extra run\n    NO_BALL = \"NO_BALL\"    # an illegal delivery, adds an extra run\n\n# A single, immutable event describing one ball bowled.\nclass Delivery:\n    def __init__(self, delivery_id, runs_scored, delivery_type, is_wicket):\n        self.delivery_id = delivery_id      # unique id, e.g. D1\n        self.runs_scored = runs_scored        # runs scored off this delivery\n        self.delivery_type = delivery_type      # normal, wide, or no-ball\n        self.is_wicket = is_wicket                # whether a wicket fell on this ball\n\n# Creates deliveries with sequential ids.\nclass DeliveryFactory:\n    def __init__(self):\n        self.counter = 0  # running id counter across all deliveries created\n\n    def create_delivery(self, runs_scored, delivery_type, is_wicket):\n        self.counter += 1  # bump id counter\n        return Delivery(f\"D{self.counter}\", runs_scored, delivery_type, is_wicket)  # e.g. D1",
+            "cpp": "#include <string>\nusing namespace std;\n\n// The kinds of deliveries that can be bowled.\nenum class DeliveryType { NORMAL, WIDE, NO_BALL };\n\n// A single, immutable event describing one ball bowled.\nclass Delivery {\npublic:\n    string deliveryId;         // unique id, e.g. D1\n    int runsScored;               // runs scored off this delivery\n    DeliveryType deliveryType;      // normal, wide, or no-ball\n    bool isWicket;                    // whether a wicket fell on this ball\n\n    Delivery() {}\n    Delivery(string id, int runs, DeliveryType type, bool wicket)\n        : deliveryId(id), runsScored(runs), deliveryType(type), isWicket(wicket) {}\n    // constructor stores id, runs, type, and wicket flag\n};\n\n// Creates deliveries with sequential ids.\nclass DeliveryFactory {\n    int counter = 0; // running id counter across all deliveries created\n\npublic:\n    Delivery createDelivery(int runsScored, DeliveryType deliveryType, bool isWicket) {\n        counter++;                                                            // bump id counter\n        return Delivery(\"D\" + to_string(counter), runsScored, deliveryType, isWicket); // e.g. D1\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "ScoringRuleStrategy, StandardScoringRuleStrategy, MatchState and Innings:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Strategy interface: which deliveries are legal, and how many extras they earn.\ninterface ScoringRuleStrategy {\n    boolean isLegalDelivery(DeliveryType type); // counts toward the six balls of an over\n    int extraRuns(DeliveryType type);            // extra runs added beyond what was scored off the bat\n}\n\n// The standard rules: normal deliveries are legal and add no extras;\n// wides and no-balls are illegal and each add exactly one extra run.\nclass StandardScoringRuleStrategy implements ScoringRuleStrategy {\n    @Override\n    public boolean isLegalDelivery(DeliveryType type) {\n        return type == DeliveryType.NORMAL; // only a normal delivery counts toward the over\n    }\n\n    @Override\n    public int extraRuns(DeliveryType type) {\n        if (type == DeliveryType.WIDE || type == DeliveryType.NO_BALL) return 1; // one extra run\n        return 0; // a normal delivery adds no extra beyond what was scored\n    }\n}\n\n// The derived, computed state of an innings at a point in time.\nclass MatchState {\n    private final int totalRuns;           // runs scored off the bat plus all extras\n    private final int wickets;              // wickets fallen so far\n    private final int oversCompleted;        // full overs of six legal balls completed\n    private final int ballsInCurrentOver;     // legal balls bowled in the over still in progress\n    private final int strikeBatsmanIndex;      // which of the two current batsmen is on strike, 0 or 1\n\n    public MatchState(int totalRuns, int wickets, int oversCompleted, int ballsInCurrentOver, int strikeBatsmanIndex) {\n        this.totalRuns = totalRuns;                 // store total\n        this.wickets = wickets;                       // store wickets\n        this.oversCompleted = oversCompleted;           // store overs\n        this.ballsInCurrentOver = ballsInCurrentOver;     // store balls in progress\n        this.strikeBatsmanIndex = strikeBatsmanIndex;       // store strike index\n    }\n\n    public int getTotalRuns() { return totalRuns; }                 // total getter\n    public int getWickets() { return wickets; }                       // wickets getter\n    public int getOversCompleted() { return oversCompleted; }           // overs getter\n    public int getBallsInCurrentOver() { return ballsInCurrentOver; }     // balls-in-over getter\n    public int getStrikeBatsmanIndex() { return strikeBatsmanIndex; }       // strike getter\n}\n\n// Owns the append-only event log of deliveries for one batting turn.\nclass Innings {\n    private final String inningsId;                                          // unique id\n    private final String battingTeam;                                         // team currently batting\n    private final String bowlingTeam;                                          // team currently bowling\n    private final java.util.List<Delivery> deliveries = new java.util.ArrayList<>(); // append-only event log\n    private boolean complete;                                                    // whether the overs limit has been reached\n\n    public Innings(String inningsId, String battingTeam, String bowlingTeam) {\n        this.inningsId = inningsId;   // store id\n        this.battingTeam = battingTeam; // store batting team\n        this.bowlingTeam = bowlingTeam;  // store bowling team\n        this.complete = false;            // starts not complete\n    }\n\n    public String getInningsId() { return inningsId; }               // id getter\n    public java.util.List<Delivery> getDeliveries() { return deliveries; } // log getter\n    public void appendDelivery(Delivery delivery) { deliveries.add(delivery); } // append to the log\n    public boolean isComplete() { return complete; }                    // complete getter\n    public void markComplete() { this.complete = true; }                 // mark complete\n}",
+            "python": "# Strategy interface: which deliveries are legal, and how many extras they earn.\nclass ScoringRuleStrategy:\n    def is_legal_delivery(self, delivery_type): raise NotImplementedError\n    def extra_runs(self, delivery_type): raise NotImplementedError\n\n# The standard rules: normal deliveries are legal and add no extras;\n# wides and no-balls are illegal and each add exactly one extra run.\nclass StandardScoringRuleStrategy(ScoringRuleStrategy):\n    def is_legal_delivery(self, delivery_type):\n        return delivery_type == DeliveryType.NORMAL  # only a normal delivery counts toward the over\n\n    def extra_runs(self, delivery_type):\n        if delivery_type in (DeliveryType.WIDE, DeliveryType.NO_BALL):\n            return 1  # one extra run\n        return 0  # a normal delivery adds no extra beyond what was scored\n\n# The derived, computed state of an innings at a point in time.\nclass MatchState:\n    def __init__(self, total_runs, wickets, overs_completed, balls_in_current_over, strike_batsman_index):\n        self.total_runs = total_runs                  # runs scored off the bat plus all extras\n        self.wickets = wickets                          # wickets fallen so far\n        self.overs_completed = overs_completed            # full overs of six legal balls completed\n        self.balls_in_current_over = balls_in_current_over  # legal balls bowled in the over still in progress\n        self.strike_batsman_index = strike_batsman_index      # which of the two current batsmen is on strike, 0 or 1\n\n# Owns the append-only event log of deliveries for one batting turn.\nclass Innings:\n    def __init__(self, innings_id, batting_team, bowling_team):\n        self.innings_id = innings_id      # unique id\n        self.batting_team = batting_team    # team currently batting\n        self.bowling_team = bowling_team      # team currently bowling\n        self.deliveries = []                    # append-only event log\n        self.complete = False                     # starts not complete\n\n    def append_delivery(self, delivery):\n        self.deliveries.append(delivery)  # append to the log\n\n    def mark_complete(self):\n        self.complete = True  # mark complete",
+            "cpp": "#include <string>\n#include <vector>\nusing namespace std;\n\n// Strategy interface: which deliveries are legal, and how many extras they earn.\nclass ScoringRuleStrategy {\npublic:\n    virtual bool isLegalDelivery(DeliveryType type) = 0;\n    virtual int extraRuns(DeliveryType type) = 0;\n    virtual ~ScoringRuleStrategy() {}\n};\n\n// The standard rules: normal deliveries are legal and add no extras;\n// wides and no-balls are illegal and each add exactly one extra run.\nclass StandardScoringRuleStrategy : public ScoringRuleStrategy {\npublic:\n    bool isLegalDelivery(DeliveryType type) override {\n        return type == DeliveryType::NORMAL; // only a normal delivery counts toward the over\n    }\n\n    int extraRuns(DeliveryType type) override {\n        if (type == DeliveryType::WIDE || type == DeliveryType::NO_BALL) return 1; // one extra run\n        return 0; // a normal delivery adds no extra beyond what was scored\n    }\n};\n\n// The derived, computed state of an innings at a point in time.\nclass MatchState {\npublic:\n    int totalRuns;            // runs scored off the bat plus all extras\n    int wickets;                 // wickets fallen so far\n    int oversCompleted;             // full overs of six legal balls completed\n    int ballsInCurrentOver;            // legal balls bowled in the over still in progress\n    int strikeBatsmanIndex;               // which of the two current batsmen is on strike, 0 or 1\n\n    MatchState() : totalRuns(0), wickets(0), oversCompleted(0), ballsInCurrentOver(0), strikeBatsmanIndex(0) {}\n    MatchState(int runs, int w, int overs, int balls, int strike)\n        : totalRuns(runs), wickets(w), oversCompleted(overs), ballsInCurrentOver(balls), strikeBatsmanIndex(strike) {}\n    // constructor stores every derived field\n};\n\n// Owns the append-only event log of deliveries for one batting turn.\nclass Innings {\npublic:\n    string inningsId;        // unique id\n    string battingTeam;         // team currently batting\n    string bowlingTeam;            // team currently bowling\n    vector<Delivery> deliveries;      // append-only event log\n    bool complete;                       // whether the overs limit has been reached\n\n    Innings() : complete(false) {}\n    Innings(string id, string batting, string bowling)\n        : inningsId(id), battingTeam(batting), bowlingTeam(bowling), complete(false) {}\n    // constructor stores id, teams; starts with an empty log and not complete\n\n    void appendDelivery(Delivery delivery) { deliveries.push_back(delivery); } // append to the log\n    void markComplete() { complete = true; } // mark complete\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "MatchObserver, ConsoleMatchObserver and MatchService, including the log-replay derivation:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "// Observer interface: reacts to key scoring events.\ninterface MatchObserver {\n    void onDeliveryRecorded(Delivery delivery);   // a new delivery was appended\n    void onWicketFallen(String inningsId);          // a wicket just fell\n    void onOverCompleted(String inningsId);           // six legal balls just completed\n    void onInningsCompleted(String inningsId);          // the overs limit was just reached\n}\n\n// Simple observer that prints events to the console.\nclass ConsoleMatchObserver implements MatchObserver {\n    @Override\n    public void onDeliveryRecorded(Delivery delivery) {\n        System.out.println(\"Delivery \" + delivery.getDeliveryId() + \" recorded: \" + delivery.getRunsScored() + \" runs, \" + delivery.getDeliveryType());\n    }\n\n    @Override\n    public void onWicketFallen(String inningsId) {\n        System.out.println(\"Wicket fallen in innings \" + inningsId);\n    }\n\n    @Override\n    public void onOverCompleted(String inningsId) {\n        System.out.println(\"Over completed in innings \" + inningsId);\n    }\n\n    @Override\n    public void onInningsCompleted(String inningsId) {\n        System.out.println(\"Innings \" + inningsId + \" completed, overs limit reached\");\n    }\n}\n\n// Custom exceptions for the realistic failure modes.\nclass InningsCompleteException extends RuntimeException {\n    public InningsCompleteException(String msg) { super(msg); }\n}\nclass InvalidDeliveryException extends RuntimeException {\n    public InvalidDeliveryException(String msg) { super(msg); }\n}\nclass InvalidInningsException extends RuntimeException {\n    public InvalidInningsException(String msg) { super(msg); }\n}\n\n// The core orchestrator tying every piece together.\nclass MatchService {\n    private final java.util.Map<String, Innings> innings = new java.util.HashMap<>(); // inningsId -> Innings\n    private final ScoringRuleStrategy scoringRuleStrategy; // pluggable rules\n    private final java.util.List<MatchObserver> observers = new java.util.ArrayList<>(); // listeners\n    private final int oversLimit; // legal balls limit divided by six for this innings\n\n    public MatchService(ScoringRuleStrategy scoringRuleStrategy, int oversLimit) {\n        this.scoringRuleStrategy = scoringRuleStrategy; // store chosen rules\n        this.oversLimit = oversLimit;                     // store overs limit\n    }\n\n    public void addInnings(Innings inn) { innings.put(inn.getInningsId(), inn); } // register an innings\n    public void addObserver(MatchObserver observer) { observers.add(observer); }    // register a listener\n\n    // Replays the entire delivery log to derive the current state, from scratch every time.\n    public MatchState getCurrentState(String inningsId) {\n        Innings inn = innings.get(inningsId);           // look up innings\n        if (inn == null) throw new InvalidInningsException(\"Unknown innings: \" + inningsId);\n        int totalRuns = 0;                                 // running total across the whole replay\n        int wickets = 0;                                     // running wicket count\n        int legalBalls = 0;                                    // legal balls bowled so far\n        int strikeIndex = 0;                                     // which batsman is on strike, 0 or 1\n        for (Delivery d : inn.getDeliveries()) {                  // replay every event in order\n            totalRuns += d.getRunsScored();                          // add runs scored off the bat\n            totalRuns += scoringRuleStrategy.extraRuns(d.getDeliveryType()); // add any extras\n            if (d.isWicket()) wickets++;                                // count a wicket\n            boolean legal = scoringRuleStrategy.isLegalDelivery(d.getDeliveryType()); // legal or an extra\n            if (legal) {                                                    // only legal balls affect over progress\n                legalBalls++;                                                  // one more legal ball bowled\n                if (d.getRunsScored() % 2 == 1) strikeIndex = 1-strikeIndex;   // odd runs rotate strike\n                if (legalBalls % 6 == 0) strikeIndex = 1-strikeIndex;            // end of over also rotates strike\n            }\n        }\n        int oversCompleted = legalBalls / 6;               // full overs completed\n        int ballsInCurrentOver = legalBalls % 6;             // legal balls into the current, unfinished over\n        return new MatchState(totalRuns, wickets, oversCompleted, ballsInCurrentOver, strikeIndex); // derived result\n    }\n\n    // Appends a new delivery, enforcing the overs limit, and returns the freshly derived state.\n    public synchronized MatchState recordDelivery(String inningsId, int runsScored, DeliveryType type, boolean isWicket, DeliveryFactory factory) {\n        Innings inn = innings.get(inningsId);                  // look up innings\n        if (inn == null) throw new InvalidInningsException(\"Unknown innings: \" + inningsId);\n        if (inn.isComplete()) {                                    // overs limit already reached\n            throw new InningsCompleteException(\"Innings \" + inningsId + \" is already complete\");\n        }\n        if (runsScored < 0) throw new InvalidDeliveryException(\"Runs scored cannot be negative\"); // guard bad input\n        Delivery delivery = factory.createDelivery(runsScored, type, isWicket); // build the event\n        inn.appendDelivery(delivery);                                             // append it to the log\n        for (MatchObserver obs : observers) obs.onDeliveryRecorded(delivery);       // notify\n        if (isWicket) { for (MatchObserver obs : observers) obs.onWicketFallen(inningsId); } // notify wicket\n        MatchState state = getCurrentState(inningsId);                              // replay to derive fresh state\n        if (scoringRuleStrategy.isLegalDelivery(type) && state.getBallsInCurrentOver() == 0 && state.getOversCompleted() > 0) {\n            for (MatchObserver obs : observers) obs.onOverCompleted(inningsId);        // notify over completion\n        }\n        if (state.getOversCompleted() >= oversLimit) {                                // overs limit just reached\n            inn.markComplete();                                                          // mark innings complete\n            for (MatchObserver obs : observers) obs.onInningsCompleted(inningsId);          // notify\n        }\n        return state; // hand back the freshly derived state\n    }\n}",
+            "python": "# Observer interface: reacts to key scoring events.\nclass MatchObserver:\n    def on_delivery_recorded(self, delivery): raise NotImplementedError\n    def on_wicket_fallen(self, innings_id): raise NotImplementedError\n    def on_over_completed(self, innings_id): raise NotImplementedError\n    def on_innings_completed(self, innings_id): raise NotImplementedError\n\n# Simple observer that prints events to the console.\nclass ConsoleMatchObserver(MatchObserver):\n    def on_delivery_recorded(self, delivery):\n        print(f\"Delivery {delivery.delivery_id} recorded: {delivery.runs_scored} runs, {delivery.delivery_type}\")\n\n    def on_wicket_fallen(self, innings_id):\n        print(f\"Wicket fallen in innings {innings_id}\")\n\n    def on_over_completed(self, innings_id):\n        print(f\"Over completed in innings {innings_id}\")\n\n    def on_innings_completed(self, innings_id):\n        print(f\"Innings {innings_id} completed, overs limit reached\")\n\n# Custom exceptions for the realistic failure modes.\nclass InningsCompleteException(Exception): pass\nclass InvalidDeliveryException(Exception): pass\nclass InvalidInningsException(Exception): pass\n\n# The core orchestrator tying every piece together.\nclass MatchService:\n    def __init__(self, scoring_rule_strategy, overs_limit):\n        self.innings = {}                          # inningsId -> Innings\n        self.scoring_rule_strategy = scoring_rule_strategy  # pluggable rules\n        self.observers = []                           # listeners\n        self.overs_limit = overs_limit                  # legal balls limit divided by six for this innings\n\n    def add_innings(self, inn):\n        self.innings[inn.innings_id] = inn  # register an innings\n\n    def add_observer(self, observer):\n        self.observers.append(observer)  # register a listener\n\n    def get_current_state(self, innings_id):\n        inn = self.innings.get(innings_id)  # look up innings\n        if inn is None:\n            raise InvalidInningsException(f\"Unknown innings: {innings_id}\")\n        total_runs = 0     # running total across the whole replay\n        wickets = 0          # running wicket count\n        legal_balls = 0        # legal balls bowled so far\n        strike_index = 0         # which batsman is on strike, 0 or 1\n        for d in inn.deliveries:   # replay every event in order\n            total_runs += d.runs_scored  # add runs scored off the bat\n            total_runs += self.scoring_rule_strategy.extra_runs(d.delivery_type)  # add any extras\n            if d.is_wicket:\n                wickets += 1  # count a wicket\n            legal = self.scoring_rule_strategy.is_legal_delivery(d.delivery_type)  # legal or an extra\n            if legal:  # only legal balls affect over progress\n                legal_balls += 1  # one more legal ball bowled\n                if d.runs_scored % 2 == 1:\n                    strike_index = 1-strike_index  # odd runs rotate strike\n                if legal_balls % 6 == 0:\n                    strike_index = 1-strike_index  # end of over also rotates strike\n        overs_completed = legal_balls // 6       # full overs completed\n        balls_in_current_over = legal_balls % 6    # legal balls into the current, unfinished over\n        return MatchState(total_runs, wickets, overs_completed, balls_in_current_over, strike_index)  # derived result\n\n    def record_delivery(self, innings_id, runs_scored, delivery_type, is_wicket, factory):\n        inn = self.innings.get(innings_id)  # look up innings\n        if inn is None:\n            raise InvalidInningsException(f\"Unknown innings: {innings_id}\")\n        if inn.complete:  # overs limit already reached\n            raise InningsCompleteException(f\"Innings {innings_id} is already complete\")\n        if runs_scored < 0:\n            raise InvalidDeliveryException(\"Runs scored cannot be negative\")  # guard bad input\n        delivery = factory.create_delivery(runs_scored, delivery_type, is_wicket)  # build the event\n        inn.append_delivery(delivery)  # append it to the log\n        for obs in self.observers:\n            obs.on_delivery_recorded(delivery)  # notify\n        if is_wicket:\n            for obs in self.observers:\n                obs.on_wicket_fallen(innings_id)  # notify wicket\n        state = self.get_current_state(innings_id)  # replay to derive fresh state\n        if self.scoring_rule_strategy.is_legal_delivery(delivery_type) and state.balls_in_current_over == 0 and state.overs_completed > 0:\n            for obs in self.observers:\n                obs.on_over_completed(innings_id)  # notify over completion\n        if state.overs_completed >= self.overs_limit:  # overs limit just reached\n            inn.mark_complete()  # mark innings complete\n            for obs in self.observers:\n                obs.on_innings_completed(innings_id)  # notify\n        return state  # hand back the freshly derived state",
+            "cpp": "#include <string>\n#include <vector>\n#include <map>\n#include <memory>\n#include <stdexcept>\n#include <iostream>\nusing namespace std;\n\n// Observer interface: reacts to key scoring events.\nclass MatchObserver {\npublic:\n    virtual void onDeliveryRecorded(const Delivery& delivery) = 0;\n    virtual void onWicketFallen(const string& inningsId) = 0;\n    virtual void onOverCompleted(const string& inningsId) = 0;\n    virtual void onInningsCompleted(const string& inningsId) = 0;\n    virtual ~MatchObserver() {}\n};\n\n// Simple observer that prints events to the console.\nclass ConsoleMatchObserver : public MatchObserver {\npublic:\n    void onDeliveryRecorded(const Delivery& delivery) override {\n        cout << \"Delivery \" << delivery.deliveryId << \" recorded: \" << delivery.runsScored << \" runs\" << endl;\n    }\n    void onWicketFallen(const string& inningsId) override {\n        cout << \"Wicket fallen in innings \" << inningsId << endl;\n    }\n    void onOverCompleted(const string& inningsId) override {\n        cout << \"Over completed in innings \" << inningsId << endl;\n    }\n    void onInningsCompleted(const string& inningsId) override {\n        cout << \"Innings \" << inningsId << \" completed, overs limit reached\" << endl;\n    }\n};\n\n// Custom exceptions for the realistic failure modes.\nclass InningsCompleteException : public runtime_error {\npublic: InningsCompleteException(const string& msg) : runtime_error(msg) {}\n};\nclass InvalidDeliveryException : public runtime_error {\npublic: InvalidDeliveryException(const string& msg) : runtime_error(msg) {}\n};\nclass InvalidInningsException : public runtime_error {\npublic: InvalidInningsException(const string& msg) : runtime_error(msg) {}\n};\n\n// The core orchestrator tying every piece together.\nclass MatchService {\n    map<string, Innings> innings;                      // inningsId -> Innings\n    shared_ptr<ScoringRuleStrategy> scoringRuleStrategy;  // pluggable rules\n    vector<shared_ptr<MatchObserver>> observers;           // listeners\n    int oversLimit;                                          // legal balls limit divided by six for this innings\n\npublic:\n    MatchService(shared_ptr<ScoringRuleStrategy> strategy, int limit)\n        : scoringRuleStrategy(strategy), oversLimit(limit) {}\n\n    void addInnings(Innings inn) { innings.insert({inn.inningsId, inn}); } // register an innings\n    void addObserver(shared_ptr<MatchObserver> observer) { observers.push_back(observer); } // register a listener\n\n    MatchState getCurrentState(string inningsId) {\n        auto it = innings.find(inningsId);            // look up innings\n        if (it == innings.end()) throw InvalidInningsException(\"Unknown innings: \" + inningsId);\n        Innings& inn = it->second;\n        int totalRuns = 0;                               // running total across the whole replay\n        int wickets = 0;                                    // running wicket count\n        int legalBalls = 0;                                    // legal balls bowled so far\n        int strikeIndex = 0;                                     // which batsman is on strike, 0 or 1\n        for (auto& d : inn.deliveries) {                          // replay every event in order\n            totalRuns += d.runsScored;                                // add runs scored off the bat\n            totalRuns += scoringRuleStrategy->extraRuns(d.deliveryType); // add any extras\n            if (d.isWicket) wickets++;                                   // count a wicket\n            bool legal = scoringRuleStrategy->isLegalDelivery(d.deliveryType); // legal or an extra\n            if (legal) {                                                   // only legal balls affect over progress\n                legalBalls++;                                                // one more legal ball bowled\n                if (d.runsScored % 2 == 1) strikeIndex = 1-strikeIndex;         // odd runs rotate strike\n                if (legalBalls % 6 == 0) strikeIndex = 1-strikeIndex;             // end of over also rotates strike\n            }\n        }\n        int oversCompleted = legalBalls / 6;               // full overs completed\n        int ballsInCurrentOver = legalBalls % 6;             // legal balls into the current, unfinished over\n        return MatchState(totalRuns, wickets, oversCompleted, ballsInCurrentOver, strikeIndex); // derived result\n    }\n\n    MatchState recordDelivery(string inningsId, int runsScored, DeliveryType type, bool isWicket, DeliveryFactory& factory) {\n        auto it = innings.find(inningsId);                  // look up innings\n        if (it == innings.end()) throw InvalidInningsException(\"Unknown innings: \" + inningsId);\n        Innings& inn = it->second;\n        if (inn.complete) {                                    // overs limit already reached\n            throw InningsCompleteException(\"Innings \" + inningsId + \" is already complete\");\n        }\n        if (runsScored < 0) throw InvalidDeliveryException(\"Runs scored cannot be negative\"); // guard bad input\n        Delivery delivery = factory.createDelivery(runsScored, type, isWicket); // build the event\n        inn.appendDelivery(delivery);                                             // append it to the log\n        for (auto& obs : observers) obs->onDeliveryRecorded(delivery);              // notify\n        if (isWicket) { for (auto& obs : observers) obs->onWicketFallen(inningsId); } // notify wicket\n        MatchState state = getCurrentState(inningsId);                                // replay to derive fresh state\n        if (scoringRuleStrategy->isLegalDelivery(type) && state.ballsInCurrentOver == 0 && state.oversCompleted > 0) {\n            for (auto& obs : observers) obs->onOverCompleted(inningsId);                // notify over completion\n        }\n        if (state.oversCompleted >= oversLimit) {                                       // overs limit just reached\n            inn.markComplete();                                                           // mark innings complete\n            for (auto& obs : observers) obs->onInningsCompleted(inningsId);                 // notify\n        }\n        return state; // hand back the freshly derived state\n    }\n};"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Complete, self-contained, directly runnable file (every class above combined into one file per language, exactly as you would actually copy, compile and run it), demonstrating a normal scoring delivery, a wide that does not count toward the over, a wicket, and the innings-complete rejection once the overs limit is reached:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        MatchService service = new MatchService(new StandardScoringRuleStrategy(), 2);\n        service.addObserver(new ConsoleMatchObserver());\n        DeliveryFactory factory = new DeliveryFactory();\n\n        Innings innings = new Innings(\"I1\", \"India\", \"Australia\");\n        service.addInnings(innings);\n\n        service.recordDelivery(\"I1\", 1, DeliveryType.NORMAL, false, factory);\n        service.recordDelivery(\"I1\", 0, DeliveryType.WIDE, false, factory);\n        service.recordDelivery(\"I1\", 4, DeliveryType.NORMAL, false, factory);\n        service.recordDelivery(\"I1\", 0, DeliveryType.NORMAL, false, factory);\n        service.recordDelivery(\"I1\", 2, DeliveryType.NORMAL, false, factory);\n        service.recordDelivery(\"I1\", 1, DeliveryType.NO_BALL, false, factory);\n        service.recordDelivery(\"I1\", 1, DeliveryType.NORMAL, true, factory);\n        MatchState afterOver1 = service.recordDelivery(\"I1\", 3, DeliveryType.NORMAL, false, factory);\n        System.out.println(\"After over 1: runs=\" + afterOver1.getTotalRuns() + \" wickets=\" + afterOver1.getWickets() + \" overs=\" + afterOver1.getOversCompleted());\n\n        service.recordDelivery(\"I1\", 2, DeliveryType.NORMAL, false, factory);\n        service.recordDelivery(\"I1\", 1, DeliveryType.NORMAL, false, factory);\n        service.recordDelivery(\"I1\", 0, DeliveryType.NORMAL, false, factory);\n        service.recordDelivery(\"I1\", 4, DeliveryType.NORMAL, false, factory);\n        service.recordDelivery(\"I1\", 1, DeliveryType.NORMAL, false, factory);\n        MatchState afterOver2 = service.recordDelivery(\"I1\", 6, DeliveryType.NORMAL, false, factory);\n        System.out.println(\"After over 2: runs=\" + afterOver2.getTotalRuns() + \" wickets=\" + afterOver2.getWickets() + \" overs=\" + afterOver2.getOversCompleted());\n\n        try {\n            service.recordDelivery(\"I1\", 1, DeliveryType.NORMAL, false, factory);\n        } catch (InningsCompleteException e) {\n            System.out.println(\"Caught expected: \" + e.getMessage());\n        }\n    }\n}\n\nenum DeliveryType { NORMAL, WIDE, NO_BALL }\n\nclass Delivery {\n    private final String deliveryId;\n    private final int runsScored;\n    private final DeliveryType deliveryType;\n    private final boolean isWicket;\n\n    public Delivery(String deliveryId, int runsScored, DeliveryType deliveryType, boolean isWicket) {\n        this.deliveryId = deliveryId;\n        this.runsScored = runsScored;\n        this.deliveryType = deliveryType;\n        this.isWicket = isWicket;\n    }\n\n    public String getDeliveryId() { return deliveryId; }\n    public int getRunsScored() { return runsScored; }\n    public DeliveryType getDeliveryType() { return deliveryType; }\n    public boolean isWicket() { return isWicket; }\n}\n\nclass DeliveryFactory {\n    private int counter = 0;\n\n    public Delivery createDelivery(int runsScored, DeliveryType deliveryType, boolean isWicket) {\n        counter++;\n        return new Delivery(\"D\" + counter, runsScored, deliveryType, isWicket);\n    }\n}\n\ninterface ScoringRuleStrategy {\n    boolean isLegalDelivery(DeliveryType type);\n    int extraRuns(DeliveryType type);\n}\n\nclass StandardScoringRuleStrategy implements ScoringRuleStrategy {\n    @Override\n    public boolean isLegalDelivery(DeliveryType type) {\n        return type == DeliveryType.NORMAL;\n    }\n\n    @Override\n    public int extraRuns(DeliveryType type) {\n        if (type == DeliveryType.WIDE || type == DeliveryType.NO_BALL) return 1;\n        return 0;\n    }\n}\n\nclass MatchState {\n    private final int totalRuns;\n    private final int wickets;\n    private final int oversCompleted;\n    private final int ballsInCurrentOver;\n    private final int strikeBatsmanIndex;\n\n    public MatchState(int totalRuns, int wickets, int oversCompleted, int ballsInCurrentOver, int strikeBatsmanIndex) {\n        this.totalRuns = totalRuns;\n        this.wickets = wickets;\n        this.oversCompleted = oversCompleted;\n        this.ballsInCurrentOver = ballsInCurrentOver;\n        this.strikeBatsmanIndex = strikeBatsmanIndex;\n    }\n\n    public int getTotalRuns() { return totalRuns; }\n    public int getWickets() { return wickets; }\n    public int getOversCompleted() { return oversCompleted; }\n    public int getBallsInCurrentOver() { return ballsInCurrentOver; }\n    public int getStrikeBatsmanIndex() { return strikeBatsmanIndex; }\n}\n\nclass Innings {\n    private final String inningsId;\n    private final String battingTeam;\n    private final String bowlingTeam;\n    private final List<Delivery> deliveries = new ArrayList<>();\n    private boolean complete;\n\n    public Innings(String inningsId, String battingTeam, String bowlingTeam) {\n        this.inningsId = inningsId;\n        this.battingTeam = battingTeam;\n        this.bowlingTeam = bowlingTeam;\n        this.complete = false;\n    }\n\n    public String getInningsId() { return inningsId; }\n    public List<Delivery> getDeliveries() { return deliveries; }\n    public void appendDelivery(Delivery delivery) { deliveries.add(delivery); }\n    public boolean isComplete() { return complete; }\n    public void markComplete() { this.complete = true; }\n}\n\ninterface MatchObserver {\n    void onDeliveryRecorded(Delivery delivery);\n    void onWicketFallen(String inningsId);\n    void onOverCompleted(String inningsId);\n    void onInningsCompleted(String inningsId);\n}\n\nclass ConsoleMatchObserver implements MatchObserver {\n    @Override\n    public void onDeliveryRecorded(Delivery delivery) {\n        System.out.println(\"Delivery \" + delivery.getDeliveryId() + \" recorded: \" + delivery.getRunsScored() + \" runs, \" + delivery.getDeliveryType());\n    }\n\n    @Override\n    public void onWicketFallen(String inningsId) {\n        System.out.println(\"Wicket fallen in innings \" + inningsId);\n    }\n\n    @Override\n    public void onOverCompleted(String inningsId) {\n        System.out.println(\"Over completed in innings \" + inningsId);\n    }\n\n    @Override\n    public void onInningsCompleted(String inningsId) {\n        System.out.println(\"Innings \" + inningsId + \" completed, overs limit reached\");\n    }\n}\n\nclass InningsCompleteException extends RuntimeException {\n    public InningsCompleteException(String msg) { super(msg); }\n}\nclass InvalidDeliveryException extends RuntimeException {\n    public InvalidDeliveryException(String msg) { super(msg); }\n}\nclass InvalidInningsException extends RuntimeException {\n    public InvalidInningsException(String msg) { super(msg); }\n}\n\nclass MatchService {\n    private final Map<String, Innings> innings = new HashMap<>();\n    private final ScoringRuleStrategy scoringRuleStrategy;\n    private final List<MatchObserver> observers = new ArrayList<>();\n    private final int oversLimit;\n\n    public MatchService(ScoringRuleStrategy scoringRuleStrategy, int oversLimit) {\n        this.scoringRuleStrategy = scoringRuleStrategy;\n        this.oversLimit = oversLimit;\n    }\n\n    public void addInnings(Innings inn) { innings.put(inn.getInningsId(), inn); }\n    public void addObserver(MatchObserver observer) { observers.add(observer); }\n\n    public MatchState getCurrentState(String inningsId) {\n        Innings inn = innings.get(inningsId);\n        if (inn == null) throw new InvalidInningsException(\"Unknown innings: \" + inningsId);\n        int totalRuns = 0;\n        int wickets = 0;\n        int legalBalls = 0;\n        int strikeIndex = 0;\n        for (Delivery d : inn.getDeliveries()) {\n            totalRuns += d.getRunsScored();\n            totalRuns += scoringRuleStrategy.extraRuns(d.getDeliveryType());\n            if (d.isWicket()) wickets++;\n            boolean legal = scoringRuleStrategy.isLegalDelivery(d.getDeliveryType());\n            if (legal) {\n                legalBalls++;\n                if (d.getRunsScored() % 2 == 1) strikeIndex = 1-strikeIndex;\n                if (legalBalls % 6 == 0) strikeIndex = 1-strikeIndex;\n            }\n        }\n        int oversCompleted = legalBalls / 6;\n        int ballsInCurrentOver = legalBalls % 6;\n        return new MatchState(totalRuns, wickets, oversCompleted, ballsInCurrentOver, strikeIndex);\n    }\n\n    public synchronized MatchState recordDelivery(String inningsId, int runsScored, DeliveryType type, boolean isWicket, DeliveryFactory factory) {\n        Innings inn = innings.get(inningsId);\n        if (inn == null) throw new InvalidInningsException(\"Unknown innings: \" + inningsId);\n        if (inn.isComplete()) {\n            throw new InningsCompleteException(\"Innings \" + inningsId + \" is already complete\");\n        }\n        if (runsScored < 0) throw new InvalidDeliveryException(\"Runs scored cannot be negative\");\n        Delivery delivery = factory.createDelivery(runsScored, type, isWicket);\n        inn.appendDelivery(delivery);\n        for (MatchObserver obs : observers) obs.onDeliveryRecorded(delivery);\n        if (isWicket) { for (MatchObserver obs : observers) obs.onWicketFallen(inningsId); }\n        MatchState state = getCurrentState(inningsId);\n        if (scoringRuleStrategy.isLegalDelivery(type) && state.getBallsInCurrentOver() == 0 && state.getOversCompleted() > 0) {\n            for (MatchObserver obs : observers) obs.onOverCompleted(inningsId);\n        }\n        if (state.getOversCompleted() >= oversLimit) {\n            inn.markComplete();\n            for (MatchObserver obs : observers) obs.onInningsCompleted(inningsId);\n        }\n        return state;\n    }\n}",
+            "python": "class DeliveryType:\n    NORMAL = \"NORMAL\"\n    WIDE = \"WIDE\"\n    NO_BALL = \"NO_BALL\"\n\nclass Delivery:\n    def __init__(self, delivery_id, runs_scored, delivery_type, is_wicket):\n        self.delivery_id = delivery_id\n        self.runs_scored = runs_scored\n        self.delivery_type = delivery_type\n        self.is_wicket = is_wicket\n\nclass DeliveryFactory:\n    def __init__(self):\n        self.counter = 0\n\n    def create_delivery(self, runs_scored, delivery_type, is_wicket):\n        self.counter += 1\n        return Delivery(f\"D{self.counter}\", runs_scored, delivery_type, is_wicket)\n\nclass ScoringRuleStrategy:\n    def is_legal_delivery(self, delivery_type): raise NotImplementedError\n    def extra_runs(self, delivery_type): raise NotImplementedError\n\nclass StandardScoringRuleStrategy(ScoringRuleStrategy):\n    def is_legal_delivery(self, delivery_type):\n        return delivery_type == DeliveryType.NORMAL\n\n    def extra_runs(self, delivery_type):\n        if delivery_type in (DeliveryType.WIDE, DeliveryType.NO_BALL):\n            return 1\n        return 0\n\nclass MatchState:\n    def __init__(self, total_runs, wickets, overs_completed, balls_in_current_over, strike_batsman_index):\n        self.total_runs = total_runs\n        self.wickets = wickets\n        self.overs_completed = overs_completed\n        self.balls_in_current_over = balls_in_current_over\n        self.strike_batsman_index = strike_batsman_index\n\nclass Innings:\n    def __init__(self, innings_id, batting_team, bowling_team):\n        self.innings_id = innings_id\n        self.batting_team = batting_team\n        self.bowling_team = bowling_team\n        self.deliveries = []\n        self.complete = False\n\n    def append_delivery(self, delivery):\n        self.deliveries.append(delivery)\n\n    def mark_complete(self):\n        self.complete = True\n\nclass MatchObserver:\n    def on_delivery_recorded(self, delivery): raise NotImplementedError\n    def on_wicket_fallen(self, innings_id): raise NotImplementedError\n    def on_over_completed(self, innings_id): raise NotImplementedError\n    def on_innings_completed(self, innings_id): raise NotImplementedError\n\nclass ConsoleMatchObserver(MatchObserver):\n    def on_delivery_recorded(self, delivery):\n        print(f\"Delivery {delivery.delivery_id} recorded: {delivery.runs_scored} runs, {delivery.delivery_type}\")\n\n    def on_wicket_fallen(self, innings_id):\n        print(f\"Wicket fallen in innings {innings_id}\")\n\n    def on_over_completed(self, innings_id):\n        print(f\"Over completed in innings {innings_id}\")\n\n    def on_innings_completed(self, innings_id):\n        print(f\"Innings {innings_id} completed, overs limit reached\")\n\nclass InningsCompleteException(Exception): pass\nclass InvalidDeliveryException(Exception): pass\nclass InvalidInningsException(Exception): pass\n\nclass MatchService:\n    def __init__(self, scoring_rule_strategy, overs_limit):\n        self.innings = {}\n        self.scoring_rule_strategy = scoring_rule_strategy\n        self.observers = []\n        self.overs_limit = overs_limit\n\n    def add_innings(self, inn):\n        self.innings[inn.innings_id] = inn\n\n    def add_observer(self, observer):\n        self.observers.append(observer)\n\n    def get_current_state(self, innings_id):\n        inn = self.innings.get(innings_id)\n        if inn is None:\n            raise InvalidInningsException(f\"Unknown innings: {innings_id}\")\n        total_runs = 0\n        wickets = 0\n        legal_balls = 0\n        strike_index = 0\n        for d in inn.deliveries:\n            total_runs += d.runs_scored\n            total_runs += self.scoring_rule_strategy.extra_runs(d.delivery_type)\n            if d.is_wicket:\n                wickets += 1\n            legal = self.scoring_rule_strategy.is_legal_delivery(d.delivery_type)\n            if legal:\n                legal_balls += 1\n                if d.runs_scored % 2 == 1:\n                    strike_index = 1-strike_index\n                if legal_balls % 6 == 0:\n                    strike_index = 1-strike_index\n        overs_completed = legal_balls // 6\n        balls_in_current_over = legal_balls % 6\n        return MatchState(total_runs, wickets, overs_completed, balls_in_current_over, strike_index)\n\n    def record_delivery(self, innings_id, runs_scored, delivery_type, is_wicket, factory):\n        inn = self.innings.get(innings_id)\n        if inn is None:\n            raise InvalidInningsException(f\"Unknown innings: {innings_id}\")\n        if inn.complete:\n            raise InningsCompleteException(f\"Innings {innings_id} is already complete\")\n        if runs_scored < 0:\n            raise InvalidDeliveryException(\"Runs scored cannot be negative\")\n        delivery = factory.create_delivery(runs_scored, delivery_type, is_wicket)\n        inn.append_delivery(delivery)\n        for obs in self.observers:\n            obs.on_delivery_recorded(delivery)\n        if is_wicket:\n            for obs in self.observers:\n                obs.on_wicket_fallen(innings_id)\n        state = self.get_current_state(innings_id)\n        if self.scoring_rule_strategy.is_legal_delivery(delivery_type) and state.balls_in_current_over == 0 and state.overs_completed > 0:\n            for obs in self.observers:\n                obs.on_over_completed(innings_id)\n        if state.overs_completed >= self.overs_limit:\n            inn.mark_complete()\n            for obs in self.observers:\n                obs.on_innings_completed(innings_id)\n        return state\n\ndef main():\n    service = MatchService(StandardScoringRuleStrategy(), 2)\n    service.add_observer(ConsoleMatchObserver())\n    factory = DeliveryFactory()\n\n    innings = Innings(\"I1\", \"India\", \"Australia\")\n    service.add_innings(innings)\n\n    service.record_delivery(\"I1\", 1, DeliveryType.NORMAL, False, factory)\n    service.record_delivery(\"I1\", 0, DeliveryType.WIDE, False, factory)\n    service.record_delivery(\"I1\", 4, DeliveryType.NORMAL, False, factory)\n    service.record_delivery(\"I1\", 0, DeliveryType.NORMAL, False, factory)\n    service.record_delivery(\"I1\", 2, DeliveryType.NORMAL, False, factory)\n    service.record_delivery(\"I1\", 1, DeliveryType.NO_BALL, False, factory)\n    service.record_delivery(\"I1\", 1, DeliveryType.NORMAL, True, factory)\n    after_over1 = service.record_delivery(\"I1\", 3, DeliveryType.NORMAL, False, factory)\n    print(f\"After over 1: runs={after_over1.total_runs} wickets={after_over1.wickets} overs={after_over1.overs_completed}\")\n\n    service.record_delivery(\"I1\", 2, DeliveryType.NORMAL, False, factory)\n    service.record_delivery(\"I1\", 1, DeliveryType.NORMAL, False, factory)\n    service.record_delivery(\"I1\", 0, DeliveryType.NORMAL, False, factory)\n    service.record_delivery(\"I1\", 4, DeliveryType.NORMAL, False, factory)\n    service.record_delivery(\"I1\", 1, DeliveryType.NORMAL, False, factory)\n    after_over2 = service.record_delivery(\"I1\", 6, DeliveryType.NORMAL, False, factory)\n    print(f\"After over 2: runs={after_over2.total_runs} wickets={after_over2.wickets} overs={after_over2.overs_completed}\")\n\n    try:\n        service.record_delivery(\"I1\", 1, DeliveryType.NORMAL, False, factory)\n    except InningsCompleteException as e:\n        print(f\"Caught expected: {e}\")\n\nif __name__ == \"__main__\":\n    main()",
+            "cpp": "#include <iostream>\n#include <string>\n#include <vector>\n#include <map>\n#include <memory>\n#include <stdexcept>\nusing namespace std;\n\nenum class DeliveryType { NORMAL, WIDE, NO_BALL };\n\nclass Delivery {\npublic:\n    string deliveryId;\n    int runsScored;\n    DeliveryType deliveryType;\n    bool isWicket;\n\n    Delivery() {}\n    Delivery(string id, int runs, DeliveryType type, bool wicket)\n        : deliveryId(id), runsScored(runs), deliveryType(type), isWicket(wicket) {}\n};\n\nclass DeliveryFactory {\n    int counter = 0;\n\npublic:\n    Delivery createDelivery(int runsScored, DeliveryType deliveryType, bool isWicket) {\n        counter++;\n        return Delivery(\"D\" + to_string(counter), runsScored, deliveryType, isWicket);\n    }\n};\n\nclass ScoringRuleStrategy {\npublic:\n    virtual bool isLegalDelivery(DeliveryType type) = 0;\n    virtual int extraRuns(DeliveryType type) = 0;\n    virtual ~ScoringRuleStrategy() {}\n};\n\nclass StandardScoringRuleStrategy : public ScoringRuleStrategy {\npublic:\n    bool isLegalDelivery(DeliveryType type) override {\n        return type == DeliveryType::NORMAL;\n    }\n\n    int extraRuns(DeliveryType type) override {\n        if (type == DeliveryType::WIDE || type == DeliveryType::NO_BALL) return 1;\n        return 0;\n    }\n};\n\nclass MatchState {\npublic:\n    int totalRuns;\n    int wickets;\n    int oversCompleted;\n    int ballsInCurrentOver;\n    int strikeBatsmanIndex;\n\n    MatchState() : totalRuns(0), wickets(0), oversCompleted(0), ballsInCurrentOver(0), strikeBatsmanIndex(0) {}\n    MatchState(int runs, int w, int overs, int balls, int strike)\n        : totalRuns(runs), wickets(w), oversCompleted(overs), ballsInCurrentOver(balls), strikeBatsmanIndex(strike) {}\n};\n\nclass Innings {\npublic:\n    string inningsId;\n    string battingTeam;\n    string bowlingTeam;\n    vector<Delivery> deliveries;\n    bool complete;\n\n    Innings() : complete(false) {}\n    Innings(string id, string batting, string bowling)\n        : inningsId(id), battingTeam(batting), bowlingTeam(bowling), complete(false) {}\n\n    void appendDelivery(Delivery delivery) { deliveries.push_back(delivery); }\n    void markComplete() { complete = true; }\n};\n\nclass MatchObserver {\npublic:\n    virtual void onDeliveryRecorded(const Delivery& delivery) = 0;\n    virtual void onWicketFallen(const string& inningsId) = 0;\n    virtual void onOverCompleted(const string& inningsId) = 0;\n    virtual void onInningsCompleted(const string& inningsId) = 0;\n    virtual ~MatchObserver() {}\n};\n\nclass ConsoleMatchObserver : public MatchObserver {\npublic:\n    void onDeliveryRecorded(const Delivery& delivery) override {\n        cout << \"Delivery \" << delivery.deliveryId << \" recorded: \" << delivery.runsScored << \" runs\" << endl;\n    }\n    void onWicketFallen(const string& inningsId) override {\n        cout << \"Wicket fallen in innings \" << inningsId << endl;\n    }\n    void onOverCompleted(const string& inningsId) override {\n        cout << \"Over completed in innings \" << inningsId << endl;\n    }\n    void onInningsCompleted(const string& inningsId) override {\n        cout << \"Innings \" << inningsId << \" completed, overs limit reached\" << endl;\n    }\n};\n\nclass InningsCompleteException : public runtime_error {\npublic: InningsCompleteException(const string& msg) : runtime_error(msg) {}\n};\nclass InvalidDeliveryException : public runtime_error {\npublic: InvalidDeliveryException(const string& msg) : runtime_error(msg) {}\n};\nclass InvalidInningsException : public runtime_error {\npublic: InvalidInningsException(const string& msg) : runtime_error(msg) {}\n};\n\nclass MatchService {\n    map<string, Innings> innings;\n    shared_ptr<ScoringRuleStrategy> scoringRuleStrategy;\n    vector<shared_ptr<MatchObserver>> observers;\n    int oversLimit;\n\npublic:\n    MatchService(shared_ptr<ScoringRuleStrategy> strategy, int limit)\n        : scoringRuleStrategy(strategy), oversLimit(limit) {}\n\n    void addInnings(Innings inn) { innings.insert({inn.inningsId, inn}); }\n    void addObserver(shared_ptr<MatchObserver> observer) { observers.push_back(observer); }\n\n    MatchState getCurrentState(string inningsId) {\n        auto it = innings.find(inningsId);\n        if (it == innings.end()) throw InvalidInningsException(\"Unknown innings: \" + inningsId);\n        Innings& inn = it->second;\n        int totalRuns = 0;\n        int wickets = 0;\n        int legalBalls = 0;\n        int strikeIndex = 0;\n        for (auto& d : inn.deliveries) {\n            totalRuns += d.runsScored;\n            totalRuns += scoringRuleStrategy->extraRuns(d.deliveryType);\n            if (d.isWicket) wickets++;\n            bool legal = scoringRuleStrategy->isLegalDelivery(d.deliveryType);\n            if (legal) {\n                legalBalls++;\n                if (d.runsScored % 2 == 1) strikeIndex = 1-strikeIndex;\n                if (legalBalls % 6 == 0) strikeIndex = 1-strikeIndex;\n            }\n        }\n        int oversCompleted = legalBalls / 6;\n        int ballsInCurrentOver = legalBalls % 6;\n        return MatchState(totalRuns, wickets, oversCompleted, ballsInCurrentOver, strikeIndex);\n    }\n\n    MatchState recordDelivery(string inningsId, int runsScored, DeliveryType type, bool isWicket, DeliveryFactory& factory) {\n        auto it = innings.find(inningsId);\n        if (it == innings.end()) throw InvalidInningsException(\"Unknown innings: \" + inningsId);\n        Innings& inn = it->second;\n        if (inn.complete) {\n            throw InningsCompleteException(\"Innings \" + inningsId + \" is already complete\");\n        }\n        if (runsScored < 0) throw InvalidDeliveryException(\"Runs scored cannot be negative\");\n        Delivery delivery = factory.createDelivery(runsScored, type, isWicket);\n        inn.appendDelivery(delivery);\n        for (auto& obs : observers) obs->onDeliveryRecorded(delivery);\n        if (isWicket) { for (auto& obs : observers) obs->onWicketFallen(inningsId); }\n        MatchState state = getCurrentState(inningsId);\n        if (scoringRuleStrategy->isLegalDelivery(type) && state.ballsInCurrentOver == 0 && state.oversCompleted > 0) {\n            for (auto& obs : observers) obs->onOverCompleted(inningsId);\n        }\n        if (state.oversCompleted >= oversLimit) {\n            inn.markComplete();\n            for (auto& obs : observers) obs->onInningsCompleted(inningsId);\n        }\n        return state;\n    }\n};\n\nint main() {\n    auto service = MatchService(make_shared<StandardScoringRuleStrategy>(), 2);\n    service.addObserver(make_shared<ConsoleMatchObserver>());\n    DeliveryFactory factory;\n\n    Innings innings(\"I1\", \"India\", \"Australia\");\n    service.addInnings(innings);\n\n    service.recordDelivery(\"I1\", 1, DeliveryType::NORMAL, false, factory);\n    service.recordDelivery(\"I1\", 0, DeliveryType::WIDE, false, factory);\n    service.recordDelivery(\"I1\", 4, DeliveryType::NORMAL, false, factory);\n    service.recordDelivery(\"I1\", 0, DeliveryType::NORMAL, false, factory);\n    service.recordDelivery(\"I1\", 2, DeliveryType::NORMAL, false, factory);\n    service.recordDelivery(\"I1\", 1, DeliveryType::NO_BALL, false, factory);\n    service.recordDelivery(\"I1\", 1, DeliveryType::NORMAL, true, factory);\n    MatchState afterOver1 = service.recordDelivery(\"I1\", 3, DeliveryType::NORMAL, false, factory);\n    cout << \"After over 1: runs=\" << afterOver1.totalRuns << \" wickets=\" << afterOver1.wickets << \" overs=\" << afterOver1.oversCompleted << endl;\n\n    service.recordDelivery(\"I1\", 2, DeliveryType::NORMAL, false, factory);\n    service.recordDelivery(\"I1\", 1, DeliveryType::NORMAL, false, factory);\n    service.recordDelivery(\"I1\", 0, DeliveryType::NORMAL, false, factory);\n    service.recordDelivery(\"I1\", 4, DeliveryType::NORMAL, false, factory);\n    service.recordDelivery(\"I1\", 1, DeliveryType::NORMAL, false, factory);\n    MatchState afterOver2 = service.recordDelivery(\"I1\", 6, DeliveryType::NORMAL, false, factory);\n    cout << \"After over 2: runs=\" << afterOver2.totalRuns << \" wickets=\" << afterOver2.wickets << \" overs=\" << afterOver2.oversCompleted << endl;\n\n    try {\n        service.recordDelivery(\"I1\", 1, DeliveryType::NORMAL, false, factory);\n    } catch (InningsCompleteException& e) {\n        cout << \"Caught expected: \" << e.what() << endl;\n    }\n\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Folder Structure",
+          "content": "Folder Structure"
+        },
+        {
+          "type": "paragraph",
+          "text": "A real project would split these classes across files as follows:"
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "src/main/java/cricinfo/\n  DeliveryType.java\n  Delivery.java\n  DeliveryFactory.java\n  ScoringRuleStrategy.java\n  StandardScoringRuleStrategy.java\n  MatchState.java\n  Innings.java\n  MatchObserver.java\n  ConsoleMatchObserver.java\n  MatchService.java\n  exceptions/\n    InningsCompleteException.java\n    InvalidDeliveryException.java\n    InvalidInningsException.java\n  Main.java",
+            "python": "cricinfo/\n  __init__.py\n  delivery_type.py\n  delivery.py\n  delivery_factory.py\n  scoring_rule_strategy.py\n  match_state.py\n  innings.py\n  match_observer.py\n  exceptions.py\n  match_service.py\n  main.py",
+            "cpp": "cricinfo/\n  include/\n    DeliveryType.h\n    Delivery.h\n    DeliveryFactory.h\n    ScoringRuleStrategy.h\n    MatchState.h\n    Innings.h\n    MatchObserver.h\n    Exceptions.h\n    MatchService.h\n  src/\n    DeliveryFactory.cpp\n    StandardScoringRuleStrategy.cpp\n    MatchService.cpp\n    main.cpp"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Interview Discussion Points",
+          "content": "Interview Discussion Points"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Why replay the entire log instead of maintaining a running total incrementally? Replaying from scratch guarantees the derived state can never drift out of sync with the actual sequence of events, at the cost of O(n) work per query; a production system would likely cache the last computed state and apply just the newest delivery incrementally, falling back to a full replay only when rebuilding from scratch (for example after a crash).",
+            "Why does a wide or no-ball still increment the wicket count even though it does not count as a legal ball? Because a batsman can still be run out or stumped on an illegal delivery in real cricket, so wicket-taking and over-progress are genuinely independent concerns in the rules.",
+            "How would you extend this to support byes and leg-byes? Add them as new DeliveryType values and extend the strategy's extraRuns and isLegalDelivery methods, without touching the replay loop's structure at all."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Trade-offs & Alternative Designs",
+          "content": "Trade-offs & Alternative Designs"
+        },
+        {
+          "type": "list",
+          "items": [
+            "<strong>Full log replay vs incrementally maintained state:</strong> full replay is simple and always correct by construction, at the cost of O(n) work per state query; incremental maintenance is faster per query but introduces the risk of the maintained state silently drifting from what the log actually says if an update is ever missed.",
+            "<strong>Append-only log vs mutable score fields:</strong> the append-only log preserves a complete, auditable ball-by-ball history for free (useful for full scorecards, replays, and dispute resolution), at the cost of more storage and computation than simply mutating a running total directly.",
+            "<strong>Simplified extras (no strike rotation on wides or no-balls) vs full real-world rules:</strong> the simplification keeps the derivation logic easy to reason about and test, at the cost of not perfectly matching every real cricket scoring nuance, which a production scorer would need to layer on top."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Production Considerations & Best Practices",
+          "content": "Production Considerations & Best Practices"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Persist the delivery log in an append-only table in a real database, using the schema in the Database Design section, rather than an in-memory list.",
+            "Emit delivery, wicket, over-completed, and innings-completed events to a message queue so downstream systems (live commentary, push notifications, analytics) can consume them asynchronously instead of via in-process observers.",
+            "Cache the derived state after each delivery and update it incrementally rather than replaying the full log on every single read, once innings length makes full replay noticeably slow.",
+            "Expose metrics on replay latency per innings, which would reveal exactly when the incremental-caching optimization becomes worth the added complexity."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,536 @@
+{
+  "slug": "capability-declaration",
+  "title": "Capability Declaration",
+  "content": [
+    {
+      "id": "capability-declaration",
+      "title": "Capability Declaration",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "A freshly constructed server object can technically do nothing until it tells a connecting client what it is actually willing to do."
+        },
+        {
+          "type": "paragraph",
+          "text": "That announcement happens during the initialize handshake, in a small JSON object called capabilities, and it is one of the more consequential few lines an MCP server ever sends."
+        },
+        {
+          "type": "paragraph",
+          "text": "Get it wrong and a client will either try to call something your server cannot actually serve, or, just as commonly, quietly never bother asking about something your server could have offered."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why Capabilities Exist at All",
+          "id": "cap-why-they-exist"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577187224-378960616.png",
+          "alt": "A server declares its capabilities so a client knows what to expect",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP was designed so that a server only needs to implement the pieces it actually uses. A server that only ever exposes data has no reason to implement tool call handling, and a server that is pure automation has no reason to implement resource reading. Capabilities are how a server tells a client, up front, exactly which of these pieces are actually present, so the client never has to guess or trial and error its way to an error response."
+        },
+        {
+          "type": "paragraph",
+          "text": "This matters just as much for the client side of the handshake, a client can declare its own capabilities too, for instance whether it supports receiving sampling requests from the server. Capability declaration is genuinely bidirectional, even though server side tools, resources, and prompts get most of the attention in day to day work."
+        },
+        {
+          "type": "note",
+          "title": "Capabilities are a contract, not a suggestion",
+          "content": "Once a server declares a capability, a client is entitled to rely on it being real. Declaring tools support and then having every tools/list call return an empty list is technically not a protocol violation, but it defeats the entire purpose of the declaration and will confuse any client built around it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. The Shape of the Capabilities Object",
+          "id": "cap-the-shape"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577189457-605768445.png",
+          "alt": "Tools, resources, and prompts flags together form the capabilities object",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "At the protocol level, capabilities is a JSON object nested inside the initialize response, with an optional key for each family of features a server might support. An absent key means that feature family is not supported at all, not merely empty."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"capabilities\": {\n    \"tools\": {},\n    \"resources\": { \"subscribe\": true },\n    \"prompts\": {}\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice each value is itself an object, not simply a boolean true or false. That inner object is where finer grained sub-capabilities live, resources.subscribe above signals the server additionally supports clients subscribing to change notifications for a specific resource, a strictly optional extra on top of basic resource support."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Declaring Tool Support in Python",
+          "id": "cap-declaring-tools-python"
+        },
+        {
+          "type": "paragraph",
+          "text": "In the Python SDK, you rarely construct the capabilities object by hand. Instead, the SDK inspects which decorators you have actually used, list_tools, call_tool, and so on, and builds the capabilities object for you when create_initialization_options runs."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from mcp.server import Server\nfrom mcp.types import Tool\n\nserver = Server(\"weather-server\")\n\n@server.list_tools()\nasync def list_tools() -> list[Tool]:\n    return [\n        Tool(\n            name=\"get_forecast\",\n            description=\"Get a weather forecast for a city\",\n            inputSchema={\n                \"type\": \"object\",\n                \"properties\": {\"city\": {\"type\": \"string\"}},\n                \"required\": [\"city\"]\n            }\n        )\n    ]\n\n@server.call_tool()\nasync def call_tool(name: str, arguments: dict):\n    ...\n\n# because both decorators above are present, the SDK will\n# include a non-empty \"tools\" object in the capabilities response\ninit_options = server.create_initialization_options()"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This inferred approach has a real advantage, it makes it structurally difficult to declare a capability you have not actually implemented, since the declaration is derived from the handlers you registered rather than typed out separately by hand."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Declaring Resource and Prompt Support",
+          "id": "cap-declaring-resources-prompts"
+        },
+        {
+          "type": "paragraph",
+          "text": "Resources and prompts follow the identical pattern, registering the relevant list and read or get handlers is what causes the SDK to include that family in the capabilities object. A server with no resource handlers registered will simply have no resources key in the capabilities it sends."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from mcp.types import Resource, Prompt, GetPromptResult, PromptMessage, TextContent\n\n@server.list_resources()\nasync def list_resources() -> list[Resource]:\n    return [Resource(uri=\"weather://cities\", name=\"Supported Cities\", mimeType=\"text/plain\")]\n\n@server.read_resource()\nasync def read_resource(uri: str) -> str:\n    return \"london, paris, tokyo, new-york\"\n\n@server.list_prompts()\nasync def list_prompts() -> list[Prompt]:\n    return [Prompt(name=\"forecast_summary\", description=\"Summarize a forecast in plain language\")]\n\n@server.get_prompt()\nasync def get_prompt(name: str, arguments: dict) -> GetPromptResult:\n    return GetPromptResult(messages=[\n        PromptMessage(role=\"user\", content=TextContent(type=\"text\", text=\"Summarize this forecast simply.\"))\n    ])"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "With all six handlers above registered, the resulting capabilities object will carry all three keys, tools, resources, and prompts, each populated because the corresponding handlers actually exist on the server object."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Declaring Capabilities Explicitly in TypeScript",
+          "id": "cap-typescript-explicit"
+        },
+        {
+          "type": "paragraph",
+          "text": "The TypeScript SDK takes a more explicit approach, capabilities are passed directly as a constructor argument rather than inferred from which handlers you later attach. This means it is technically possible in TypeScript to declare a capability and forget to implement its handler, which the Python SDK's inference approach structurally prevents."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "typescript",
+            "content": "import { Server } from \"@modelcontextprotocol/sdk/server/index.js\";\n\nconst server = new Server(\n  { name: \"weather-server\", version: \"1.0.0\" },\n  {\n    capabilities: {\n      tools: {},\n      resources: { subscribe: false },\n      prompts: {}\n    }\n  }\n);"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Keep declarations and handlers in sync manually in TypeScript",
+          "content": "Because TypeScript capability declaration is explicit rather than inferred, it is worth a code review habit, or a small startup assertion, checking that every declared capability actually has a matching request handler registered before the server ships."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. The subscribe Sub-Capability for Resources",
+          "id": "cap-subscribe-subcapability"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577191180-459207721.png",
+          "alt": "A subscribe sub capability sits nested under resources",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Resources have one particularly useful sub-capability worth calling out on its own, subscribe, which signals a server supports clients registering interest in a specific resource and receiving a notification whenever its content changes, rather than needing to poll it repeatedly."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "@server.subscribe_resource()\nasync def subscribe_resource(uri: str):\n    active_subscriptions.add(uri)\n\n# elsewhere, whenever the underlying data actually changes\nasync def notify_resource_changed(uri: str):\n    if uri in active_subscriptions:\n        await server.request_context.session.send_resource_updated(uri)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A server that implements subscribe_resource but forgets to declare resources.subscribe as true in its capabilities is technically broken, a client has no reason to ever call subscribe on a resource it was never told supports it, so the whole feature would sit unused."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. What a Client Does With Declared Capabilities",
+          "id": "cap-what-client-does"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577192854-928632261.png",
+          "alt": "A client reads declared capabilities and decides which calls are safe to make",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "On the client side, capabilities received during initialize are usually stored once and consulted before issuing any request that depends on them. A well behaved client checks server capabilities before calling tools/list rather than calling it unconditionally and simply handling an error if the server does not support tools."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "init_result = await session.initialize()\n\nif init_result.capabilities.tools is not None:\n    tools = await session.list_tools()\nelse:\n    tools = []\n    logger.info(\"server does not support tools, skipping\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This check-first pattern matters more in a host managing several servers at once, some might support only resources, others only tools, and blindly calling every method on every server would generate a stream of avoidable error responses that a simple capability check prevents entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Capabilities and Backward Compatibility",
+          "id": "cap-backward-compatibility"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577194617-705644628.png",
+          "alt": "An old client is compared against a new client reading the same capabilities",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Capabilities also give a server room to grow without breaking existing clients. Adding a new tool to an already running server is safe, clients that already checked capabilities.tools and found it present will simply see one more entry the next time they call tools/list, nothing about the shape of the handshake needs to change."
+        },
+        {
+          "type": "paragraph",
+          "text": "The riskier direction is removing a capability a server used to declare, a client built against an older version might assume resources are always available and fail unexpectedly if a later release drops resource support entirely. Treat removing a capability with the same caution as a breaking API change, because for any client relying on it, that is exactly what it is."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Advertising Experimental Capabilities",
+          "id": "cap-experimental-capabilities"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577202949-15997930.png",
+          "alt": "An experimental capability is advertised separately from stable ones",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The specification leaves room for an experimental key inside capabilities, intended for features not yet part of the stable protocol but that a particular server and client pair might agree to use anyway. This is the escape hatch for trying new ideas without waiting for them to become part of the core spec."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"capabilities\": {\n    \"tools\": {},\n    \"experimental\": {\n      \"streamingToolResults\": { \"enabled\": true }\n    }\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Anything placed under experimental should be treated by both sides as genuinely optional and subject to change without the usual deprecation courtesy given to stable capabilities, that is precisely the tradeoff for being able to move faster on something not yet standardized."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Common Capability Declaration Bugs",
+          "id": "cap-common-bugs"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784577216913-309345920.png",
+          "alt": "A declared but unimplemented capability is a common bug",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A surprising number of real world MCP bugs trace back to a mismatch between what a server declares and what it actually does, in either direction, over-declaring or under-declaring."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Symptom\",\"Likely cause\",\"Fix\"],\"rows\":[[\"Client never calls tools/list\",\"Server never declared the tools capability\",\"Register at least one tool handler\"],[\"Client calls tools/list and gets an error\",\"Capability declared but handler missing\",\"Implement list_tools and call_tool\"],[\"Resource subscriptions silently do nothing\",\"subscribe sub-capability not declared\",\"Set resources.subscribe to true\"],[\"Client ignores a real feature your server has\",\"Capability object malformed or empty\",\"Log the exact object sent during initialize\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Inspecting Capabilities During Development",
+          "id": "cap-inspecting-during-dev"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because capabilities are just a JSON object sent once during the handshake, the fastest way to sanity check them during development is to simply log the initialization options right before run is called, or watch the initialize response directly through the MCP Inspector."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "init_options = server.create_initialization_options()\nlogger.info(\"capabilities: %s\", init_options.capabilities.model_dump())"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Doing this once per meaningful change to your handler set, adding a new tool family, removing a resource, catches the entire category of over-declaring or under-declaring bugs before a client ever gets a chance to notice."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Capability Declaration on the Client Side",
+          "id": "cap-client-side-declaration"
+        },
+        {
+          "type": "paragraph",
+          "text": "Clients declare capabilities too, most commonly whether they support sampling, letting a server ask the client's connected LLM to generate a completion on the server's behalf, and whether they support receiving log messages via notifications."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "from mcp import ClientSession\n\nasync with ClientSession(read_stream, write_stream) as session:\n    init_result = await session.initialize(\n        capabilities={\n            \"sampling\": {},\n            \"roots\": { \"listChanged\": True }\n        }\n    )"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A server that wants to use sampling should always check the client declared this capability before attempting a sampling request, exactly mirroring the check-first pattern clients use for server capabilities."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Versioning Capabilities Alongside Protocol Versions",
+          "id": "cap-versioning-alongside-protocol"
+        },
+        {
+          "type": "paragraph",
+          "text": "The protocolVersion field sent alongside capabilities during initialize is a separate concern worth distinguishing clearly, it identifies which revision of the MCP specification itself a party understands, while capabilities describe what that specific server or client instance actually implements within that revision."
+        },
+        {
+          "type": "paragraph",
+          "text": "A server should always check the protocol version a client proposes and be prepared to negotiate down to an older, mutually understood version if needed, rather than assuming every connecting client speaks the exact same revision the server was built against."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "SUPPORTED_VERSIONS = [\"2024-11-05\", \"2024-10-07\"]\n\ndef negotiate_version(client_version: str) -> str:\n    if client_version in SUPPORTED_VERSIONS:\n        return client_version\n    return SUPPORTED_VERSIONS[0]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Documenting Your Server Capabilities for Humans",
+          "id": "cap-documenting-for-humans"
+        },
+        {
+          "type": "paragraph",
+          "text": "Beyond the machine readable JSON, it is worth keeping a short human readable summary of what a server supports, in a README or a project wiki, especially once a server has grown past a handful of tools. A capabilities object tells a client program what is available, it does not explain to a person integrating with your server why."
+        },
+        {
+          "type": "list",
+          "items": [
+            "List each tool, resource family, and prompt the server exposes, in plain language.",
+            "Note any sub-capabilities in use, like resource subscriptions, and what triggers a notification.",
+            "Mention the protocol versions actually tested against, not just the one used during development.",
+            "Flag anything under experimental clearly, so integrators know not to depend on it long term."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Testing That Declared Capabilities Match Reality",
+          "id": "cap-testing-declarations"
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful automated test, easy to skip but valuable to have, asserts that every capability a server declares actually has a working handler behind it, catching the over-declaring failure mode before it ever reaches a real client."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import pytest\n\n@pytest.mark.asyncio\nasync def test_declared_tools_capability_has_working_handlers(server):\n    options = server.create_initialization_options()\n    if options.capabilities.tools is not None:\n        tools = await server.list_tools_handler()\n        assert len(tools) > 0, \"tools capability declared but no tools registered\""
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Running this kind of check as part of continuous integration turns a manual review habit into something that fails a build automatically, which scales far better once several people are contributing tools to the same server over time."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Capabilities in a Multi-Server Host",
+          "id": "cap-multi-server-host"
+        },
+        {
+          "type": "paragraph",
+          "text": "A host application connected to several MCP servers at once ends up holding a small table of capabilities, one row per server, and this table typically drives the host's own user interface, showing which connected servers offer tools a user can invoke versus ones that only expose read only resources."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "server_capabilities = {}\n\nasync def connect_and_record(name: str, session):\n    init_result = await session.initialize()\n    server_capabilities[name] = init_result.capabilities\n\ndef servers_supporting_tools() -> list[str]:\n    return [name for name, caps in server_capabilities.items() if caps.tools is not None]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This pattern, covered in much more depth in Multi-Server Support later in the Building MCP Clients module, is exactly why keeping capability declarations accurate matters beyond any single connection, a host aggregating across many servers propagates any mismatch straight into whatever it shows a user."
+        },
+        {
+          "type": "note",
+          "title": "A capability check is cheap, an error round trip is not",
+          "content": "Checking a stored capabilities object is a local, synchronous lookup. Calling a method the server never actually supports means a full request, a network or pipe round trip, and an error response, only to learn something a client already had the information to know in advance."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: A Server That Declares Only What It Implements",
+          "id": "cap-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is a complete, small server that implements only tools and prompts, deliberately leaving out resources, and shows exactly what its resulting capabilities object looks like as a result."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport logging\nimport sys\n\nfrom mcp.server import Server\nfrom mcp.types import Tool, Prompt, GetPromptResult, PromptMessage, TextContent\nimport mcp.server.stdio\n\nlogging.basicConfig(level=logging.INFO, stream=sys.stderr)\nlogger = logging.getLogger(\"units-server\")\n\nserver = Server(\"units-server\", version=\"1.0.0\")\n\n\n@server.list_tools()\nasync def list_tools() -> list[Tool]:\n    return [Tool(\n        name=\"convert_celsius_to_fahrenheit\",\n        description=\"Convert a Celsius temperature to Fahrenheit\",\n        inputSchema={\"type\": \"object\", \"properties\": {\"celsius\": {\"type\": \"number\"}}, \"required\": [\"celsius\"]}\n    )]\n\n\n@server.call_tool()\nasync def call_tool(name: str, arguments: dict):\n    if name == \"convert_celsius_to_fahrenheit\":\n        f = arguments[\"celsius\"] * 9 / 5 + 32\n        return [TextContent(type=\"text\", text=f\"{f} F\")]\n    raise ValueError(f\"unknown tool: {name}\")\n\n\n@server.list_prompts()\nasync def list_prompts() -> list[Prompt]:\n    return [Prompt(name=\"explain_conversion\", description=\"Explain a unit conversion in plain language\")]\n\n\n@server.get_prompt()\nasync def get_prompt(name: str, arguments: dict) -> GetPromptResult:\n    return GetPromptResult(messages=[\n        PromptMessage(role=\"user\", content=TextContent(type=\"text\", text=\"Explain this temperature conversion simply.\"))\n    ])\n\n\nasync def main():\n    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):\n        init_options = server.create_initialization_options()\n        logger.info(\"capabilities: %s\", init_options.capabilities.model_dump())\n        await server.run(read_stream, write_stream, init_options)\n\n\nif __name__ == \"__main__\":\n    asyncio.run(main())"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Running this server and inspecting its logged capabilities will show tools and prompts present, and resources absent entirely, exactly matching the six handlers actually registered above, no more, no less. It is worth pausing on how little ceremony this takes, the capabilities object is entirely a byproduct of which decorators exist in the file, nothing separate to keep in sync by hand."
+        },
+        {
+          "type": "paragraph",
+          "text": "If you later add a resources capability to this same server, the very same logging line will pick it up automatically the next time the server starts, without any change to the logging code itself, which is a small but genuinely convenient property of the inference based approach."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "cap-common-mistakes"
+        },
+        {
+          "type": "paragraph",
+          "text": "Capability declaration bugs tend to be quiet rather than loud, which is exactly what makes them worth watching for deliberately."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Declaring a capability, especially in TypeScript where it is explicit, without actually registering the handlers behind it.",
+            "Forgetting to set resources.subscribe to true after implementing subscription support, leaving the feature unreachable.",
+            "Assuming capabilities never change across a server's lifetime and never re-checking them after an upgrade.",
+            "Hardcoding assumptions on the client side about which servers support which capabilities instead of checking the actual initialize response.",
+            "Treating the experimental namespace as stable and building critical functionality on top of it.",
+            "Never logging the actual capabilities object during development, only discovering a mismatch once a real client complains."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Capabilities are checked once, not per request",
+          "content": "A client typically stores the capabilities object once, right after initialize completes, and consults that stored copy for the lifetime of the connection. There is no need, and no mechanism, to re-request capabilities before every single call."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "cap-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take the units-server worked example above and deliberately break it, comment out the call_tool decorator while leaving list_tools in place, then connect with the MCP Inspector and observe what happens when you try to actually call the tool."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "# expected: tools/list still returns convert_celsius_to_fahrenheit,\n# but calling it returns a protocol error, since no call_tool handler exists\n# this is exactly the over-declaring bug described above, reproduced deliberately"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "Stretch goal one: add a resources capability with one static resource, and confirm the capabilities object gains a resources key without touching any other code.",
+            "Stretch goal two: write the automated test from section 15 against this server and confirm it fails while call_tool is commented out, then passes once restored."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "list",
+          "items": [
+            "Stretch goal three: on the client side, write a helper that prints a one line summary of every capability a connected server declared, formatted for a terminal."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "cap-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Capability declaration is the moment a server draws an honest, machine readable boundary around what it can actually do, tools, resources, prompts, and any sub-capabilities like resource subscriptions. Whether that declaration is inferred automatically, as in Python, or written explicitly, as in TypeScript, keeping it truthful is what lets a client build sensible behavior on top of it without trial and error."
+        },
+        {
+          "type": "paragraph",
+          "text": "With a server able to introduce itself accurately, the next lessons in this module, Resource Registration and Tool Registration, turn to actually building the handlers behind each of those declared capabilities."
+        }
+      ]
+    }
+  ]
+}

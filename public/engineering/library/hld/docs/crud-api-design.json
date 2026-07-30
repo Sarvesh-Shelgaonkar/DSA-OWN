@@ -1,0 +1,568 @@
+{
+  "slug": "crud-api-design",
+  "title": "CRUD API Design Deep Dive",
+  "content": [
+    {
+      "id": "crud-api-design",
+      "title": "CRUD API Design Deep Dive",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Every API you have ever used, whether it manages users, orders, or blog posts, comes down to four operations underneath: create a thing, read a thing, update a thing, delete a thing. That is CRUD, and it sounds almost too simple to deserve a deep dive."
+        },
+        {
+          "type": "paragraph",
+          "content": "Yet CRUD is where most real API bugs actually live. Wrong status codes, updates that silently overwrite fields nobody meant to touch, deletes that are not really deletes, retries that create the same order twice. Getting the mechanics of Create, Read, Update, and Delete right is the difference between an API that feels solid and one that quietly corrupts data in production."
+        },
+        {
+          "type": "paragraph",
+          "content": "This platform already has separate lessons on <strong>REST API Design</strong>, <strong>Idempotency</strong>, and <strong>Pagination and Filtering</strong>. We lean on those rather than repeat them. Here we go one level deeper into CRUD itself: the exact verb and status code for each operation, how partial updates should behave, bulk operations, soft versus hard delete, and how to stop two people from silently overwriting each other's changes."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396529742-393450332.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396529742-393450332.png",
+          "alt": "The four CRUD operations mapped to HTTP verbs and status codes"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. The Four Operations and Their Verbs",
+          "text": "1. The Four Operations and Their Verbs"
+        },
+        {
+          "type": "paragraph",
+          "content": "CRUD maps cleanly onto HTTP, but not as a one to one translation. Create becomes <strong>POST</strong>, Read becomes <strong>GET</strong>, Update splits across <strong>PUT</strong> and <strong>PATCH</strong> depending on whether you are replacing or merging, and Delete becomes <strong>DELETE</strong>. Four operations, five verbs, because update genuinely has two different meanings."
+        },
+        {
+          "type": "paragraph",
+          "content": "Picking the right verb is only half the job. The status code you return afterward is what actually tells the client what happened: whether something was created, whether it already existed, whether the request even made sense. A CRUD API that always returns 200 for everything forces every client to guess."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Operation\",\"Verb\",\"Typical status\"],\"rows\":[[\"Create\",\"POST\",\"201 Created\"],[\"Read one\",\"GET\",\"200 OK or 404 Not Found\"],[\"Read many\",\"GET\",\"200 OK, empty array if none\"],[\"Replace\",\"PUT\",\"200 OK or 204 No Content\"],[\"Partial update\",\"PATCH\",\"200 OK or 204 No Content\"],[\"Delete\",\"DELETE\",\"204 No Content\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Verb plus status code, not verb alone",
+          "content": "The verb tells the server what kind of operation this is. The status code tells the client what actually happened. You need both to be correct, and a surprising number of production APIs get the second one wrong even when the first is right."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Create: POST and the 201 Status",
+          "text": "2. Create: POST and the 201 Status"
+        },
+        {
+          "type": "paragraph",
+          "content": "A well behaved create endpoint accepts a POST with the new resource's fields in the body, and on success returns <strong>201 Created</strong>, not 200. The 201 status specifically means a new resource now exists, and the response should include that resource along with a <strong>Location</strong> header pointing at its new URL."
+        },
+        {
+          "type": "code",
+          "content": "POST /users\n{ \"name\": \"Riya\", \"email\": \"riya@example.com\" }\n\nHTTP/1.1 201 Created\nLocation: /users/482\n{ \"id\": 482, \"name\": \"Riya\", \"email\": \"riya@example.com\", \"createdAt\": \"...\" }",
+          "code": {
+            "language": "text",
+            "content": "POST /users\n{ \"name\": \"Riya\", \"email\": \"riya@example.com\" }\n\nHTTP/1.1 201 Created\nLocation: /users/482\n{ \"id\": 482, \"name\": \"Riya\", \"email\": \"riya@example.com\", \"createdAt\": \"...\" }"
+          },
+          "codes": {
+            "text": "POST /users\n{ \"name\": \"Riya\", \"email\": \"riya@example.com\" }\n\nHTTP/1.1 201 Created\nLocation: /users/482\n{ \"id\": 482, \"name\": \"Riya\", \"email\": \"riya@example.com\", \"createdAt\": \"...\" }"
+          }
+        },
+        {
+          "type": "note",
+          "title": "The missing Location header",
+          "content": "Returning 201 without a Location header is one of the most common create mistakes. The client just made something new and now has to guess where it lives. Always point at it."
+        },
+        {
+          "type": "paragraph",
+          "content": "Not every POST is a create, though. POST is also used for actions that are not resource creation at all, things like triggering a password reset or cancelling an order. Those endpoints should return <strong>200 OK</strong> with a result body, since nothing new was actually created. Reserve 201 for the moment a new resource genuinely comes into existence."
+        },
+        {
+          "type": "paragraph",
+          "content": "Duplicate creates deserve a real answer too. If a client tries to create a user with an email that already exists, returning 500 or a generic 400 leaves them guessing. Return <strong>409 Conflict</strong> with a message that names the conflicting field, so the client can decide whether to retry with different data or treat it as success."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Read: GET, 404, and the Null Question",
+          "text": "3. Read: GET, 404, and the Null Question"
+        },
+        {
+          "type": "paragraph",
+          "content": "GET is the simplest verb and the one with the strictest rules: it must be safe, meaning it never changes state, and it should be cacheable. A GET that quietly increments a view counter or writes an audit row is technically fine, but a GET that modifies the resource it is reading is a design smell."
+        },
+        {
+          "type": "paragraph",
+          "content": "For a single resource, the rule is clean: the resource exists, so return <strong>200</strong> with its data, or it does not, so return <strong>404</strong>. The mistake to avoid is returning 200 with a null or empty body when a resource is missing. That forces every client to inspect the body just to learn what an HTTP status code already exists to communicate."
+        },
+        {
+          "type": "paragraph",
+          "content": "A 200 with a null field is different from a 200 with a null resource, and this distinction trips people up. If a user resource exists but its optional middle name is unset, that is a normal 200 with a null field inside a real object. If the user does not exist at all, that is a 404, full stop."
+        },
+        {
+          "type": "paragraph",
+          "content": "Collections behave differently. A GET on a list endpoint that matches zero results is not an error, it is a completely successful query that happens to have no results, so it returns <strong>200</strong> with an empty array, never a 404. Pagination, filtering, and sorting on list endpoints are covered in depth in the Pagination and Filtering lesson."
+        },
+        {
+          "type": "paragraph",
+          "content": "GET also supports conditional requests. A server can attach an <strong>ETag</strong> to a resource, and a client can send that value back in an <strong>If-None-Match</strong> header on the next read. If nothing changed, the server replies with <strong>304 Not Modified</strong> and an empty body instead of resending data the client already has. We come back to ETags shortly, since the same header does double duty for concurrency control on writes."
+        },
+        {
+          "type": "note",
+          "title": "304 saves bandwidth, it is not an error",
+          "content": "A 304 response means the client's cached copy is still correct. Treat it as a successful read, not a failure, and skip re-parsing the body entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Full Replace with PUT",
+          "text": "4. Full Replace with PUT"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>PUT</strong> means replace. The client sends the entire representation of the resource as they want it to exist, and the server overwrites the existing resource with exactly that. Anything the client omits from the body is treated as absent, not as unchanged."
+        },
+        {
+          "type": "code",
+          "content": "PUT /users/482\n{ \"name\": \"Riya Sharma\", \"email\": \"riya@example.com\", \"role\": \"admin\" }\n\nHTTP/1.1 200 OK\n{ \"id\": 482, \"name\": \"Riya Sharma\", \"email\": \"riya@example.com\", \"role\": \"admin\" }",
+          "code": {
+            "language": "text",
+            "content": "PUT /users/482\n{ \"name\": \"Riya Sharma\", \"email\": \"riya@example.com\", \"role\": \"admin\" }\n\nHTTP/1.1 200 OK\n{ \"id\": 482, \"name\": \"Riya Sharma\", \"email\": \"riya@example.com\", \"role\": \"admin\" }"
+          },
+          "codes": {
+            "text": "PUT /users/482\n{ \"name\": \"Riya Sharma\", \"email\": \"riya@example.com\", \"role\": \"admin\" }\n\nHTTP/1.1 200 OK\n{ \"id\": 482, \"name\": \"Riya Sharma\", \"email\": \"riya@example.com\", \"role\": \"admin\" }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The mistake teams make constantly is using PUT as if it were a partial update. A client sends only the two fields it wants to change, the server dutifully replaces the whole resource with just those two fields, and every field the client did not mention silently gets wiped out or reset to a default. This is a real, common source of data loss bugs, not a theoretical one."
+        },
+        {
+          "type": "paragraph",
+          "content": "PUT is idempotent by definition: sending the exact same PUT request five times in a row leaves the resource in the same final state as sending it once. That property is genuinely useful, and it is worth preserving by never letting PUT accept a partial body."
+        },
+        {
+          "type": "paragraph",
+          "content": "PUT has one more trick worth knowing: because the client, not the server, typically decides the resource's identifier in a PUT request, PUT can double as an <strong>upsert</strong>, creating the resource if it does not yet exist at that URL and replacing it if it does. This only makes sense when the client is allowed to choose the id, such as a key value store or a file path style resource, and it should return 201 for the create case and 200 for the replace case."
+        },
+        {
+          "type": "note",
+          "title": "PUT upsert is the exception, not the rule",
+          "content": "Most resource oriented APIs let the server assign ids, in which case PUT can only ever replace, never create, and a PUT to an unknown id should return 404. Only offer upsert semantics when the client genuinely owns the identifier."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Partial Update with PATCH",
+          "text": "5. Partial Update with PATCH"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>PATCH</strong> exists precisely for the case PUT handles badly: changing a couple of fields without having to resend the entire resource. The client sends only what is changing, and the server merges those fields into the existing resource rather than replacing it wholesale."
+        },
+        {
+          "type": "code",
+          "content": "PATCH /users/482\n{ \"role\": \"admin\" }\n\nHTTP/1.1 200 OK\n{ \"id\": 482, \"name\": \"Riya Sharma\", \"email\": \"riya@example.com\", \"role\": \"admin\" }",
+          "code": {
+            "language": "text",
+            "content": "PATCH /users/482\n{ \"role\": \"admin\" }\n\nHTTP/1.1 200 OK\n{ \"id\": 482, \"name\": \"Riya Sharma\", \"email\": \"riya@example.com\", \"role\": \"admin\" }"
+          },
+          "codes": {
+            "text": "PATCH /users/482\n{ \"role\": \"admin\" }\n\nHTTP/1.1 200 OK\n{ \"id\": 482, \"name\": \"Riya Sharma\", \"email\": \"riya@example.com\", \"role\": \"admin\" }"
+          }
+        },
+        {
+          "type": "heading3",
+          "content": "JSON Merge Patch",
+          "text": "JSON Merge Patch"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most APIs implement PATCH informally as a merge: whatever keys are present in the body get updated, everything else stays as it was. This loose style, formalized as <strong>RFC 7396</strong>, is called <strong>JSON Merge Patch</strong>. It is easy to read, easy to generate on the client, and covers the overwhelming majority of real world partial update needs."
+        },
+        {
+          "type": "heading3",
+          "content": "JSON Patch",
+          "text": "JSON Patch"
+        },
+        {
+          "type": "paragraph",
+          "content": "A stricter alternative, <strong>RFC 6902</strong>'s <strong>JSON Patch</strong>, describes a literal sequence of operations such as replace, add, and remove against specific paths in the document, for example replacing the value at /role or removing an item at /tags/2. It gives precise, order sensitive edits, including operations a merge cannot express cleanly like reordering an array, at the cost of a more verbose and less human friendly body."
+        },
+        {
+          "type": "paragraph",
+          "content": "There is a classic trap hiding in merge style patches: how do you tell the server \"clear this field\" versus \"I did not mention this field, leave it alone\"? If your merge logic treats a missing key and a null value the same way, a client trying to explicitly clear a field cannot do it. The usual fix is to treat an explicit null in the body as \"set to null,\" and a genuinely absent key as \"leave unchanged.\""
+        },
+        {
+          "type": "note",
+          "title": "Merge patch needs a real diff, not a blind overwrite",
+          "content": "A naive implementation that just does Object.assign on the stored document and the incoming body will misbehave on nested objects and arrays. Decide field by field how a partial update should combine with what is already stored."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. PUT vs PATCH: Choosing Correctly",
+          "text": "6. PUT vs PATCH: Choosing Correctly"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785276136202-507156015.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785276136202-507156015.png",
+          "alt": "PUT replaces the whole resource, PATCH merges only the fields it receives"
+        },
+        {
+          "type": "paragraph",
+          "content": "The choice is really a question about what the client is trying to say. If the client has the full picture of what the resource should look like and wants to declare it outright, PUT is correct. If the client only knows about, and only wants to touch, a couple of fields, PATCH is correct."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"PUT\",\"PATCH\"],\"rows\":[[\"Body content\",\"Entire resource\",\"Only changed fields\"],[\"Missing fields\",\"Cleared or defaulted\",\"Left untouched\"],[\"Idempotent\",\"Yes, by definition\",\"Usually, if merge logic is deterministic\"],[\"Typical use\",\"Settings forms, full edits\",\"Toggling a status, updating one field\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "A practical rule that avoids most confusion: never let PUT accept a partial body, and never let PATCH silently behave like PUT by requiring the whole object. If your frontend team keeps sending partial PUT requests, that is usually a sign the API should expose PATCH instead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Delete: 204, 200, and Idempotency",
+          "text": "7. Delete: 204, 200, and Idempotency"
+        },
+        {
+          "type": "paragraph",
+          "content": "A successful DELETE typically returns <strong>204 No Content</strong>. The resource is gone, there is nothing left to describe, and an empty body communicates that cleanly. Returning 200 with a body is also valid when you want to hand back a summary, such as the deleted resource itself for an undo feature, or a count of how many related rows were also removed."
+        },
+        {
+          "type": "paragraph",
+          "content": "The interesting question is what happens on the second DELETE of the same resource. DELETE is supposed to be idempotent, meaning the end state after calling it once or five times should be identical: the resource does not exist. Some APIs return 404 on the second call because the resource is genuinely gone. Others return 204 again, reasoning that the client's desired end state, a missing resource, was already achieved and there is nothing to complain about."
+        },
+        {
+          "type": "paragraph",
+          "content": "Either answer is defensible, but pick one and apply it consistently across your whole API. Returning 204 for a repeat delete is the friendlier choice for clients that retry on network failure, since a retried delete then never looks like an error."
+        },
+        {
+          "type": "paragraph",
+          "content": "Deleting a resource that other rows reference is where DELETE gets genuinely hard. Deleting a user who has orders, comments, and payment records means deciding whether related rows cascade with them, get their foreign key nulled out, or block the delete entirely until the caller removes the dependents first. This decision belongs in the API's documented behavior, not left to whatever the database's default foreign key constraint happens to do."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Idempotency Across the Four Verbs",
+          "text": "8. Idempotency Across the Four Verbs"
+        },
+        {
+          "type": "paragraph",
+          "content": "The Idempotency lesson on this platform covers the full mechanism, including idempotency keys, in depth, so we will not repeat it here. What matters for CRUD specifically is knowing which verbs are idempotent by specification and which are not."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Verb\",\"Idempotent by spec\",\"Notes\"],\"rows\":[[\"GET\",\"Yes\",\"Reading twice returns the same result and changes nothing\"],[\"PUT\",\"Yes\",\"Replacing with the same body twice yields the same final state\"],[\"DELETE\",\"Yes\",\"The end state, a missing resource, does not change on repeat\"],[\"PATCH\",\"Usually\",\"Depends on the merge logic; incrementing a counter in a patch would not be\"],[\"POST\",\"No\",\"Each call is meant to create a new resource by default\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "POST is the one that causes real damage when it is not idempotent and the network retries it anyway. A payment POST retried after a timeout can charge a customer twice even though the request body was identical both times. That is exactly the problem <strong>idempotency keys</strong> solve, and it is the subject of the dedicated Idempotency lesson."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Shaping Request and Response Bodies",
+          "text": "9. Shaping Request and Response Bodies"
+        },
+        {
+          "type": "heading3",
+          "content": "Naming and typing consistency",
+          "text": "Naming and typing consistency"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consistency across endpoints matters more than any single convention you pick. A field named userId on one endpoint and user_id on another forces every client to special case your API. Choose one casing convention and hold the line everywhere, and never let a field change type between endpoints, such as an id that arrives as a number from one route and a string from another."
+        },
+        {
+          "type": "heading3",
+          "content": "Envelope or bare resource",
+          "text": "Envelope or bare resource"
+        },
+        {
+          "type": "paragraph",
+          "content": "Some APIs wrap every response in an envelope, such as a top level data key alongside meta and error keys. Others return the resource directly with no wrapper at all. Both are legitimate choices, but an envelope tends to pay for itself once you need to attach pagination metadata or request tracing information alongside the actual payload, which a bare resource has no natural place for."
+        },
+        {
+          "type": "paragraph",
+          "content": "A create or update should return the resulting resource in the response body, not just a success flag. If a client has to make a follow up GET just to see what the server actually stored, including any server generated fields like timestamps or computed values, that is an extra round trip your API is forcing on every single caller."
+        },
+        {
+          "type": "code",
+          "content": "{\n  \"error\": {\n    \"code\": \"VALIDATION_ERROR\",\n    \"message\": \"email is required\",\n    \"field\": \"email\"\n  }\n}",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"error\": {\n    \"code\": \"VALIDATION_ERROR\",\n    \"message\": \"email is required\",\n    \"field\": \"email\"\n  }\n}"
+          },
+          "codes": {
+            "json": "{\n  \"error\": {\n    \"code\": \"VALIDATION_ERROR\",\n    \"message\": \"email is required\",\n    \"field\": \"email\"\n  }\n}"
+          }
+        },
+        {
+          "type": "list",
+          "content": "[\"Use one casing convention for field names across every endpoint, not just within one resource.\",\"Return the full resulting resource after a create, update, or patch, so no follow up GET is needed.\",\"Use one consistent error object shape everywhere, with a machine readable code and a human readable message.\",\"Never change a field's type between endpoints or versions, such as an id that is a number in one place and a string in another.\"]",
+          "items": [
+            "Use one casing convention for field names across every endpoint, not just within one resource.",
+            "Return the full resulting resource after a create, update, or patch, so no follow up GET is needed.",
+            "Use one consistent error object shape everywhere, with a machine readable code and a human readable message.",
+            "Never change a field's type between endpoints or versions, such as an id that is a number in one place and a string in another."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Bulk Operations",
+          "text": "10. Bulk Operations"
+        },
+        {
+          "type": "paragraph",
+          "content": "A client that needs to create, update, or delete a hundred resources should not have to make a hundred requests. Bulk endpoints exist to collapse that into one round trip, but they introduce a question that single item endpoints never have to answer: what happens when some items succeed and others fail?"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785276137864-152600563.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785276137864-152600563.png",
+          "alt": "A bulk request where individual items can succeed or fail independently"
+        },
+        {
+          "type": "paragraph",
+          "content": "Two designs are common. An all or nothing bulk endpoint wraps every item in a single transaction, so either all of them apply or none do, which is simple to reason about but means one bad item blocks everyone else's valid work. A best effort bulk endpoint processes each item independently and reports a per item result, which is more forgiving but pushes the responsibility of checking each result back onto the client."
+        },
+        {
+          "type": "code",
+          "content": "POST /users/bulk\n{ \"users\": [ {...}, {...}, {...} ] }\n\nHTTP/1.1 207 Multi-Status\n{\n  \"results\": [\n    { \"status\": 201, \"id\": 501 },\n    { \"status\": 409, \"error\": \"email already exists\" },\n    { \"status\": 201, \"id\": 502 }\n  ]\n}",
+          "code": {
+            "language": "text",
+            "content": "POST /users/bulk\n{ \"users\": [ {...}, {...}, {...} ] }\n\nHTTP/1.1 207 Multi-Status\n{\n  \"results\": [\n    { \"status\": 201, \"id\": 501 },\n    { \"status\": 409, \"error\": \"email already exists\" },\n    { \"status\": 201, \"id\": 502 }\n  ]\n}"
+          },
+          "codes": {
+            "text": "POST /users/bulk\n{ \"users\": [ {...}, {...}, {...} ] }\n\nHTTP/1.1 207 Multi-Status\n{\n  \"results\": [\n    { \"status\": 201, \"id\": 501 },\n    { \"status\": 409, \"error\": \"email already exists\" },\n    { \"status\": 201, \"id\": 502 }\n  ]\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "The <strong>207 Multi-Status</strong> code, borrowed from WebDAV, exists exactly for this mixed outcome case, though plenty of production APIs simply return 200 with a per item results array instead, since 207 is unfamiliar to many client libraries. Elasticsearch's bulk API and Stripe's batch endpoints both follow this best effort, per item result shape."
+        },
+        {
+          "type": "paragraph",
+          "content": "Ordering matters too. If item three in a bulk request depends on item one having already been created, a best effort implementation needs to process the batch sequentially rather than in parallel, or make dependencies explicit and reject batches that reference something not yet created. Document whether your bulk endpoint preserves request order in its results array, since a client matching results back to inputs by position will break silently if it does not."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Soft Delete vs Hard Delete",
+          "text": "11. Soft Delete vs Hard Delete"
+        },
+        {
+          "type": "paragraph",
+          "content": "A <strong>hard delete</strong> physically removes the row. A <strong>soft delete</strong> instead sets a deletedAt timestamp on the row and leaves the data in place, while every normal read query filters out rows where deletedAt is set. From the outside, a soft deleted resource looks gone; internally, it is still sitting there."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785276139424-613209394.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785276139424-613209394.png",
+          "alt": "Soft delete keeps the row and flags it, hard delete removes it entirely"
+        },
+        {
+          "type": "paragraph",
+          "content": "Soft delete buys you an audit trail, the ability to undo a mistaken delete, and safety against foreign key references pointing at rows that suddenly vanish. The cost is that every single query touching that table now needs the deletedAt filter, and unique constraints get awkward: if a user's email must be unique but the user is only soft deleted, a new signup with that same email will collide against a row nobody can see anymore."
+        },
+        {
+          "type": "paragraph",
+          "content": "Regulations like GDPR's right to be forgotten mean soft delete alone is sometimes not legally sufficient, since the data still physically exists. A common pattern is to soft delete immediately for the everyday undo case, then run a scheduled job that hard deletes anything past a retention window, giving you both the convenience and the compliance."
+        },
+        {
+          "type": "note",
+          "title": "Pick per resource, not per API",
+          "content": "Not every table needs soft delete. Audit heavy resources like orders or user accounts usually benefit from it. Purely transient data, like a rate limit counter, gains nothing from keeping a tombstone around."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Concurrency Control on Updates",
+          "text": "12. Concurrency Control on Updates"
+        },
+        {
+          "type": "paragraph",
+          "content": "Two people open the same record, both edit different fields, and both save. Without any protection, whichever write lands second silently overwrites the first person's change, and nobody gets an error. This is the <strong>lost update problem</strong>, and it is one of the most underrated bugs in CRUD APIs."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785276141156-415143349.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785276141156-415143349.png",
+          "alt": "Two clients editing the same version conflict, the second write is rejected"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Optimistic concurrency control</strong> solves this without locking anything. Every resource carries a version, often a simple integer or an <strong>ETag</strong>. When a client updates a resource, it sends back the version it originally read, typically via an <strong>If-Match</strong> header. The server checks that the current version still matches before writing, and rejects the update with <strong>409 Conflict</strong> or <strong>412 Precondition Failed</strong> if someone else updated it in between."
+        },
+        {
+          "type": "code",
+          "content": "PATCH /documents/9\nIf-Match: \"v7\"\n{ \"title\": \"New title\" }\n\nHTTP/1.1 412 Precondition Failed\n{ \"error\": \"resource has changed, refetch and retry\" }",
+          "code": {
+            "language": "text",
+            "content": "PATCH /documents/9\nIf-Match: \"v7\"\n{ \"title\": \"New title\" }\n\nHTTP/1.1 412 Precondition Failed\n{ \"error\": \"resource has changed, refetch and retry\" }"
+          },
+          "codes": {
+            "text": "PATCH /documents/9\nIf-Match: \"v7\"\n{ \"title\": \"New title\" }\n\nHTTP/1.1 412 Precondition Failed\n{ \"error\": \"resource has changed, refetch and retry\" }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Pessimistic concurrency control</strong> takes the opposite approach: acquire a lock on the row before reading it for update, hold that lock until the write commits, and make every other writer wait. It fully prevents the lost update problem but at the cost of throughput, and a slow or stuck request can hold a lock far longer than intended. In web APIs, optimistic concurrency is by far the more common choice; pessimistic locking tends to live inside a single database transaction rather than across an HTTP request."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Optimistic\",\"Pessimistic\"],\"rows\":[[\"Mechanism\",\"Version check on write\",\"Lock held during the operation\"],[\"Blocking\",\"None, conflicts are rejected after the fact\",\"Other writers wait for the lock\"],[\"Best for\",\"Web APIs, low contention resources\",\"Short database transactions, high contention\"],[\"Failure mode\",\"Client must refetch and retry\",\"Client waits or times out\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "content": "Not every resource needs this. A single user's private notes are rarely edited by two clients at once, so adding version checks there is often unnecessary complexity. Reach for optimistic concurrency specifically on resources multiple actors realistically touch at the same time, such as shared documents, inventory counts, or account balances."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "13. Common CRUD Mistakes",
+          "text": "13. Common CRUD Mistakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most CRUD bugs are not exotic. They are the same handful of mistakes repeated across companies and codebases, and most of them are easy to catch once you know to look for them."
+        },
+        {
+          "type": "list",
+          "content": "[\"Using POST for every operation and returning 200 for everything, so the client cannot tell a create from an action from an error.\",\"Returning 201 without a Location header, leaving the client to guess the URL of what it just created.\",\"Letting PUT accept a partial body, silently wiping out fields the client never intended to touch.\",\"Returning 200 with a null body instead of 404 for a missing single resource.\",\"Treating an empty list result the same as a missing resource and returning 404 from a collection endpoint.\",\"No version field or ETag on frequently edited resources, so the lost update problem goes completely unnoticed.\",\"Hard deleting a resource that other records still reference, leaving orphaned foreign keys behind.\",\"Inconsistent field casing or shape between endpoints, forcing every client to special case each one.\",\"Not returning the updated resource after a write, forcing an extra GET just to see the result.\"]",
+          "items": [
+            "Using POST for every operation and returning 200 for everything, so the client cannot tell a create from an action from an error.",
+            "Returning 201 without a Location header, leaving the client to guess the URL of what it just created.",
+            "Letting PUT accept a partial body, silently wiping out fields the client never intended to touch.",
+            "Returning 200 with a null body instead of 404 for a missing single resource.",
+            "Treating an empty list result the same as a missing resource and returning 404 from a collection endpoint.",
+            "No version field or ETag on frequently edited resources, so the lost update problem goes completely unnoticed.",
+            "Hard deleting a resource that other records still reference, leaving orphaned foreign keys behind.",
+            "Inconsistent field casing or shape between endpoints, forcing every client to special case each one.",
+            "Not returning the updated resource after a write, forcing an extra GET just to see the result."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "CRUD looks deceptively simple because the operations are simple. The status codes, the concurrency, and the partial update semantics are where the real design work happens."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "14. CRUD API Design in an Interview",
+          "text": "14. CRUD API Design in an Interview"
+        },
+        {
+          "type": "paragraph",
+          "content": "CRUD rarely gets asked about directly in a system design interview, but it shows up constantly as the underlying contract for whatever resource you are designing, whether that is a post, an order, or a document. Handling it cleanly, without being asked, signals real production experience."
+        },
+        {
+          "type": "list",
+          "content": "[\"State the verb and status code for each operation explicitly, rather than waving at REST in general terms.\",\"Call out idempotency for the write path, especially POST, and mention how retries are made safe.\",\"Mention concurrency control when the resource is something users are likely to edit simultaneously.\",\"Decide soft versus hard delete out loud, and justify it based on audit or compliance needs.\",\"Show the shape of a bulk endpoint if the scenario involves high volume writes, and explain the per item result approach.\"]",
+          "items": [
+            "State the verb and status code for each operation explicitly, rather than waving at REST in general terms.",
+            "Call out idempotency for the write path, especially POST, and mention how retries are made safe.",
+            "Mention concurrency control when the resource is something users are likely to edit simultaneously.",
+            "Decide soft versus hard delete out loud, and justify it based on audit or compliance needs.",
+            "Show the shape of a bulk endpoint if the scenario involves high volume writes, and explain the per item result approach."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "15. Common Questions",
+          "text": "15. Common Questions"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Should PATCH always be preferred over PUT?</strong> Not always. PATCH is right when a client is changing a couple of fields. PUT is right when a client genuinely has, and wants to declare, the full state of a resource, such as a settings form that submits every field every time."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Is it ever fine for POST to return 200 instead of 201?</strong> Yes, whenever the POST is not literally creating a new resource, such as an action endpoint like cancelling an order or triggering a password reset. Reserve 201 for the moment something new actually comes into existence."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Do I need an idempotency key for every POST?</strong> No, only for POST requests that have a real cost if duplicated, such as payments or order creation. Low stakes creates, like adding a comment, usually do not need one. See the Idempotency lesson for the full mechanism."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Is soft delete always the safer default?</strong> Not automatically. It is safer for audit and undo, but it adds a filter to every query and complicates unique constraints. Choose it deliberately per resource rather than applying it everywhere out of habit."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>What HTTP status should a failed partial update return?</strong> A validation failure returns 400 with details about which field failed. A version mismatch under optimistic concurrency returns 409 or 412. A missing resource returns 404. Each failure mode deserves its own distinct status."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Can PUT be used to create a resource?</strong> Only when the client, not the server, chooses the resource's identifier. In that case PUT can double as an upsert, returning 201 the first time and 200 on every replace after that. If the server assigns ids, a PUT to an id that does not exist should return 404 instead."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "16. Key Takeaways",
+          "text": "16. Key Takeaways"
+        },
+        {
+          "type": "list",
+          "content": "[\"Create returns 201 with a Location header, not a bare 200.\",\"GET returns 404 for a missing single resource, but 200 with an empty array for an empty collection.\",\"PUT replaces the whole resource and must never accept a partial body, PATCH merges only what it receives.\",\"DELETE returns 204 in the normal case, and repeat deletes should behave consistently across the whole API.\",\"GET, PUT, and DELETE are idempotent by specification, POST is not, which is exactly why idempotency keys exist.\",\"Bulk endpoints need a per item result shape, since partial success is the common case, not the exception.\",\"Soft delete trades query complexity for an audit trail and undo capability, choose it per resource.\",\"Optimistic concurrency with a version field or ETag is the standard defense against the lost update problem in web APIs.\"]",
+          "items": [
+            "Create returns 201 with a Location header, not a bare 200.",
+            "GET returns 404 for a missing single resource, but 200 with an empty array for an empty collection.",
+            "PUT replaces the whole resource and must never accept a partial body, PATCH merges only what it receives.",
+            "DELETE returns 204 in the normal case, and repeat deletes should behave consistently across the whole API.",
+            "GET, PUT, and DELETE are idempotent by specification, POST is not, which is exactly why idempotency keys exist.",
+            "Bulk endpoints need a per item result shape, since partial success is the common case, not the exception.",
+            "Soft delete trades query complexity for an audit trail and undo capability, choose it per resource.",
+            "Optimistic concurrency with a version field or ETag is the standard defense against the lost update problem in web APIs."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Master these mechanics and CRUD stops being four simple verbs and becomes what it actually is: the contract that every client of your API depends on to behave predictably, request after request."
+        }
+      ]
+    }
+  ]
+}

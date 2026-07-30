@@ -1,0 +1,569 @@
+{
+  "slug": "lambda-architecture",
+  "title": "Lambda Architecture",
+  "content": [
+    {
+      "id": "lambda-architecture",
+      "title": "Lambda Architecture",
+      "blocks": [
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Say you run a video platform and someone asks how many total views a video has. You want two things at the same time. You want the number to be correct across every view that has ever happened, and you want it to update within seconds of a new view landing."
+        },
+        {
+          "type": "paragraph",
+          "content": "Most data systems are good at giving you one of those, not both. A system built for correctness over the full history tends to be slow to update. A system built to react instantly tends to struggle to stay perfectly correct over months of data. Lambda architecture is a pattern for getting both at once, by running two different systems side by side and combining their answers."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396343748-348145904.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396343748-348145904.png",
+          "alt": "All historical data feeding a complete but slow batch answer next to recent events feeding a fast but partial stream answer",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396343748-348145904.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "One thing before anything else. This has nothing to do with AWS Lambda, the serverless compute service where you upload a function and it runs on demand. Lambda architecture is a data processing pattern from the big data world, named after the mathematical lambda calculus notion of a function, not after any AWS product. If someone brings this term up in a system design interview, they almost never mean serverless functions, so say so early and move on."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Lambda architecture combines a slow, comprehensive batch layer with a fast, partial speed layer, then merges both views to answer queries."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 What This Topic Covers",
+          "text": "1.1 What This Topic Covers"
+        },
+        {
+          "type": "paragraph",
+          "content": "By the end of this you should be able to describe the three layers, explain why this pattern fell out of fashion with some teams, and know what usually replaces it."
+        },
+        {
+          "type": "list",
+          "content": "[\"The core problem: needing both completeness and freshness at once\",\"The batch layer, the speed layer, and the serving layer\",\"How a query actually combines both views into one answer\",\"The real maintenance cost of running two implementations of the same logic\",\"How Kappa architecture responds to that cost\",\"A worked view count example with real batch and streaming code\",\"How to bring this up well in a system design interview\"]",
+          "items": [
+            "The core problem: needing both completeness and freshness at once",
+            "The batch layer, the speed layer, and the serving layer",
+            "How a query actually combines both views into one answer",
+            "The real maintenance cost of running two implementations of the same logic",
+            "How Kappa architecture responds to that cost",
+            "A worked view count example with real batch and streaming code",
+            "How to bring this up well in a system design interview"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Problem: Completeness Versus Freshness",
+          "text": "2. The Problem: Completeness Versus Freshness"
+        },
+        {
+          "type": "paragraph",
+          "content": "Picture two extreme designs for that view count system. Design one runs a nightly job over every view event ever recorded and produces an exact total. Design two processes every view event the instant it happens and keeps a running counter. Each design is simple on its own. Each one also has a real gap."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396343749-690559044.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396343749-690559044.png",
+          "alt": "A complete but slow batch path next to a fast but partial stream path, showing the tradeoff at the center of Lambda architecture",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396343749-690559044.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The nightly job gives you a number you can trust completely, but it is a full day stale by the time anyone looks at it. The running counter gives you a number that is always fresh, but keeping it exactly correct forever is much harder than it sounds, since events can arrive late, arrive twice, or need a correction after the fact."
+        },
+        {
+          "type": "note",
+          "title": "Why not just pick one",
+          "content": "Plenty of products are fine with only one of these. A quarterly finance report only needs the batch side. A live sports score only needs the stream side. Lambda architecture is for the cases where a single product genuinely needs both, like a dashboard that should be accurate over history and current within the hour."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Why Pure Batch Alone Struggles",
+          "text": "2.1 Why Pure Batch Alone Struggles"
+        },
+        {
+          "type": "paragraph",
+          "content": "A batch only system is easy to reason about and easy to get exactly right, because it processes a fixed, complete dataset in one pass. The cost is latency."
+        },
+        {
+          "type": "list",
+          "content": "[\"Users see numbers that are hours or a full day behind reality\",\"Anything that depends on a fresh signal, fraud checks, live rankings, cannot be built on batch alone\",\"A batch job that fails partway through usually means waiting for the next scheduled run\"]",
+          "items": [
+            "Users see numbers that are hours or a full day behind reality",
+            "Anything that depends on a fresh signal, fraud checks, live rankings, cannot be built on batch alone",
+            "A batch job that fails partway through usually means waiting for the next scheduled run"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Why Pure Streaming Alone Struggles",
+          "text": "2.2 Why Pure Streaming Alone Struggles"
+        },
+        {
+          "type": "paragraph",
+          "content": "A streaming only system reacts in seconds, which solves the freshness problem completely. Keeping it exactly correct over the full history is the hard part."
+        },
+        {
+          "type": "list",
+          "content": "[\"Late arriving and out of order events make exact totals tricky to guarantee\",\"Fixing a bug in the aggregation logic usually means replaying a huge amount of historical data through the stream processor, which is expensive and slow\",\"Storing and reprocessing months of raw events inside a streaming engine is a heavier operational lift than storing them in cheap batch friendly storage\"]",
+          "items": [
+            "Late arriving and out of order events make exact totals tricky to guarantee",
+            "Fixing a bug in the aggregation logic usually means replaying a huge amount of historical data through the stream processor, which is expensive and slow",
+            "Storing and reprocessing months of raw events inside a streaming engine is a heavier operational lift than storing them in cheap batch friendly storage"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. The Three Layers",
+          "text": "3. The Three Layers"
+        },
+        {
+          "type": "paragraph",
+          "content": "Lambda architecture does not try to make one system do both jobs. It splits the work across three layers, each with one job, and lets a query pull from all three."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346407-608422094.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346407-608422094.png",
+          "alt": "Incoming data flowing into a batch layer and a speed layer, both feeding a serving layer",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346407-608422094.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every event flows into the batch layer and the speed layer at the same time. The batch layer takes its time and gets everything exactly right. The speed layer reacts immediately but only worries about the recent slice. The serving layer is where both answers meet."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Batch Layer",
+          "text": "3.1 Batch Layer"
+        },
+        {
+          "type": "paragraph",
+          "content": "The batch layer periodically recomputes a complete, accurate view over the entire historical dataset, typically on a schedule like once an hour or once a night, using a framework like Spark or Hadoop."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346409-883967732.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346409-883967732.png",
+          "alt": "Full history feeding a nightly batch job that produces a batch view",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346409-883967732.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every run reads the full dataset from scratch and rewrites the batch view. Nothing is patched incrementally."
+        },
+        {
+          "type": "note",
+          "title": "Why recompute from scratch",
+          "content": "Recomputing the whole view every run instead of patching it incrementally means a bug in yesterday's run gets automatically wiped out by tomorrow's correct run. The batch layer heals itself. That property is a big part of why this layer is trusted as the source of truth."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Speed Layer",
+          "text": "3.2 Speed Layer"
+        },
+        {
+          "type": "paragraph",
+          "content": "The speed layer only looks at data that has arrived since the last batch run finished. Its whole job is to cover that gap in real time, using a stream processor like Kafka Streams or Flink."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346410-488476875.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346410-488476875.png",
+          "alt": "The window of data since the last batch run feeding the speed layer, which produces a real time view",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346410-488476875.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Its view is temporary by design. Once the next batch run finishes and absorbs that same window of data into the comprehensive batch view, the speed layer can discard its version of that window and start covering the new gap."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.3 Serving Layer",
+          "text": "3.3 Serving Layer"
+        },
+        {
+          "type": "paragraph",
+          "content": "The serving layer does not compute anything new. It stores the batch view somewhere queryable, exposes the speed layer's current real time view, and answers queries by merging the two."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346410-946742705.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346410-946742705.png",
+          "alt": "A batch view and a real time view both feeding a serving layer that produces one merged answer",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346410-946742705.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "A typical setup stores the batch view in a database optimized for fast reads, like a key value store, and keeps the speed layer's view in something equally fast, like an in memory cache. The serving layer just knows how to combine the two for each kind of query."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. How A Query Actually Works",
+          "text": "4. How A Query Actually Works"
+        },
+        {
+          "type": "paragraph",
+          "content": "When a request comes in, the serving layer does not pick one layer over the other. It reads from both and combines them before replying."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346411-851410668.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346411-851410668.png",
+          "alt": "A user query hitting the serving layer, which pulls from a batch view and a speed view to produce one result",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346411-851410668.png"
+        },
+        {
+          "type": "list",
+          "content": "[\"Fetch the batch view's answer, which is complete and correct up to the last batch run\",\"Fetch the speed layer's answer, which covers everything since that last run\",\"Combine the two using whatever merge makes sense for that data, often a simple addition for counts\",\"Return the combined result, which is mostly complete and reasonably fresh\"]",
+          "items": [
+            "Fetch the batch view's answer, which is complete and correct up to the last batch run",
+            "Fetch the speed layer's answer, which covers everything since that last run",
+            "Combine the two using whatever merge makes sense for that data, often a simple addition for counts",
+            "Return the combined result, which is mostly complete and reasonably fresh"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Notice the result is not perfect. It is complete up to a few minutes or hours ago, plus a fast but slightly rougher real time slice on top. For most products that tradeoff is exactly what you want."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. The Big Downside: Duplicated Logic",
+          "text": "5. The Big Downside: Duplicated Logic"
+        },
+        {
+          "type": "paragraph",
+          "content": "Here is the part that made this pattern controversial. The batch layer and the speed layer are computing the same business logic, the same aggregation, the same filters, the same rules. But they are usually written in two different frameworks, sometimes even two different languages, because batch tools and streaming tools rarely overlap."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346411-228503593.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346411-228503593.png",
+          "alt": "One business rule branching into separate batch layer code and speed layer code",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346411-228503593.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "That means every rule change has to be implemented and tested twice. Every new engineer has to learn two frameworks instead of one. And every subtle difference between the two implementations becomes a source of bugs that only show up once you compare the merged output against expectations."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Two Codebases, One Business Rule",
+          "text": "5.1 Two Codebases, One Business Rule"
+        },
+        {
+          "type": "paragraph",
+          "content": "Think about what it actually takes to ship a small change, like excluding bot traffic from view counts."
+        },
+        {
+          "type": "list",
+          "content": "[\"Update the batch job's filtering logic and redeploy the scheduled pipeline\",\"Separately update the speed layer's stream processing logic and redeploy that pipeline too\",\"Write and run tests against both, since they are different codebases with different failure modes\",\"Keep both teams, or both parts of one team, fluent in two different processing frameworks\"]",
+          "items": [
+            "Update the batch job's filtering logic and redeploy the scheduled pipeline",
+            "Separately update the speed layer's stream processing logic and redeploy that pipeline too",
+            "Write and run tests against both, since they are different codebases with different failure modes",
+            "Keep both teams, or both parts of one team, fluent in two different processing frameworks"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 When The Two Implementations Drift Apart",
+          "text": "5.2 When The Two Implementations Drift Apart"
+        },
+        {
+          "type": "paragraph",
+          "content": "The most common real failure mode is not a crash. It is quiet disagreement. Someone fixes an edge case in the batch job and forgets, or simply does not know, to port the same fix into the speed layer's code."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346412-589737589.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346412-589737589.png",
+          "alt": "Batch code getting updated while speed layer code stays untouched, producing a confusing bug",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346412-589737589.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "From that point on, the batch view and the real time view are computing slightly different things for the same underlying events. Nobody notices immediately, because each layer looks fine on its own. The discrepancy only surfaces in the merged number the serving layer hands back, and it can take a while to trace it to two implementations that quietly stopped agreeing with each other."
+        },
+        {
+          "type": "note",
+          "title": "Gotcha",
+          "content": "Drift bugs like this are especially painful because they are intermittent and small at first, a handful of double counted events here, a missing filter there. Treat the two implementations as one shared contract and review changes to either side against the other, not as two independent pieces of code."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.3 Lambda Architecture Pros And Cons",
+          "text": "5.3 Lambda Architecture Pros And Cons"
+        },
+        {
+          "type": "paragraph",
+          "content": "Weighed as a whole, here is the honest tradeoff."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Gives you both a correct historical view and a fresh real time view\",\"Same business logic must be built and maintained twice, in two frameworks\"],[\"Batch layer self heals from bugs since it recomputes from scratch each run\",\"Two codebases can quietly drift apart and disagree\"],[\"Each layer can be scaled and tuned independently for its own workload\",\"Higher operational overhead, two pipelines to monitor and deploy instead of one\"],[\"Well understood pattern with a long track record in production\",\"Onboarding new engineers takes longer, they need both a batch and a streaming skill set\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Kappa Architecture, The Short Version",
+          "text": "6. Kappa Architecture, The Short Version"
+        },
+        {
+          "type": "paragraph",
+          "content": "Kappa architecture is the pattern that emerged specifically to fix the duplicated logic problem. Instead of a separate batch layer and speed layer, everything, including reprocessing old history, flows through a single stream processing pipeline. Need to fix a bug or recompute an old view? Replay the historical events back through the same stream job rather than maintaining a second batch codebase."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346412-629874474.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346412-629874474.png",
+          "alt": "Lambda architecture splitting into two codebases next to Kappa architecture staying as one codebase",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346412-629874474.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "This topic focuses on Lambda architecture itself, so Kappa is covered properly in its own topic. Here is the quick comparison worth keeping in your head."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Aspect\",\"Lambda Architecture\",\"Kappa Architecture\"],\"rows\":[[\"Layers\",\"Batch layer plus speed layer\",\"A single stream processing layer\"],[\"Codebases to maintain\",\"Two, one per layer\",\"One\"],[\"Reprocessing old history\",\"Rerun the batch layer\",\"Replay the event log through the same stream job\"],[\"Maintenance burden\",\"Higher, logic is duplicated\",\"Lower, one implementation to keep correct\"],[\"Where it still fits\",\"Legacy pipelines, some regulatory batch requirements\",\"New systems built around a durable log like Kafka\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Worked Example: A View Count System",
+          "text": "7. Worked Example: A View Count System"
+        },
+        {
+          "type": "paragraph",
+          "content": "Take that video view count problem from the start of this topic and actually build it the Lambda way."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346412-233396178.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346412-233396178.png",
+          "alt": "Nightly exact totals and last few hours of live counts both feeding a serving layer sum",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346412-233396178.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "The batch layer recomputes exact daily view totals overnight from every raw view event. The speed layer tracks views from just the last few hours, since the last overnight run, in real time. The serving layer adds the two together whenever someone asks for a video's view count."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Batch Layer Job",
+          "text": "7.1 Batch Layer Job"
+        },
+        {
+          "type": "paragraph",
+          "content": "This job runs once a night. It reads every raw view event and writes exact totals per video, overwriting the previous run completely."
+        },
+        {
+          "type": "code",
+          "content": "# Nightly batch job, run once every night over the full event history\ndef run_batch_job(spark, run_date):\n    events = spark.read.parquet(\"s3://events/view_events/\")\n    events = events.filter(events.event_time < run_date)\n\n    daily_totals = (\n        events.groupBy(\"video_id\")\n        .count()\n        .withColumnRenamed(\"count\", \"total_views\")\n    )\n\n    # overwrite, not append, so a bad run gets corrected by the next one\n    daily_totals.write.mode(\"overwrite\").saveAsTable(\"view_counts_batch\")",
+          "code": {
+            "language": "python",
+            "content": "# Nightly batch job, run once every night over the full event history\ndef run_batch_job(spark, run_date):\n    events = spark.read.parquet(\"s3://events/view_events/\")\n    events = events.filter(events.event_time < run_date)\n\n    daily_totals = (\n        events.groupBy(\"video_id\")\n        .count()\n        .withColumnRenamed(\"count\", \"total_views\")\n    )\n\n    # overwrite, not append, so a bad run gets corrected by the next one\n    daily_totals.write.mode(\"overwrite\").saveAsTable(\"view_counts_batch\")"
+          },
+          "codes": {
+            "python": "# Nightly batch job, run once every night over the full event history\ndef run_batch_job(spark, run_date):\n    events = spark.read.parquet(\"s3://events/view_events/\")\n    events = events.filter(events.event_time < run_date)\n\n    daily_totals = (\n        events.groupBy(\"video_id\")\n        .count()\n        .withColumnRenamed(\"count\", \"total_views\")\n    )\n\n    # overwrite, not append, so a bad run gets corrected by the next one\n    daily_totals.write.mode(\"overwrite\").saveAsTable(\"view_counts_batch\")"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.2 Speed Layer Consumer",
+          "text": "7.2 Speed Layer Consumer"
+        },
+        {
+          "type": "paragraph",
+          "content": "This consumer runs continuously. It reads view events off a Kafka topic the moment they happen and bumps a counter for just that video, for just the window since the last batch run."
+        },
+        {
+          "type": "code",
+          "content": "from kafka import KafkaConsumer\nimport redis\n\nconsumer = KafkaConsumer(\"view-events\", bootstrap_servers=\"kafka:9092\")\ncache = redis.Redis(host=\"redis\")\n\nfor message in consumer:\n    video_id = message.value[\"video_id\"]\n    key = f\"speed_view_count:{video_id}\"\n    cache.incr(key)\n    # cleared once the next batch run absorbs this window into view_counts_batch\n    cache.expire(key, 86400)",
+          "code": {
+            "language": "python",
+            "content": "from kafka import KafkaConsumer\nimport redis\n\nconsumer = KafkaConsumer(\"view-events\", bootstrap_servers=\"kafka:9092\")\ncache = redis.Redis(host=\"redis\")\n\nfor message in consumer:\n    video_id = message.value[\"video_id\"]\n    key = f\"speed_view_count:{video_id}\"\n    cache.incr(key)\n    # cleared once the next batch run absorbs this window into view_counts_batch\n    cache.expire(key, 86400)"
+          },
+          "codes": {
+            "python": "from kafka import KafkaConsumer\nimport redis\n\nconsumer = KafkaConsumer(\"view-events\", bootstrap_servers=\"kafka:9092\")\ncache = redis.Redis(host=\"redis\")\n\nfor message in consumer:\n    video_id = message.value[\"video_id\"]\n    key = f\"speed_view_count:{video_id}\"\n    cache.incr(key)\n    # cleared once the next batch run absorbs this window into view_counts_batch\n    cache.expire(key, 86400)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.3 Serving Layer Merge",
+          "text": "7.3 Serving Layer Merge"
+        },
+        {
+          "type": "paragraph",
+          "content": "When the product asks for a video's view count, this is all the serving layer has to do."
+        },
+        {
+          "type": "code",
+          "content": "def get_view_count(video_id):\n    batch_total = get_batch_total(video_id)  # from view_counts_batch\n    speed_total = int(cache.get(f\"speed_view_count:{video_id}\") or 0)\n    return batch_total + speed_total",
+          "code": {
+            "language": "python",
+            "content": "def get_view_count(video_id):\n    batch_total = get_batch_total(video_id)  # from view_counts_batch\n    speed_total = int(cache.get(f\"speed_view_count:{video_id}\") or 0)\n    return batch_total + speed_total"
+          },
+          "codes": {
+            "python": "def get_view_count(video_id):\n    batch_total = get_batch_total(video_id)  # from view_counts_batch\n    speed_total = int(cache.get(f\"speed_view_count:{video_id}\") or 0)\n    return batch_total + speed_total"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Gotcha",
+          "content": "That Redis counter is not exactly once. A consumer retry after a crash can double count an event, and a missed message can undercount one. For a view count that small amount of drift is usually fine, since the next batch run wipes it out anyway. For anything where exact correctness matters even in the short term, this kind of speed layer approximation is a real limitation to call out."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Where This Shows Up In Real Systems",
+          "text": "8. Where This Shows Up In Real Systems"
+        },
+        {
+          "type": "paragraph",
+          "content": "This pattern was popularized around the early 2010s, described in Nathan Marz's writing on big data systems, and it was genuinely used at places like Twitter during that era of big data infrastructure. Batch tools like Hadoop were mature, streaming tools were still young, and running both side by side was often the most practical option available."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346413-957827262.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346413-957827262.png",
+          "alt": "Lambda architecture originating in the early big data era and continuing into legacy systems and interview discussions today",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396346413-957827262.png"
+        },
+        {
+          "type": "paragraph",
+          "content": "Streaming engines have matured a lot since then. Tools like Flink and Kafka Streams can now handle a lot of what used to require a separate batch layer, which is exactly what makes Kappa architecture attractive for a fresh build today."
+        },
+        {
+          "type": "list",
+          "content": "[\"Rarely the first choice for a brand new system in 2026\",\"Still shows up in older, established big data pipelines that predate mature stream processors\",\"Still a common reference point in system design interviews and case studies about batch versus streaming tradeoffs\"]",
+          "items": [
+            "Rarely the first choice for a brand new system in 2026",
+            "Still shows up in older, established big data pipelines that predate mature stream processors",
+            "Still a common reference point in system design interviews and case studies about batch versus streaming tradeoffs"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. The Interview Angle",
+          "text": "9. The Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "You are unlikely to be asked to design Lambda architecture from a blank page today. You are quite likely to be asked to reason about freshness versus completeness, and this is the standard vocabulary for that conversation."
+        },
+        {
+          "type": "list",
+          "content": "[\"Know the three layers and what each one is responsible for\",\"Be ready to explain the duplicated logic problem in your own words, not just name it\",\"Bring up Kappa architecture yourself as the modern response, do not wait to be asked\",\"Ground your answer in a concrete example, like the view count system, instead of staying abstract\"]",
+          "items": [
+            "Know the three layers and what each one is responsible for",
+            "Be ready to explain the duplicated logic problem in your own words, not just name it",
+            "Bring up Kappa architecture yourself as the modern response, do not wait to be asked",
+            "Ground your answer in a concrete example, like the view count system, instead of staying abstract"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "blockQuote",
+          "content": "A strong answer explains why you would pick Lambda for a legacy constraint, and why you would reach for Kappa on anything new. Naming the tradeoff unprompted is what signals depth."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Recap",
+          "text": "10. Recap"
+        },
+        {
+          "type": "list",
+          "content": "[\"Lambda architecture solves needing both a complete historical view and a fresh real time view at once\",\"The batch layer recomputes an accurate view over full history on a schedule\",\"The speed layer covers only the gap since the last batch run, in real time\",\"The serving layer merges both views to answer queries\",\"The real cost is maintaining the same business logic twice, in two frameworks, which can quietly drift apart\",\"Kappa architecture replaces both layers with a single stream pipeline to avoid that cost\",\"Still relevant for legacy systems and interviews, rarely the first pick for a new system today\"]",
+          "items": [
+            "Lambda architecture solves needing both a complete historical view and a fresh real time view at once",
+            "The batch layer recomputes an accurate view over full history on a schedule",
+            "The speed layer covers only the gap since the last batch run, in real time",
+            "The serving layer merges both views to answer queries",
+            "The real cost is maintaining the same business logic twice, in two frameworks, which can quietly drift apart",
+            "Kappa architecture replaces both layers with a single stream pipeline to avoid that cost",
+            "Still relevant for legacy systems and interviews, rarely the first pick for a new system today"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The pattern itself is simple once you see the three layers. The part worth really internalizing is the tradeoff, not just the diagram: two accurate implementations of one rule are genuinely harder to keep in sync than one."
+        }
+      ]
+    }
+  ]
+}

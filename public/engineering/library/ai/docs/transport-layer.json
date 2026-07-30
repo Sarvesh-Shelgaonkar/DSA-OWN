@@ -1,0 +1,513 @@
+{
+  "slug": "transport-layer",
+  "title": "Transport Layer",
+  "content": [
+    {
+      "id": "transport-layer",
+      "title": "Transport Layer",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Every message a client and server exchange has to physically travel somehow, as bytes, over some connection, through some channel. MCP deliberately keeps the shape of a message, the JSON-RPC envelope, completely separate from how that message actually moves."
+        },
+        {
+          "type": "paragraph",
+          "text": "That separation has a name, the transport layer, and this lesson stays at the architectural level, what job the transport does and why decoupling it from the message format matters, leaving the full mechanics of each concrete transport to its own dedicated module."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What the Transport Layer Actually Does",
+          "id": "tl-what-it-does"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172768015-108067280.png",
+          "alt": "A message goes through transport to reach its destination",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172768015-108067280.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Strip away everything else and a transport has exactly one job, moving a stream of bytes reliably between a client and a server, in order, without corrupting or dropping them. It does not know or care what those bytes mean, it is not aware of requests, responses, ids, or methods, those are all concepts that live one layer above."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a narrower responsibility than people often assume. A transport is not responsible for parsing JSON, matching a response to its request, or deciding what a message means, all of that belongs to the layer described in Client-Server Communication. The transport just needs to get bytes from one side to the other, faithfully."
+        },
+        {
+          "type": "note",
+          "title": "A helpful analogy",
+          "content": "Think of the transport as the postal service and a JSON-RPC message as a sealed envelope. The postal service guarantees the envelope arrives intact and in the order it was mailed, it never opens the envelope to read the letter inside, that is entirely the recipient's job."
+        },
+        {
+          "type": "paragraph",
+          "text": "Because the transport's job is this narrow, it is also one of the smallest, most testable pieces of an MCP implementation. A correct transport can usually be verified with a handful of tests, send these bytes, confirm they arrive in order, close the connection, confirm that event is observed, without needing to know anything about tools, resources, or prompts at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "That narrowness is a feature, not a limitation, a component with one clear job is far easier to reason about, replace, and debug than one that quietly absorbs responsibilities from the layers around it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Why Decouple the Transport From the Message Format",
+          "id": "tl-why-decouple"
+        },
+        {
+          "type": "paragraph",
+          "text": "If the JSON-RPC message format were somehow tied to one specific transport, every new environment MCP needed to run in, a local subprocess, a remote web service, a message queue, would require its own incompatible variant of the protocol itself. Instead, the message format stays fixed, and only the transport underneath is swapped out."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{ \"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/call\", \"params\": { \"name\": \"search\" } }"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "That exact JSON object is valid whether it travels over a subprocess's standard input, an HTTP request body, or any other transport, nothing about the message itself changes."
+        },
+        {
+          "type": "paragraph",
+          "text": "This decoupling is also what makes MCP portable across such different runtime environments in the first place. The same server codebase, built once against a stable message format, can be launched as a local subprocess during development and later exposed over a network transport in production, without its request handling logic changing at all."
+        },
+        {
+          "type": "note",
+          "title": "A useful test of the boundary",
+          "content": "If you can describe what a message means without ever mentioning how it was delivered, and describe how a transport works without ever mentioning what a message means, the separation is intact. The moment either description needs to borrow language from the other, the layering has blurred."
+        },
+        {
+          "type": "paragraph",
+          "text": "That fixed message format is also what keeps tooling simple, a logging or debugging tool built to inspect JSON-RPC traffic works identically regardless of which transport produced that traffic."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. The Transport as a Pluggable Layer",
+          "id": "tl-pluggable-layer"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172772056-289808033.png",
+          "alt": "The same MCP messages can travel over stdio or HTTP",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172772056-289808033.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Architecturally, the transport sits below the client and server logic as a swappable component behind a small, stable interface, usually just send a message and receive a message, plus open and close. Everything above that interface, request handling, id matching, capability negotiation, is written once and works unchanged no matter which transport is plugged in underneath."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Layer\",\"Knows about\"],\"rows\":[[\"Application logic\",\"Tools, resources, prompts, capabilities\"],[\"Client-server communication\",\"Requests, responses, ids, notifications\"],[\"Transport\",\"Bytes, connections, framing, nothing about message meaning\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This layering mirrors a pattern seen throughout networked systems generally, a stable interface at the boundary, with implementations free to vary underneath it. It is the same reason a web browser does not need special-case code for every kind of network hardware a request might travel over, sockets and operating system networking APIs handle that variability beneath a stable interface."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "interface Transport {\n  send(bytes: Uint8Array): Promise<void>;\n  onMessage(callback: (bytes: Uint8Array) => void): void;\n  onClose(callback: (reason: string) => void): void;\n  close(): Promise<void>;\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "An interface this small is precisely the point, any concrete transport, subprocess or network, just needs to implement these four operations, and everything built on top of it, including the entire client-server communication layer, works without modification."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Two Families of Transport",
+          "id": "tl-two-families"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172774527-409153130.png",
+          "alt": "Local stdio transport is compared against remote HTTP or SSE transport",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172774527-409153130.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "In practice, MCP transports fall into two broad families. The first covers a server running as a local subprocess, communicating over its standard input and output streams, the natural fit when a host launches a server directly on the same machine. The second covers a server reachable over a network, communicating over HTTP, often paired with a streaming mechanism for server-initiated messages, the natural fit for a remote or shared server."
+        },
+        {
+          "type": "note",
+          "title": "This is intentionally brief",
+          "content": "The full mechanics of each transport, framing, connection lifecycle, reconnection behavior, are covered in depth in the separate Transport Mechanisms module. This lesson only needs the shape of the idea to talk about architecture correctly."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Property\",\"Subprocess transport\",\"Network transport\"],\"rows\":[[\"Typical use\",\"Local server bundled with a host\",\"Remote or shared server\"],[\"Lifecycle tied to\",\"The host process launching it\",\"An independent network connection\"],[\"Server-initiated messages\",\"Written directly to standard output\",\"Usually a streaming mechanism\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth noting that these two families are not the only ones possible, MCP's transport interface is intentionally generic enough that a message queue, an in-memory channel for testing, or some future transport could be plugged in the same way, the specification defines the two most common cases, not an exhaustive list."
+        },
+        {
+          "type": "paragraph",
+          "text": "Knowing which family a given deployment falls into is usually all the architectural context needed for the rest of this module, the deeper mechanics of each are picked up later in the dedicated Transport Mechanisms module."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Framing: Knowing Where One Message Ends",
+          "id": "tl-framing"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172777328-647701207.png",
+          "alt": "A message goes through framing to reach the next message",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172777328-647701207.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A raw byte stream has no built-in concept of message boundaries, so every transport needs some agreed-upon framing rule to know where one JSON-RPC message ends and the next begins. A subprocess transport typically uses newline-delimited JSON, one complete message per line, a simple and effective rule for a local pipe."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"resources/read\",\"params\":{}}\n"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A network transport typically does not need newline framing at all, because HTTP already provides message boundaries through its own request and response structure, one HTTP body is one JSON-RPC message. Server-initiated messages over a persistent connection use their own framing convention suited to that mechanism instead."
+        },
+        {
+          "type": "paragraph",
+          "text": "Getting framing wrong is a surprisingly common source of subtle bugs, a message that contains an embedded newline inside a string value, for example, must be properly escaped by the JSON encoder so it does not get mistaken for an actual line break by a naive newline-delimited reader."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. The Transport Does Not Interpret Messages",
+          "id": "tl-does-not-interpret"
+        },
+        {
+          "type": "paragraph",
+          "text": "A useful architectural discipline is that a transport implementation should never need to look inside a message to do its job correctly. It reads a complete frame, hands the raw bytes upward, and lets the client-server communication layer decode and interpret them. A transport that starts branching its own behavior based on what method a message contains has quietly taken on a responsibility that does not belong to it."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping this discipline strict has a real payoff during debugging, if a transport implementation is ever found branching on method names or inspecting params, that is a strong signal the layering has been violated somewhere, and it is worth tracing why application-level logic leaked down into a place it should never have reached."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is closely related to the end-to-end principle found across networked systems generally, put functionality as close to the endpoints that actually need it as possible, and keep the layers in between simple, generic, and reusable across many different kinds of traffic they will never need to understand."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Connection Lifecycle at the Transport Level",
+          "id": "tl-connection-lifecycle"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172779117-183404790.png",
+          "alt": "A connection opens, becomes active, then closes",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172779117-183404790.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every transport has some notion of open and closed, whether that is a subprocess starting and exiting, or an HTTP connection being established and eventually torn down. The layers above rely on the transport surfacing these events cleanly, a closed transport is exactly what tells the client-server communication layer to reject every outstanding pending request."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "class Transport:\n    def on_close(self, callback):\n        self._close_callback = callback\n\n    def _handle_disconnect(self, reason):\n        if self._close_callback:\n            self._close_callback(reason)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A transport implementation typically exposes three lifecycle events worth tracking explicitly, opened, once the underlying channel is ready to carry messages, closed, once it has ended for any reason, and errored, for a failure that may or may not be immediately fatal to the connection. Higher layers subscribe to these events rather than polling for connection health."
+        },
+        {
+          "type": "paragraph",
+          "text": "Losing track of any one of these three events tends to surface later as a confusing bug rather than an obvious crash, a connection that closed silently without firing its close event, for example, can leave the client-server communication layer waiting on requests that will never resolve, long after the transport itself is already gone."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. What the Application Layer Never Has to Think About",
+          "id": "tl-app-layer-shielded"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because the transport hides these details, code that implements a tool handler or calls tools/list never needs a single line dealing with sockets, subprocess pipes, or HTTP status codes. It just sends a message and awaits a response, and the transport underneath is free to change entirely without that code needing a rewrite."
+        },
+        {
+          "type": "paragraph",
+          "text": "This shielding is not just a convenience, it is what keeps a codebase maintainable as new transports get added over time. Application logic written against send and receive never has to be revisited just because a new transport option becomes available, only the transport implementation itself needs to be written."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Whether the connection is a pipe, a socket, or something else entirely.",
+            "How bytes are framed or where message boundaries fall.",
+            "What happens at the operating system level when a subprocess exits.",
+            "Retry and reconnect logic specific to one transport family."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Choosing a Transport Is a Deployment Decision",
+          "id": "tl-deployment-decision"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172780696-524333125.png",
+          "alt": "A local process is compared against a remote server",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172780696-524333125.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Which transport a given client and server use is not part of the core protocol logic at all, it is a deployment choice made based on where the server runs. A server meant to run locally alongside its host is naturally launched as a subprocess, a server meant to be shared across many users or hosted remotely is naturally exposed over a network transport instead."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Scenario\",\"Natural transport family\"],\"rows\":[[\"Server bundled with a desktop host, same machine\",\"Subprocess standard input and output\"],[\"Server shared across many remote clients\",\"Network transport, HTTP and streaming\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth being explicit that a host application is often the one making this decision, based on how it launches or connects to a given server, rather than the server author dictating it outright. A well-designed server implementation supports more than one transport and lets whoever deploys it choose."
+        },
+        {
+          "type": "paragraph",
+          "text": "This same reasoning is why the same MCP server binary can often be launched two different ways, once as a subprocess during local development and once behind a small network-facing wrapper in production, both paths reuse identical request-handling code underneath."
+        },
+        {
+          "type": "paragraph",
+          "text": "This flexibility is one of the more underappreciated benefits of the layered design, a single server implementation gains new deployment options over time simply by adding a new transport implementation, without ever revisiting the logic that actually answers tool calls or serves resources."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. The Same Handshake, Any Transport",
+          "id": "tl-same-handshake"
+        },
+        {
+          "type": "paragraph",
+          "text": "Capability negotiation, covered in its own lesson later in this module, runs identically no matter which transport carries it. The initialize request and its response are just JSON-RPC messages like any other, they do not know or care whether they arrived over a pipe or a network connection."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a direct consequence of the layering discussed throughout this lesson, capability negotiation lives in the client-server communication layer, entirely above the transport, so it is simply unaware of which transport carried its messages, and does not need to be."
+        },
+        {
+          "type": "paragraph",
+          "text": "The same is true of every other exchange defined at the message layer, tool calls, resource reads, sampling requests, none of them have a transport-specific variant, they are simply JSON-RPC messages carried by whichever transport happens to connect the two sides in a given deployment."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Reliability Guarantees Differ by Transport",
+          "id": "tl-reliability-differs"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172782285-953469797.png",
+          "alt": "stdio is reliable while HTTP may need retry",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785172782285-953469797.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Not every transport offers the same guarantees, and this is one of the few places transport choice genuinely leaks upward. A local subprocess pipe rarely drops data silently, a network connection can, and can also fail entirely mid-session. Code built on top of the transport needs to be written defensively enough to survive either, even though it does not need to know the specific cause."
+        },
+        {
+          "type": "list",
+          "items": [
+            "A subprocess pipe on the same machine rarely corrupts or drops bytes, failures usually mean the process itself crashed.",
+            "A network transport can drop packets, stall, or disconnect entirely for reasons that have nothing to do with either side's code.",
+            "Application logic should assume the weaker guarantee by default, timeouts and reconnect handling protect against both cases equally well."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "A concrete practice that follows from this difference, code sitting above the transport should never assume delivery succeeded just because send returned without throwing, an acknowledgment or a matching response is the only real confirmation a message was received and understood on the other end."
+        },
+        {
+          "type": "paragraph",
+          "text": "Nothing about this difference changes what a message means or how it is structured, it only changes how much defensive handling, retries, timeouts, reconnection, the layers above need to build in to stay correct."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Backpressure and Slow Consumers",
+          "id": "tl-backpressure"
+        },
+        {
+          "type": "paragraph",
+          "text": "When one side produces messages faster than the other can process them, a transport needs some notion of backpressure, a way of signaling that the sender should slow down rather than flooding the connection with unread data. A subprocess pipe handles this naturally, writes simply block once an operating system buffer fills up, a network transport usually needs an explicit acknowledgment or flow-control mechanism to achieve the same effect."
+        },
+        {
+          "type": "note",
+          "title": "Why this matters architecturally",
+          "content": "Without some form of backpressure, a fast producer and a slow consumer can silently pile up unbounded memory on one side of the connection, a failure mode that has nothing to do with message content and everything to do with transport-level flow control."
+        },
+        {
+          "type": "paragraph",
+          "text": "A practical symptom of missing backpressure handling is memory growth that correlates with request volume rather than with the actual size of the data being exchanged, if a server's memory climbs steadily under load even though individual messages are small, an unbounded outgoing queue at the transport level is a common culprit worth checking first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Security Sits at the Transport Boundary Too",
+          "id": "tl-security-boundary"
+        },
+        {
+          "type": "paragraph",
+          "text": "Authentication and encryption are transport concerns, not message-format concerns, which is another reason the two are kept separate. A subprocess transport inherits whatever process-level isolation the operating system provides, a network transport typically layers on TLS for encryption and some form of token or credential check for authentication, entirely below the JSON-RPC messages themselves."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Transport family\",\"Typical security mechanism\"],\"rows\":[[\"Subprocess pipe\",\"Operating system process isolation, no network exposure\"],[\"Network transport\",\"TLS encryption plus an authentication token or credential\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Not a substitute for authorization",
+          "content": "Transport-level security answers who is allowed to open a connection at all, it does not answer what a given authenticated caller is allowed to do once connected, that finer-grained authorization, if a server implements it, lives above the transport, closer to individual tool and resource handlers."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Worked Example: Swapping a Transport Without Touching Application Code",
+          "id": "tl-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Imagine a tool handler written once against the client-server communication layer's send and receive interface, first deployed with a subprocess transport during local development, and later deployed behind a network transport once the same server needed to be shared across a team."
+        },
+        {
+          "type": "list",
+          "items": [
+            "1. Application code calls send_request(\"tools/call\", params) and awaits a result.",
+            "2. During development, that call is carried over a subprocess pipe, one JSON line at a time.",
+            "3. The server is later redeployed behind a network transport instead.",
+            "4. The exact same send_request call now travels as an HTTP request instead of a pipe write.",
+            "5. Application code is completely unchanged, because it never referenced the transport directly."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "text": "The only code that changed anywhere in this scenario lived entirely inside the transport implementation itself, a new class satisfying the same four-operation interface. Every tool handler, every piece of request routing, and every line of capability negotiation logic was reused completely unmodified."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Common Mistakes With the Transport Layer",
+          "id": "tl-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Letting application logic reach into transport details, like checking for a specific HTTP status code, breaking the separation of layers.",
+            "Assuming every transport offers the same reliability guarantees as a local subprocess pipe.",
+            "Forgetting that a closed transport must be surfaced upward so outstanding requests can be rejected instead of hanging forever.",
+            "Mixing framing schemes on one connection, for example sending some messages newline-delimited and others length-prefixed.",
+            "Treating transport choice as a protocol-level decision rather than the deployment decision it actually is."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Many of these mistakes share a common root cause, treating the transport as just another place to put logic rather than respecting it as a strict boundary. Whenever a bug report mentions transport behavior changing message meaning, that is almost always a sign the boundary was violated somewhere in the implementation, not a sign the architecture itself is wrong."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Practice: Identify the Layer",
+          "id": "tl-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "For each behavior below, decide whether it belongs to the transport layer or the client-server communication layer sitting above it, then check your answer against what each layer is actually responsible for."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "1. Matching a response to its request by id\n2. Detecting where one JSON message ends and the next begins\n3. Deciding a request has timed out\n4. Delivering bytes in the order they were sent\n5. Rejecting a request because the method name is unknown"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Only items 2 and 4 belong to the transport, the rest depend on interpreting message content, which is exactly what the transport is designed never to do."
+        },
+        {
+          "type": "paragraph",
+          "text": "As a follow-up, try sketching the four-operation transport interface from this lesson in whatever language you use most, then imagine implementing it twice, once backed by a subprocess and once backed by a simple network socket, without changing anything above that interface."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "tl-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "The transport layer has one narrow job, moving bytes reliably between a client and a server, and everything about requests, responses, and their meaning is deliberately kept out of its reach. That separation is what lets the exact same protocol run over a local subprocess or a remote network connection without changing a single line of application logic."
+        },
+        {
+          "type": "paragraph",
+          "text": "With messages able to travel reliably in both directions, the next lesson, Session Management, looks at how a client and server use that channel to establish, track, and eventually tear down an actual session between them."
+        }
+      ]
+    }
+  ]
+}

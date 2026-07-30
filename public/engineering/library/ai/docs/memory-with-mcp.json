@@ -1,0 +1,526 @@
+{
+  "slug": "memory-with-mcp",
+  "title": "Memory with MCP",
+  "content": [
+    {
+      "id": "memory-with-mcp",
+      "title": "Memory with MCP",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Ask an agent the same question twice, once today and once next week, and without memory it will start from zero both times, no matter how useful the answer it gave you the first time was."
+        },
+        {
+          "type": "paragraph",
+          "text": "Memory is what turns a series of disconnected conversations into something that feels like working with the same assistant over and over."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson looks at one clean way to give an agent that continuity: expose its memory store as MCP resources, so reading and writing memory becomes just another well-defined protocol operation rather than a bespoke database call buried inside the agent's code."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What Agent Memory Actually Means",
+          "id": "mwm-what-is-memory"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579249212-823764176.png",
+          "alt": "An agent reads and writes memory through an MCP server",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to separate two things people casually call memory. Short-term memory is just the current conversation's context window, the messages already exchanged in this session. Long-term memory is different, it survives after the session ends and needs to be fetched again the next time the agent starts up. This lesson is about the second kind, memory that outlives any single conversation."
+        },
+        {
+          "type": "paragraph",
+          "text": "Long-term memory is not one thing either, it can be facts about a user, a running summary of past interactions, decisions the agent made and why, or raw transcripts kept for later retrieval. What all of these share is that they need to be stored somewhere durable and read back in a useful form, which is precisely the shape MCP resources are built for."
+        },
+        {
+          "type": "note",
+          "title": "A useful distinction",
+          "content": "Context, covered earlier in this curriculum, is what a model sees for one specific request, memory is what persists and gets pulled back in across many separate sessions over time."
+        },
+        {
+          "type": "paragraph",
+          "text": "This distinction matters most in practice when debugging, if an agent seems to forget something between separate sessions, the question is whether it was ever written to memory in the first place."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Why Resources, Not Tools, for Memory",
+          "id": "mwm-why-resources"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579254720-55064896.png",
+          "alt": "Memory as a resource is compared against memory as a tool",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCP gives you two natural building blocks here, tools and resources, and it matters which one you reach for. A resource represents a piece of data the client can read, addressed by a URI, the way memory://user/123/profile might address one user's stored profile. A tool represents an action with a name and arguments. Reading memory is naturally a resource, you are fetching a piece of state, not invoking a side effect."
+        },
+        {
+          "type": "paragraph",
+          "text": "Writing memory is closer to an action, so it typically goes through a tool, something like save_memory or update_profile, while reading goes through resources/read against a memory URI. This split keeps the read path cheap and cacheable, and keeps the write path explicit, auditable, and validated the way any tool call is."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Operation\",\"MCP primitive\",\"Why\"],\"rows\":[[\"Fetch what the agent remembers\",\"Resource (resources/read)\",\"It is state being retrieved, not an action\"],[\"List what memories exist\",\"Resource (resources/list)\",\"Enumerable, addressable by URI\"],[\"Store a new memory\",\"Tool (tools/call)\",\"It is a side effect with arguments to validate\"],[\"Update or delete a memory\",\"Tool (tools/call)\",\"Same reasoning, an explicit mutating action\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Reading memory is a lookup with no side effect, exactly matching the resource definition covered earlier in this curriculum, writing memory is more naturally a tool call, since it does change something."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Designing Memory Resource URIs",
+          "id": "mwm-uris"
+        },
+        {
+          "type": "paragraph",
+          "text": "A memory server needs a URI scheme that makes sense for how memories will actually be fetched. A common pattern scopes memories by user and by kind, something like memory://user/{user_id}/facts or memory://user/{user_id}/summary, so an agent can ask for exactly the slice of memory relevant to the current task instead of pulling everything."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "# Example resource URIs a memory server might expose\nmemory://user/u_4471/facts\nmemory://user/u_4471/summary\nmemory://user/u_4471/preferences\nmemory://session/s_88213/transcript"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping the scheme predictable like this means an agent framework can construct a URI programmatically, memory://user/{current_user_id}/facts, rather than needing to discover it fresh through resources/list on every single run, which matters once you are fetching memory at the start of every conversation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a URI scheme dedicated to memory\n\"memory:///user-123/preferences\"\n\"memory:///user-123/recent-topics\""
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Reading Memory at the Start of a Session",
+          "id": "mwm-reading-at-start"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579258503-923737191.png",
+          "alt": "Memory is read at the start of a session and written during and after it",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "The most common integration pattern is simple: before the agent's first think step, the framework calls resources/read against the user's memory URI and folds the result into the system prompt or the early conversation history. This gives the model access to relevant history from the very first turn, rather than the agent having to ask for it explicitly."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "memory = await mcp_session.read_resource(f\"memory://user/{user_id}/facts\")\nsystem_prompt = build_system_prompt(base_instructions, remembered_facts=memory.text)\nhistory = [{\"role\": \"system\", \"content\": system_prompt}]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This is also where it pays to be selective. Dumping an entire year of accumulated facts into every system prompt burns context for no benefit, most memory servers instead return a curated or ranked subset, the facts most relevant to a recent interaction, rather than the complete archive."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "memory = client.read_resource(\"memory:///user-123/preferences\")\nsystem_context = f\"User preferences: {memory['text']}\""
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Writing Memory During and After a Session",
+          "id": "mwm-writing"
+        },
+        {
+          "type": "paragraph",
+          "text": "Memory is not only read at the start, it usually gets written during and after a session too. An agent that learns a new fact about a user, a preference stated in passing, a decision that should not need to be re-explained next time, calls a save_memory tool with that fact so it persists past the current conversation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "await mcp_session.call_tool(\"save_memory\", {\n    \"user_id\": \"u_4471\",\n    \"kind\": \"preference\",\n    \"content\": \"Prefers responses in bullet points, not long paragraphs\",\n    \"source_session\": \"s_88213\",\n})"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A reasonable default is to write memory at natural checkpoints, the end of a session, or right after the agent recognizes it just learned something durable, rather than after every single turn, which would create a flood of near-duplicate memories that are expensive to sift through later."
+        },
+        {
+          "type": "paragraph",
+          "text": "Writing memory as a distinct tool call, separate from the ordinary conversation flow, makes it an explicit, auditable action rather than an invisible side effect."
+        },
+        {
+          "type": "paragraph",
+          "text": "Some systems write memory continuously throughout a session, others only at natural checkpoints, the right cadence depends on how costly a lost update would actually be."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Structuring What Gets Remembered",
+          "id": "mwm-structuring"
+        },
+        {
+          "type": "paragraph",
+          "text": "Not all memories are the same shape, and treating them as one undifferentiated blob makes retrieval worse over time. Separating facts, preferences, and running summaries into distinct kinds lets a memory server, and the agent reading from it, apply different rules to each: facts might never expire, preferences might get overwritten rather than accumulated, and summaries might get periodically compacted."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Facts: durable, discrete pieces of information, a user's timezone, their job title",
+            "Preferences: how the user likes to be interacted with, tone, format, level of detail",
+            "Episodic summaries: a compressed record of what happened in a past session",
+            "Decisions: choices the agent made on the user's behalf and the reasoning behind them"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Storing memory as small, well-labeled facts, rather than raw, unstructured conversation transcripts, makes later retrieval far more precise and far cheaper in context space."
+        },
+        {
+          "type": "paragraph",
+          "text": "A small, well-labeled fact like favorite_color equals blue is far easier to retrieve reliably later than a vague, unstructured note buried in a long transcript."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Memory Retrieval as a Ranking Problem",
+          "id": "mwm-retrieval-ranking"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579262529-416596476.png",
+          "alt": "Stored memories are ranked before the most relevant ones are retrieved",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once a user has months of accumulated memory, reading all of it is no longer practical, and a memory server has to decide which subset is worth returning for the current context. This is fundamentally a retrieval problem, and it is common for memory servers to store facts alongside embeddings and rank them by relevance to the current conversation rather than returning everything in insertion order."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "async def read_relevant_memory(query_text, user_id, k=8):\n    query_vec = embed(query_text)\n    candidates = memory_store.get_all(user_id)\n    ranked = sorted(candidates, key=lambda m: cosine_sim(query_vec, m.embedding), reverse=True)\n    return ranked[:k]"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The MCP surface for this stays simple, resources/read still just returns text, the ranking complexity lives entirely inside the server. That is one of the quieter benefits of exposing memory through MCP: the agent framework never has to know whether the memory behind that URI is a flat file, a vector database, or something more elaborate."
+        },
+        {
+          "type": "paragraph",
+          "text": "Once stored memory grows large, retrieving just the handful of facts genuinely relevant to the current task becomes its own small search problem, closely related to the retrieval techniques covered in the RAG with MCP lesson."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Memory Scoping and Isolation",
+          "id": "mwm-scoping"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579266363-902792022.png",
+          "alt": "Memory scoped to one user is isolated from memory scoped to another",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A memory server serving multiple users has to be strict about scoping every read and write to the requesting user, otherwise one user's private facts can leak into another's conversation, which is a serious privacy failure, not a cosmetic bug. The user identifier should come from an authenticated session context on the server side, never from an argument the client freely supplies, or a malicious or buggy client could simply ask for someone else's memory."
+        },
+        {
+          "type": "note",
+          "title": "Security note",
+          "content": "Never trust a user_id passed as a plain tool argument as the sole authorization check. Bind memory access to the identity established during MCP session authentication, and verify server-side that the requested URI actually belongs to that identity."
+        },
+        {
+          "type": "paragraph",
+          "text": "Memory belonging to one user should never leak into another user session, scoping every memory URI explicitly by user or tenant identifier prevents this by construction."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Handling Memory Conflicts and Updates",
+          "id": "mwm-conflicts"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579270341-360027292.png",
+          "alt": "An old memory entry is compared against a new conflicting update",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Facts change. A user who once preferred email now prefers a messaging app, and a memory server needs a policy for what happens when a new fact contradicts an old one. Overwriting silently loses the history of the change, keeping both without marking one as current confuses retrieval, and the most common middle ground is to mark the old fact superseded while keeping it queryable for audit purposes."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "await mcp_session.call_tool(\"update_memory\", {\n    \"user_id\": \"u_4471\",\n    \"memory_id\": \"mem_2291\",\n    \"status\": \"superseded\",\n    \"superseded_by\": \"mem_3087\",\n})"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "When two separate sessions write conflicting facts, a simple last write wins policy is often good enough, more sophisticated systems track timestamps or confidence scores per fact."
+        },
+        {
+          "type": "paragraph",
+          "text": "A more careful system might keep a short history of recent changes to a fact, rather than silently discarding the previous value entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Forgetting, Expiry, and the Right to Deletion",
+          "id": "mwm-forgetting"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784579273877-574617285.png",
+          "alt": "An expired memory entry is forgotten and deleted",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Not every memory should live forever, and users increasingly expect a real ability to have data deleted, not just marked hidden. A well-designed memory server supports an explicit delete_memory tool, honors it immediately, and applies sensible expiry to memory kinds that go stale on their own, an episodic summary from eighteen months ago is rarely still useful and can be pruned or compacted."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Give users a real, working way to request deletion of stored memories, and honor it promptly",
+            "Expire low-value memory kinds automatically rather than accumulating forever",
+            "Compact old episodic summaries into a shorter running summary instead of keeping every session verbatim"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# a memory entry with a built in expiry\nclient.call_tool(\"write_memory\", {\"key\": \"temp_note\", \"value\": \"...\", \"expires_in_days\": 30})"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Combining Memory With the Rest of the Tool Set",
+          "id": "mwm-combining"
+        },
+        {
+          "type": "paragraph",
+          "text": "Memory rarely stands alone in an agent's tool set, it usually sits alongside the same search and action tools covered in the tool-calling lesson. A well-built agent loop reads memory first, uses it to inform which other tools to call, and then writes back anything new it learned along the way, treating memory as one more resource woven into the ordinary think-act-observe rhythm rather than a separate subsystem bolted on the side."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is also why exposing memory over MCP rather than a private API pays off, the same agent loop that calls a search tool and a memory resource does not need two different integration patterns, both go through the same session object and the same JSON-RPC shape."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# reading memory as an ordinary resource before reasoning begins\nmemory = client.read_resource(\"memory:///user-preferences\")\nprompt_context = f\"Known preferences: {memory['text']}\""
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Memory Across Multiple Devices or Clients",
+          "id": "mwm-multi-client"
+        },
+        {
+          "type": "paragraph",
+          "text": "A user rarely talks to an agent from exactly one place, a desktop app today, a phone tomorrow, and if memory lives behind an MCP server rather than inside any one client, all of those surfaces can share the same store. The agent on the phone remembers what was said in the browser that morning because both clients are reading and writing through the same memory server, not through separate local caches that never sync."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Consequence\"],\"rows\":[[\"Memory stored locally per client\",\"Preferences and facts do not follow the user across devices\"],[\"Memory exposed via a shared MCP server\",\"Every client that connects sees the same up to date memory\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Storing memory on the server side, rather than only locally on one device, is what allows a user preference set on their phone to also be available the next time they use a different device."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Testing a Memory-Backed Agent",
+          "id": "mwm-testing"
+        },
+        {
+          "type": "paragraph",
+          "text": "Memory introduces a kind of bug that is easy to miss in a quick manual test: something the agent got right today because it correctly wrote a memory, and got wrong two sessions later because that memory was never actually saved, or was saved under the wrong key. Testing a memory-backed agent means running multi-session scenarios deliberately, not just single-turn ones, and asserting that a fact learned in session one is actually retrievable in session two."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "async def test_memory_persists_across_sessions():\n    await run_agent_session(user_id=\"test_u1\", message=\"I prefer metric units\")\n    memory = await mcp_session.read_resource(\"memory://user/test_u1/preferences\")\n    assert \"metric\" in memory.text.lower()\n    reply = await run_agent_session(user_id=\"test_u1\", message=\"What is 10 miles in your usual units for me?\")\n    assert \"kilometers\" in reply.lower()"
+          }
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# verifying memory persists across two separate sessions\nsession_one.write_memory(\"favorite_color\", \"blue\")\nassert session_two.read_memory(\"favorite_color\") == \"blue\""
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Observability for Memory Reads and Writes",
+          "id": "mwm-observability"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because memory quietly shapes agent behavior across sessions, it is worth logging every read and write with enough detail to reconstruct why the agent said what it said later. If a user ever asks why an agent brought up something from months ago, or why it seemingly forgot something it should have known, the memory access log is usually the fastest way to find out."
+        },
+        {
+          "type": "note",
+          "title": "Worth remembering",
+          "content": "A memory bug rarely shows up as a crash, it shows up as an agent that behaves inconsistently for reasons nobody can explain without a log of what memory it actually read on that turn."
+        },
+        {
+          "type": "paragraph",
+          "text": "Logging every memory read and write, similar to auditing covered in the Authentication & Security module, makes it possible to later explain exactly why an agent behaved the way it did."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "mwm-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "A support agent is asked, again, by a returning customer, how to reset their password, something they were already walked through two weeks ago. With memory wired in, the session starts by reading memory://user/u_9012/facts, which returns a note the agent itself wrote after the last conversation."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Session start\nmemory = await mcp_session.read_resource(\"memory://user/u_9012/facts\")\n# memory.text -> \"Customer already completed password reset on 2026-06-24, \"\n#                \"uses the mobile app primarily, prefers short answers.\"\n\n# The agent's first response can now skip the basics\nreply = \"Since you already reset your password a couple weeks back, \"\n        \"are you running into a different issue this time?\"\n\n# If the user reveals a new preference, the agent writes it back\nawait mcp_session.call_tool(\"save_memory\", {\n    \"user_id\": \"u_9012\", \"kind\": \"fact\",\n    \"content\": \"Now using a new email address, updated 2026-07-07\",\n})"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Nothing about this required the agent to re-derive the customer's history from scratch, it read one resource, and the resulting reply already accounted for a fact from a completely separate conversation."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "mwm-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Storing every single utterance verbatim as a memory instead of distilling durable facts, which makes retrieval slow and noisy",
+            "Trusting a client-supplied user identifier for memory access instead of binding it to authenticated session identity",
+            "Writing memory on every turn instead of at natural checkpoints, flooding the store with near-duplicate entries",
+            "Never expiring or compacting old memories, so retrieval quality degrades as the store grows unbounded",
+            "Silently overwriting a fact instead of marking it superseded, losing the ability to audit how the agent's understanding changed",
+            "Dumping the entire memory store into the prompt instead of retrieving only what is relevant to the current conversation"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "A further common mistake is never scoping memory by user, accidentally letting one user session read or overwrite another user entirely unrelated memory."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "mwm-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Build a small memory server with two resources, memory://user/{id}/facts and memory://user/{id}/preferences, and two tools, save_memory and delete_memory. Wire an agent loop to read both resources at session start, fold them into the system prompt, and call save_memory whenever the user states something durable. Then write a test that runs two separate sessions and confirms a fact learned in the first shows up correctly in the second."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Starting point for the test\nasync def test_two_session_memory():\n    await run_session(user_id=\"p1\", message=\"My name is Asha and I use dark mode everywhere\")\n    reply = await run_session(user_id=\"p1\", message=\"What is my name?\")\n    assert \"asha\" in reply.lower()"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Extend your test to also verify that writing a new value for an existing memory key correctly overwrites the old one rather than creating a duplicate entry."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "mwm-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Memory with MCP is mostly a modeling decision, not a protocol trick: reads go through resources because they fetch state, writes go through tools because they are actions with consequences, and the URI scheme you design determines how cleanly an agent can ask for exactly the slice of its past that matters right now."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson builds on this same resource pattern in a different direction, using MCP to expose a document store or vector search index for retrieval-augmented generation, where what gets retrieved is not the agent's own history but outside knowledge it needs to answer a question correctly."
+        },
+        {
+          "type": "paragraph",
+          "text": "Memory backed by ordinary MCP resources and tools follows the exact same discover, read, and write patterns covered throughout this curriculum, applied specifically to information meant to outlive a single session."
+        }
+      ]
+    }
+  ]
+}

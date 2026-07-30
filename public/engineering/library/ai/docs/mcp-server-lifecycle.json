@@ -1,0 +1,554 @@
+{
+  "slug": "mcp-server-lifecycle",
+  "title": "MCP Server Lifecycle",
+  "content": [
+    {
+      "id": "mcp-server-lifecycle",
+      "title": "MCP Server Lifecycle",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Every MCP server, no matter how simple or complex, lives through the same basic arc."
+        },
+        {
+          "type": "paragraph",
+          "text": "Something starts it up, it introduces itself to a client, it spends most of its life quietly answering requests, and eventually something tells it to stop, at which point it needs to wind down without dropping anything important."
+        },
+        {
+          "type": "paragraph",
+          "text": "py and a client being able to call your first tool, this lesson walks through that whole arc end to end, so the rest of this module has a map to hang each individual piece on."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. Why Lifecycle Matters Before Writing Any Code",
+          "id": "lifecycle-why-it-matters"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147131723-783267624.png",
+          "alt": "A server process moves from startup through initialization, serving requests, and shutdown",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147131723-783267624.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is tempting to jump straight to registering a tool and calling it a day, and for a five minute demo that works fine."
+        },
+        {
+          "type": "paragraph",
+          "text": "But a server that lives inside a real host, a coding assistant, an enterprise chat tool, a background agent, needs to behave predictably at every point in its life, not just while it is happily answering requests in the middle."
+        },
+        {
+          "type": "paragraph",
+          "text": "A client needs to know when a server is ready to be talked to, and it needs to know, just as precisely, when a server is going away, so it can stop sending it work."
+        },
+        {
+          "type": "paragraph",
+          "text": "Thinking about lifecycle up front also saves you from an entire category of bugs that only show up under real conditions, a request arriving half a second after the process was told to quit, a client trying to call a tool before the handshake finished, a server left as an orphaned process because nothing ever told it to stop. None of these are exotic, they are the default outcome of skipping lifecycle design, not an edge case you might get lucky and avoid."
+        },
+        {
+          "type": "note",
+          "title": "A server is a process, not just a script",
+          "content": "Underneath the MCP concepts, a server is an ordinary operating system process with a beginning, a middle, and an end, exactly like any other long running program you have written. MCP just gives that process a very specific shape for each of those three phases."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Stage One: Process Startup",
+          "id": "lifecycle-process-startup"
+        },
+        {
+          "type": "paragraph",
+          "text": "The first stage begins the moment the operating system creates the process, whether that is a host spawning python my_server.py as a subprocess over stdio, or a container orchestrator starting a long running HTTP service. At this point nothing MCP specific has happened yet, the interpreter is loading, your imports are running, and any module level code in your server file is executing top to bottom exactly like it would in any other Python program."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# server.py, the very first lines that run\nimport logging\nimport sys\nfrom mcp.server import Server\n\n# module-level setup happens immediately at process start,\n# before any MCP handshake has taken place\nlogging.basicConfig(level=logging.INFO, stream=sys.stderr)\nlogger = logging.getLogger(\"weather-server\")\n\nserver = Server(\"weather-server\")\nlogger.info(\"process started, server object constructed\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice the logging is deliberately sent to stderr, not stdout. If this server is going to run over stdio transport, stdout is reserved entirely for JSON-RPC messages, and a stray print statement landing there will corrupt the message stream for the client reading it. That single detail trips up more first time server authors than almost anything else in this stage."
+        },
+        {
+          "type": "paragraph",
+          "text": "This stage typically involves loading configuration, connecting to whatever underlying system the server wraps, and preparing the tool, resource, and prompt registries before accepting any connections."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Stage Two: Transport Binding",
+          "id": "lifecycle-transport-binding"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once the process itself exists, it needs a way to actually exchange bytes with a client. This is transport binding, and it looks different depending on which transport you picked, over stdio the server simply starts reading from standard input and writing to standard output, over HTTP it opens a socket and starts listening on a port."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import mcp.server.stdio\n\nasync def run():\n    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):\n        # at this point the transport is bound, bytes can flow,\n        # but the MCP handshake has not happened yet\n        await server.run(read_stream, write_stream, server.create_initialization_options())"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "It helps to keep transport binding and protocol initialization mentally separate, even though the code above shows them close together. Binding is purely about the pipe existing, initialization, covered next, is the first actual conversation that happens over that pipe."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Stage Three: The Initialize Handshake",
+          "id": "lifecycle-initialize-handshake"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147133863-748182267.png",
+          "alt": "A client sends initialize and the server responds before normal use begins",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147133863-748182267.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The very first message any MCP client sends over a freshly opened transport is an initialize request, and the very first thing a well behaved server does is respond to it before processing anything else. This exchange is where the client and server introduce themselves, exchange protocol versions, and the server declares which capabilities it actually supports, tools, resources, prompts, or some combination."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"method\": \"initialize\",\n  \"params\": {\n    \"protocolVersion\": \"2024-11-05\",\n    \"capabilities\": {},\n    \"clientInfo\": { \"name\": \"example-host\", \"version\": \"1.3.0\" }\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The next two lessons, Server Initialization and Capability Declaration, go much deeper into exactly what happens here. For this lesson, the important thing is where this sits in the overall arc, it is the gate a server must pass through before it is allowed to consider itself live for that particular client connection."
+        },
+        {
+          "type": "paragraph",
+          "text": "This handshake is intentionally the very first thing that happens after a connection opens, nothing else in the lifecycle is allowed to proceed until it completes successfully."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. Stage Four: The Initialized Notification",
+          "id": "lifecycle-initialized-notification"
+        },
+        {
+          "type": "paragraph",
+          "text": "After the client receives the server's initialize response, it sends back a lightweight initialized notification, confirming the handshake is complete on its side too. Only after this notification arrives is a server fully justified in treating the connection as ready for ordinary traffic, tool calls, resource reads, prompt requests, all of it."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": \"notifications/initialized\"\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A notification, unlike a request, carries no id and expects no response, which is exactly right here, there is nothing left to negotiate, it is simply the client saying it is ready. A server that tries to skip ahead and serve requests before this notification arrives risks acting on a connection the client itself does not yet consider fully established."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. Stage Five: Steady State, Serving Requests",
+          "id": "lifecycle-steady-state"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147135305-247018132.png",
+          "alt": "A server keeps serving requests one after another during steady state",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147135305-247018132.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is where a server spends the overwhelming majority of its life, an event loop waiting for the next incoming message, dispatching it to the right handler, tools/call to a tool handler, resources/read to a resource handler, prompts/get to a prompt handler, and writing a response back. From the outside this stage looks uneventful, and for a healthy server, that is exactly the point."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "@server.call_tool()\nasync def handle_call_tool(name: str, arguments: dict) -> list:\n    logger.info(f\"handling tool call: {name}\")\n    if name == \"get_forecast\":\n        return await get_forecast(arguments[\"city\"])\n    raise ValueError(f\"unknown tool: {name}\")"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Internally, most SDKs run this steady state as a loop reading one message at a time from the transport, and for stdio in particular that loop is naturally single-connection, one process, one client, for its entire lifetime. HTTP based servers instead typically handle many concurrent sessions inside this same steady state stage, a distinction the Transport Mechanisms module covers in more depth."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "while server.is_running:\n    request = server.receive_next_request()\n    server.handle(request)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. What Keeps a Server Alive During Steady State",
+          "id": "lifecycle-what-keeps-alive"
+        },
+        {
+          "type": "paragraph",
+          "text": "A server does not need a special mechanism to stay running, it stays alive simply because its event loop has not exited, the same way any long running program keeps running as long as its main function has not returned. What matters here is what the server is waiting on, typically a blocking read on its input stream or a socket accept loop, either way the process is parked, using essentially no CPU, until the next byte arrives."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Condition\",\"What the server is doing\",\"CPU while waiting\"],\"rows\":[[\"No request pending\",\"Blocked on a read from its transport\",\"Near zero\"],[\"Request being handled\",\"Running the matched handler function\",\"Active\"],[\"Multiple concurrent requests\",\"Awaiting several handler coroutines\",\"Active per request\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "This matters for capacity planning too, a server idling between requests costs almost nothing to keep running, which is part of why long lived MCP server processes are the normal pattern rather than something to avoid."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Stage Six: Receiving a Shutdown Signal",
+          "id": "lifecycle-shutdown-signal"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147137107-447100156.png",
+          "alt": "A shutdown signal arrives and the server begins its shutdown sequence",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147137107-447100156.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Eventually something decides a server should stop, a user closes their host application, a container orchestrator sends a termination signal during a deployment, or the transport itself closes because the other side hung up. Exactly how this arrives depends on the transport, over stdio it is usually the input stream closing, over a process managed by an operating system it is often a SIGTERM signal."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import signal\n\ndef handle_sigterm(signum, frame):\n    logger.info(\"received SIGTERM, beginning graceful shutdown\")\n    shutdown_event.set()\n\nsignal.signal(signal.SIGTERM, handle_sigterm)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The Graceful Shutdown lesson later in this module covers this stage in real depth, finishing in flight work, releasing resources, and signaling clients cleanly. For now, the key idea is simply that this stage exists as a distinct, expected part of the arc, not an afterthought bolted on only when something goes wrong."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Stage Seven: Draining In-Flight Work",
+          "id": "lifecycle-draining-work"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147139665-381361267.png",
+          "alt": "In flight work finishes draining before the process actually exits",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147139665-381361267.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "A shutdown signal rarely means every request has already finished, there is almost always something mid flight, a tool call reading a large file, a slow database query backing a resource read. A well behaved server does not simply abandon this work the instant it receives a shutdown signal, it stops accepting new requests while giving existing ones a bounded amount of time to finish."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Stop pulling new messages off the transport once shutdown begins.",
+            "Let handlers already running finish naturally, up to a reasonable timeout.",
+            "Forcefully cancel anything still running once that timeout is reached.",
+            "Only then proceed to closing the transport and exiting the process."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "Why draining matters",
+          "content": "Killing a server mid request can leave a caller waiting forever for a response that will never arrive, draining gives every in-flight request a chance to finish cleanly first."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Stage Eight: Process Exit",
+          "id": "lifecycle-process-exit"
+        },
+        {
+          "type": "paragraph",
+          "text": "The final stage is the process actually exiting, its transport closed, its file handles released, its exit code set to reflect whether it shut down cleanly or crashed. This is the mirror image of stage one, and it deserves the same care, an exit code of zero after a clean shutdown tells whatever launched the server, a host, an orchestrator, a shell script, that everything went as expected."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import sys\n\nasync def main():\n    try:\n        await run_server()\n        sys.exit(0)\n    except Exception:\n        logger.exception(\"server exited due to an unhandled error\")\n        sys.exit(1)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "A non-zero exit code after an unexpected crash matters more than it might seem, it is often the only signal an orchestrator or a supervising script has to decide whether to restart the server, alert a human, or leave it stopped."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Lifecycle Differs Slightly by Transport",
+          "id": "lifecycle-differs-by-transport"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147141559-309976144.png",
+          "alt": "The stdio lifecycle is compared against the HTTP lifecycle",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147141559-309976144.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Everything described so far applies to any MCP server, but the exact shape of startup and shutdown shifts depending on transport."
+        },
+        {
+          "type": "paragraph",
+          "text": "A stdio server's lifecycle is tightly bound to a single client process, when that client exits, the server's input stream closes and shutdown naturally follows."
+        },
+        {
+          "type": "paragraph",
+          "text": "An HTTP server's lifecycle is bound instead to the web server process itself, and it may serve many independent client sessions, each with its own smaller initialize and shutdown arc, layered on top of the one long lived process lifecycle."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Transport\",\"Process lifetime tied to\",\"Typical shutdown trigger\"],\"rows\":[[\"stdio\",\"One parent host process\",\"Parent exits or closes the pipe\"],[\"HTTP\",\"Independent of any one client\",\"SIGTERM from the deployment platform\"],[\"WebSocket\",\"Independent of any one client\",\"Server restart or explicit close\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth noting that a single HTTP based server process can be, and usually is, serving several completely independent client sessions at the same moment, each running its own small initialize through shutdown arc for that one session, layered on top of the one bigger process-level startup and exit."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping these two levels straight, the process lifecycle and the per-session lifecycle, avoids a lot of confusion once you start writing servers that are not simply one process per client."
+        },
+        {
+          "type": "paragraph",
+          "text": "A stdio server tends to start and stop alongside its single host process, while a remote HTTP based server usually runs continuously, serving many separate client sessions over its lifetime."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Observing a Server's Lifecycle From the Outside",
+          "id": "lifecycle-observing-from-outside"
+        },
+        {
+          "type": "paragraph",
+          "text": "When you are debugging a server that is misbehaving, it helps enormously to be able to see which lifecycle stage it is actually in. Structured logging at each transition, process started, transport bound, handshake complete, shutdown received, process exiting, turns an opaque process into something you can reason about just by tailing a log file."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "logger.info(\"stage=startup pid=%s\", os.getpid())\nlogger.info(\"stage=transport_bound transport=stdio\")\nlogger.info(\"stage=initialized client=%s\", client_info[\"name\"])\nlogger.info(\"stage=shutdown_received reason=%s\", reason)\nlogger.info(\"stage=exiting code=%s\", exit_code)"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a small habit that pays for itself the first time a server hangs in production and you need to know, without attaching a debugger, exactly which of the eight stages it got stuck in."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well-behaved server logs a clear message at each stage transition, startup, ready, shutting down, stopped, making it easy for an operator to understand exactly what state it is in without inspecting internals."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. What Happens When a Stage Is Skipped",
+          "id": "lifecycle-what-happens-when-skipped"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147143056-87077644.png",
+          "alt": "Skipping a lifecycle stage risks losing in flight work",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785147143056-87077644.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Skipping a lifecycle stage does not usually crash a server outright, which is precisely what makes these bugs so persistent, they surface as intermittent, hard to reproduce failures instead. A server that starts answering tool calls before the initialized notification arrives might work fine in testing, where the client always happens to send messages in the expected order, and then fail unpredictably against a different, more strictly ordered client implementation."
+        },
+        {
+          "type": "note",
+          "title": "Skipped stages fail quietly, not loudly",
+          "content": "The most dangerous lifecycle bugs are the ones that only show up under timing conditions you did not test, a slow network, a client that pipelines messages, a shutdown that arrives mid request. Treat each stage as a real contract, not a formality."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Lifecycle and Statelessness",
+          "id": "lifecycle-and-statelessness"
+        },
+        {
+          "type": "paragraph",
+          "text": "A single server process, once initialized, typically keeps some amount of state for as long as it lives, an open database connection, a cache warmed on first use, a count of requests served. It is worth being deliberate about what state actually needs to survive the whole process lifetime versus what should be scoped to a single request, because state that quietly outlives its usefulness is a common source of subtle bugs across restarts and redeploys."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "class WeatherServerState:\n    def __init__(self):\n        self.http_client = None  # lives for the whole process\n        self.request_count = 0   # lives for the whole process\n\n    async def on_startup(self):\n        self.http_client = httpx.AsyncClient()\n\n    async def on_shutdown(self):\n        await self.http_client.aclose()"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Process-lifetime state versus request-lifetime state",
+          "content": "A good rule of thumb, if a piece of state would still make sense to reuse for a completely different, unrelated request, it probably belongs at process lifetime. If it only makes sense for the one call currently being handled, keep it scoped to that call and let it disappear when the call returns."
+        },
+        {
+          "type": "paragraph",
+          "text": "Because most servers are stateless between calls, restarting one mid session is often far less disruptive than it would be for a traditional, tightly stateful service."
+        },
+        {
+          "type": "paragraph",
+          "text": "Because most servers are stateless between calls, restarting one mid session is often far less disruptive than it would be for a traditional, tightly stateful service."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Multiple Lifecycles, One Host",
+          "id": "lifecycle-multiple-in-one-host"
+        },
+        {
+          "type": "paragraph",
+          "text": "A host application rarely talks to just one server, and each connected server runs through this exact same eight stage arc entirely independently of every other one. One server crashing during its steady state stage should never take down another server's process, they are separate processes with separate lifecycles, connected to the same host only through their own individual client instance."
+        },
+        {
+          "type": "paragraph",
+          "text": "This independence is not an accident, it is precisely why MCP models each server as its own process with its own transport in the first place, rather than as a plugin loaded into one shared process. Multi-Server Support, later in the Building MCP Clients module, looks at this from the host's side, tracking several of these independent lifecycles at once."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example: Tracing a Full Lifecycle in Logs",
+          "id": "lifecycle-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is a minimal but complete server that logs every lifecycle stage it passes through, useful both as a learning tool and as a template you can copy into a real project during early development."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "import asyncio\nimport logging\nimport sys\nimport signal\n\nfrom mcp.server import Server\nimport mcp.server.stdio\n\nlogging.basicConfig(level=logging.INFO, stream=sys.stderr)\nlogger = logging.getLogger(\"lifecycle-demo\")\n\nserver = Server(\"lifecycle-demo\")\nshutdown_event = asyncio.Event()\n\n\n@server.list_tools()\nasync def list_tools():\n    logger.info(\"stage=steady_state event=list_tools\")\n    return []\n\n\ndef handle_signal(signum, frame):\n    logger.info(\"stage=shutdown_signal signum=%s\", signum)\n    shutdown_event.set()\n\n\nasync def main():\n    logger.info(\"stage=startup pid=%s\", __import__(\"os\").getpid())\n    signal.signal(signal.SIGTERM, handle_signal)\n    signal.signal(signal.SIGINT, handle_signal)\n\n    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):\n        logger.info(\"stage=transport_bound transport=stdio\")\n        run_task = asyncio.create_task(\n            server.run(read_stream, write_stream, server.create_initialization_options())\n        )\n        await shutdown_event.wait()\n        logger.info(\"stage=draining\")\n        run_task.cancel()\n        try:\n            await run_task\n        except asyncio.CancelledError:\n            pass\n    logger.info(\"stage=exiting code=0\")\n\n\nif __name__ == \"__main__\":\n    asyncio.run(main())"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Running this and sending it a request, then a SIGTERM from another terminal with kill, produces a clean, readable sequence of stage= log lines that map directly onto every stage described above, which is a good way to build real intuition before moving on to the more focused lessons on initialization, capability declaration, and shutdown."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "lifecycle-common-mistakes"
+        },
+        {
+          "type": "paragraph",
+          "text": "A few mistakes around lifecycle show up again and again in real server code, most of them easy to avoid once you know to look for them."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Writing debug output with print instead of logging to stderr, which corrupts the stdout message stream on stdio transport.",
+            "Serving tool calls before the initialized notification has been received, based on an assumption about message ordering that is not guaranteed.",
+            "Treating a shutdown signal as an instant stop rather than a request to drain in-flight work first, dropping requests that were already halfway done.",
+            "Never setting a distinct non-zero exit code on crash, leaving a supervising process with no way to tell a clean exit from a failure.",
+            "Holding onto process-lifetime resources, like an open database connection, inside a per-request scope, and leaking a new one on every call.",
+            "Assuming one server process design fits every transport, without accounting for how stdio and HTTP servers actually differ in what triggers shutdown."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "lifecycle-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Take the worked example above and extend it with one additional tool, a simple echo tool that returns whatever string it is given. Add a log line inside its handler, then run the server, connect to it with any MCP client or the MCP Inspector, call the tool once, and confirm you see a clean sequence of stage lines from startup through steady state."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "# after connecting, watch stderr for a sequence like:\n# stage=startup pid=54221\n# stage=transport_bound transport=stdio\n# stage=steady_state event=list_tools\n# stage=steady_state event=call_tool name=echo"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "Stretch goal one: send SIGTERM to the process mid-call and confirm your server logs stage=shutdown_signal before exiting.",
+            "Stretch goal two: intentionally raise an exception inside the echo handler and confirm the process still exits cleanly rather than hanging."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "lifecycle-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every MCP server, regardless of what tools or resources it exposes, moves through the same predictable arc, process startup, transport binding, the initialize handshake, the initialized notification, a long steady state of serving requests, a shutdown signal, draining in-flight work, and finally process exit."
+        },
+        {
+          "type": "paragraph",
+          "text": "Treating each of these as a real, distinct stage rather than an afterthought is what separates a server that behaves predictably inside a real host from one that only ever worked in a quick demo."
+        },
+        {
+          "type": "paragraph",
+          "text": "The next lesson, Server Initialization, zooms into stage three and looks in detail at the actual code that runs during that handshake, declaring a server's name and version and getting it ready to be discovered by a client."
+        }
+      ]
+    }
+  ]
+}

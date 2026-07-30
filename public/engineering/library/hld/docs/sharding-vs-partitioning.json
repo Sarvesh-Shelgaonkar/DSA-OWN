@@ -1,0 +1,536 @@
+{
+  "slug": "sharding-vs-partitioning",
+  "title": "Sharding vs Partitioning",
+  "content": [
+    {
+      "id": "sharding-vs-partitioning",
+      "title": "Sharding vs Partitioning",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Two words get used almost interchangeably in day to day engineering conversation, and that casualness causes real problems in a system design interview and in real architecture reviews. Partitioning and sharding both describe splitting data into smaller pieces, and both are answers to the same underlying pressure, a single table or a single machine running out of room to grow. But they are not synonyms. One is a general strategy that can happen entirely inside one database server. The other is a specific, more consequential decision to spread data across many separate servers. Mixing them up in conversation is harmless. Mixing them up in a design doc or an interview answer signals that you have not actually thought through what your system is doing."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284845962-824374776.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284845962-824374776.png",
+          "alt": "Partitioning as the general umbrella term, branching into vertical and horizontal partitioning, with sharding shown as the special case of horizontal partitioning that spans separate database instances"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every growing application eventually hits the same wall. A table that used to fit comfortably in memory now spans hundreds of gigabytes. A write path that used to complete in single digit milliseconds now queues behind thousands of competing writers. The instinctive response is to split the data up somehow, and this is exactly where the vocabulary starts to blur."
+        },
+        {
+          "type": "paragraph",
+          "content": "Some engineers say sharding when they mean any kind of splitting. Others say partitioning when they actually mean spreading data across a fleet of machines. Database vendors do not help matters, because each one picked its own terminology years ago and never reconciled it with the others. Postgres calls its splitting feature partitioning. MongoDB and Cassandra call the same underlying idea, applied across nodes, sharding. Both usages are correct within their own product, which is precisely why the terms feel so slippery once you start comparing systems."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Partitioning is the general act of splitting data into smaller, more manageable pieces. Sharding is the specific case of horizontal partitioning where those pieces live on separate physical database instances."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson draws that line precisely, walks through the different flavors of partitioning, explains why sharding is a subset rather than a synonym, surveys how the major databases each use the words, and works through a concrete example that shows the operational difference between a partitioned table on one server and a sharded dataset spread across a cluster."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. The Core Distinction",
+          "text": "2. The Core Distinction"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Partitioning is the general concept",
+          "text": "2.1 Partitioning is the general concept"
+        },
+        {
+          "type": "paragraph",
+          "content": "Partitioning means dividing one logical dataset into smaller physical pieces, called partitions, according to some rule. That rule might split columns apart, or it might split rows apart by date, by region, or by a hashed key. Nothing in the definition says anything about where those pieces live. A partitioned table can sit entirely on one machine, with the database engine internally routing queries to the right partition while an application never even notices the split happened."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the detail that trips people up. Partitioning is a data organization technique first, and a scaling technique second. You can partition a table purely to make maintenance easier, for example dropping an old month of log data by dropping a single partition instead of running a slow delete, without ever touching more than one server."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Sharding is a specific technique",
+          "text": "2.2 Sharding is a specific technique"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding takes horizontal partitioning, the row splitting flavor, and adds one more constraint, the pieces must live on separate database instances, usually separate machines entirely. That constraint is what turns a purely organizational technique into a scaling technique for throughput and total capacity, because now you have multiple independent machines each handling a slice of the load, not one machine juggling several internal partitions."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every shard is a partition. Not every partition is a shard. That single sentence resolves most of the terminology confusion on its own, and it is worth memorizing in exactly that form."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Every shard is a partition. Not every partition is a shard."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Dimension\",\"Partitioning\",\"Sharding\"],\"rows\":[[\"Scope\",\"Can be a single database instance\",\"Always spans multiple separate instances\"],[\"Motivation\",\"Manageability, query pruning, storage tiering\",\"Horizontal scale of throughput and total capacity\"],[\"Complexity\",\"Handled largely by the database engine\",\"Requires a shard key, routing logic, and cluster operations\"],[\"Cross piece queries\",\"Often still possible in a single query\",\"Usually require fan out or application level joins\"],[\"Typical examples\",\"Postgres declarative partitioning, Oracle partitioned tables\",\"MongoDB sharded clusters, Cassandra ring, Vitess shards\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Partitioning Types",
+          "text": "3. Partitioning Types"
+        },
+        {
+          "type": "paragraph",
+          "content": "Partitioning splits along one of two axes, and it helps to be explicit about which axis a given design is using, since the two solve different problems."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Vertical partitioning",
+          "text": "3.1 Vertical partitioning"
+        },
+        {
+          "type": "paragraph",
+          "content": "Vertical partitioning splits a table by column rather than by row. A wide users table with dozens of columns might be split so that frequently accessed fields like name and email live in one physical table, while rarely accessed, large fields like a biography or a profile image blob live in another. Every row still exists once in each piece, but each piece only carries a subset of the columns."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Why teams reach for it",
+          "text": "3.2 Why teams reach for it"
+        },
+        {
+          "type": "paragraph",
+          "content": "The usual motivation is reducing the amount of data the database has to scan and cache for the common case. If most queries only touch five of your forty columns, keeping those five columns compact and separate from the other thirty five keeps far more of the hot data resident in memory."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.3 Horizontal partitioning",
+          "text": "3.3 Horizontal partitioning"
+        },
+        {
+          "type": "paragraph",
+          "content": "Horizontal partitioning splits a table by row instead, according to some partition key. A common pattern splits an orders table by order date, so that January lives in one partition, February in another, and so on. Another common pattern splits by a hashed customer id, spreading rows evenly regardless of any natural clustering in the key."
+        },
+        {
+          "type": "list",
+          "content": "[\"Range partitioning, splitting by a value range such as a date or a numeric id band\",\"List partitioning, splitting by an explicit set of values such as a country code or region\",\"Hash partitioning, splitting by the output of a hash function applied to a key, which spreads rows evenly\"]",
+          "items": [
+            "Range partitioning, splitting by a value range such as a date or a numeric id band",
+            "List partitioning, splitting by an explicit set of values such as a country code or region",
+            "Hash partitioning, splitting by the output of a hash function applied to a key, which spreads rows evenly"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "All three of these, range, list, and hash, are ways of doing horizontal partitioning. None of them requires more than one server. A single Postgres instance can happily run a hash partitioned table across eight partitions that all live on the same disk."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Partitioning Within a Single Database Instance",
+          "text": "4. Partitioning Within a Single Database Instance"
+        },
+        {
+          "type": "paragraph",
+          "content": "This is the piece of the puzzle most likely to be missing from an engineer's mental model, so it is worth dwelling on directly. Partitioning does not imply multiple machines. Most relational databases let you declare a table as partitioned and then let the engine transparently manage a set of child tables underneath it, entirely within one running instance."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Postgres declarative partitioning",
+          "text": "4.1 Postgres declarative partitioning"
+        },
+        {
+          "type": "paragraph",
+          "content": "Postgres supports this natively since version 10. You declare a parent table with a partitioning strategy, then attach child partitions that each hold a slice of the rows. Queries against the parent table are automatically routed to the relevant child partitions by the query planner, a technique called partition pruning."
+        },
+        {
+          "type": "code",
+          "content": "CREATE TABLE orders (\n    id bigint NOT NULL,\n    customer_id bigint NOT NULL,\n    order_date date NOT NULL,\n    total_cents integer NOT NULL\n) PARTITION BY RANGE (order_date);\n\nCREATE TABLE orders_2024 PARTITION OF orders\n    FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');\n\nCREATE TABLE orders_2025 PARTITION OF orders\n    FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');\n\nCREATE TABLE orders_2026 PARTITION OF orders\n    FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');",
+          "code": {
+            "language": "sql",
+            "content": "CREATE TABLE orders (\n    id bigint NOT NULL,\n    customer_id bigint NOT NULL,\n    order_date date NOT NULL,\n    total_cents integer NOT NULL\n) PARTITION BY RANGE (order_date);\n\nCREATE TABLE orders_2024 PARTITION OF orders\n    FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');\n\nCREATE TABLE orders_2025 PARTITION OF orders\n    FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');\n\nCREATE TABLE orders_2026 PARTITION OF orders\n    FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');"
+          },
+          "codes": {
+            "sql": "CREATE TABLE orders (\n    id bigint NOT NULL,\n    customer_id bigint NOT NULL,\n    order_date date NOT NULL,\n    total_cents integer NOT NULL\n) PARTITION BY RANGE (order_date);\n\nCREATE TABLE orders_2024 PARTITION OF orders\n    FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');\n\nCREATE TABLE orders_2025 PARTITION OF orders\n    FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');\n\nCREATE TABLE orders_2026 PARTITION OF orders\n    FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "A query filtered on order_date only touches the relevant partition, and an old partition can be dropped in a fraction of a second instead of running a slow, lock heavy delete across millions of rows. All of this happens on one machine, one instance, one connection string. An application talking to this database has no idea the partitions exist, and it does not need to."
+        },
+        {
+          "type": "note",
+          "title": "Same instance, same disk",
+          "content": "A partitioned Postgres table still counts against the storage, memory, and CPU budget of one physical server. Partitioning here buys manageability and query efficiency, not additional capacity beyond what that one server can hold."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284848942-58179208.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284848942-58179208.png",
+          "alt": "A single Postgres instance holding three time based partitions of one logical orders table, all on the same server"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Sharding as a Special Case of Horizontal Partitioning",
+          "text": "5. Sharding as a Special Case of Horizontal Partitioning"
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding is what happens when horizontal partitioning stops being enough, because the pieces themselves are too large or the write volume is too high for one server to hold or serve at all. The response is to place each partition, now usually called a shard, on its own separate database instance, so that the total capacity of the system becomes the sum of many machines instead of the ceiling of one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 What actually makes something a shard",
+          "text": "5.1 What actually makes something a shard"
+        },
+        {
+          "type": "paragraph",
+          "content": "The row splitting logic looks identical to horizontal partitioning on paper. What changes is everything around it. A sharded system needs a shard key that determines which instance a given row belongs to, a routing layer that an application or a proxy uses to send each query to the correct instance, and an operational story for what happens when one shard grows faster than the others."
+        },
+        {
+          "type": "list",
+          "content": "[\"Data lives on physically separate database instances, often separate machines entirely\",\"A shard key decides which instance owns a given row\",\"A routing layer, either in the application or in a proxy, directs each query to the owning instance\",\"Each shard can be scaled, backed up, and failed over largely independently of the others\"]",
+          "items": [
+            "Data lives on physically separate database instances, often separate machines entirely",
+            "A shard key decides which instance owns a given row",
+            "A routing layer, either in the application or in a proxy, directs each query to the owning instance",
+            "Each shard can be scaled, backed up, and failed over largely independently of the others"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "blockQuote",
+          "content": "Sharding is horizontal partitioning that has crossed the boundary of a single machine."
+        },
+        {
+          "type": "paragraph",
+          "content": "This is also why sharding introduces problems that single instance partitioning simply does not have. A query that needs rows from two different shards cannot rely on the database engine to quietly stitch the answer together, because there is no single engine anymore, there are several independent ones. Joins across shards, transactions across shards, and even simple aggregate counts across shards all become application level problems instead of database level ones."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284850662-332492058.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284850662-332492058.png",
+          "alt": "An application level shard router directing traffic based on customer id to one of three separate database instances, each instance holding a distinct shard of the data"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Terminology Across Databases",
+          "text": "6. Terminology Across Databases"
+        },
+        {
+          "type": "paragraph",
+          "content": "Part of why this confusion persists is that database vendors are not consistent with each other, and sometimes not even consistent with the general definition above. Knowing how each major system uses the words is the difference between sounding fluent and sounding like you memorized one definition and are pattern matching blindly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 Postgres and most relational databases",
+          "text": "6.1 Postgres and most relational databases"
+        },
+        {
+          "type": "paragraph",
+          "content": "Postgres, Oracle, and SQL Server all use the word partitioning for the single instance, engine managed splitting described above. None of these databases ship a built in, native sharding feature for spreading one logical table across separate instances. If you want that, you either build the routing layer yourself at the application level, or you use an extension or a separate product built on top, such as Citus for Postgres."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 MySQL and Vitess",
+          "text": "6.2 MySQL and Vitess"
+        },
+        {
+          "type": "paragraph",
+          "content": "Plain MySQL supports partitioning in the same single instance sense as Postgres. Vitess, the system built to scale MySQL horizontally at companies like YouTube, adds a genuine sharding layer on top, splitting tables across many separate MySQL instances and routing queries through a proxy called VTGate. The underlying database word stayed partitioning, but the added layer is unambiguously sharding."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.3 MongoDB",
+          "text": "6.3 MongoDB"
+        },
+        {
+          "type": "paragraph",
+          "content": "MongoDB uses the word sharding directly, and it means exactly what the general definition says, data is split by a shard key and distributed across separate replica sets, each one a physically distinct group of machines. MongoDB does not have a separate, lesser used term for single instance splitting the way Postgres does, so in MongoDB documentation the word sharding always implies multiple physical instances."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.4 Cassandra",
+          "text": "6.4 Cassandra"
+        },
+        {
+          "type": "paragraph",
+          "content": "Cassandra is interesting because its architecture makes the two concepts hard to separate even conceptually. Every row is assigned to a position on a hash ring based on its partition key, and that ring is inherently spread across every node in the cluster from the start. Cassandra documentation actually calls this partitioning, the partition key decides where a row lives on the ring, but because the ring by definition spans multiple nodes, what Postgres would insist on calling sharding, Cassandra simply calls partitioning as its default and only mode of operation."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Database\",\"Native term used\",\"What it actually means\",\"Spans multiple instances by default\"],\"rows\":[[\"Postgres\",\"Partitioning\",\"Engine managed row or range split on one instance\",\"No\"],[\"MySQL\",\"Partitioning\",\"Engine managed row split on one instance\",\"No\"],[\"Vitess on MySQL\",\"Sharding\",\"Application aware routing across many MySQL instances\",\"Yes\"],[\"MongoDB\",\"Sharding\",\"Shard key based split across separate replica sets\",\"Yes\"],[\"Cassandra\",\"Partitioning\",\"Hash ring placement, inherently spread across nodes\",\"Yes\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "Read the word in context",
+          "content": "When a database calls something partitioning, always check whether that feature can span multiple physical instances on its own. Cassandra proves that the word choice alone does not tell you the answer, you have to know the system."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Why Interviewers Care About Precise Terminology",
+          "text": "7. Why Interviewers Care About Precise Terminology"
+        },
+        {
+          "type": "paragraph",
+          "content": "In a system design interview, saying we will shard the database when you actually mean we will partition the table on the same instance is not a small slip. It tells the interviewer one of two things, either you have not thought through whether this design needs multiple physical machines at all, or you do not understand the operational cost you are about to sign up for."
+        },
+        {
+          "type": "paragraph",
+          "content": "Sharding is a much bigger commitment than partitioning. It means picking a shard key you cannot easily change later without moving enormous amounts of data. It means building or adopting a routing layer. It means your application can no longer run a simple join across the whole dataset. It means you now operate a fleet of database instances instead of one, each needing monitoring, backups, and failover. An interviewer who hears you casually reach for sharding when a single well partitioned instance would have handled the stated load for years is right to push back."
+        },
+        {
+          "type": "list",
+          "content": "[\"Reaching for sharding before establishing that a single, well tuned instance genuinely cannot handle the load\",\"Using sharding and partitioning interchangeably when describing an architecture, obscuring whether multiple machines are actually involved\",\"Failing to name a shard key when proposing a sharded design, which is usually the single most consequential decision in the whole scheme\",\"Not mentioning what breaks, cross shard joins, cross shard transactions, and rebalancing cost, once sharding is proposed\"]",
+          "items": [
+            "Reaching for sharding before establishing that a single, well tuned instance genuinely cannot handle the load",
+            "Using sharding and partitioning interchangeably when describing an architecture, obscuring whether multiple machines are actually involved",
+            "Failing to name a shard key when proposing a sharded design, which is usually the single most consequential decision in the whole scheme",
+            "Not mentioning what breaks, cross shard joins, cross shard transactions, and rebalancing cost, once sharding is proposed"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "A good interview signal",
+          "content": "A strong answer says something like, we would first partition this table by date on a single instance, and only move to sharding once write throughput or data volume exceeds what one well provisioned instance can sustain. That single sentence demonstrates you understand both the distinction and the cost curve between them."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Worked Example, Partitioned Table Versus Sharded Cluster",
+          "text": "8. Worked Example, Partitioned Table Versus Sharded Cluster"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consider an orders table for an e commerce platform holding four hundred million rows and growing by roughly two million rows a week. The team needs to decide how to keep this table fast to write to and fast to query as it keeps growing. Two designs are on the table, and comparing them directly makes the distinction concrete rather than abstract."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Option A, partition on a single instance",
+          "text": "8.1 Option A, partition on a single instance"
+        },
+        {
+          "type": "paragraph",
+          "content": "The team partitions the orders table by month, keeping everything on one sufficiently large Postgres instance. Recent months, the ones almost every query touches, stay fully cached in memory, while older months sit on disk and are only read for occasional historical reports. Dropping data older than the retention window becomes a single fast operation on a whole partition instead of a slow row by row delete."
+        },
+        {
+          "type": "code",
+          "content": "CREATE TABLE orders (\n    id bigint NOT NULL,\n    customer_id bigint NOT NULL,\n    order_date date NOT NULL,\n    total_cents integer NOT NULL\n) PARTITION BY RANGE (order_date);\n-- one new partition created each month by a scheduled job\n-- old partitions dropped once past the retention window",
+          "code": {
+            "language": "sql",
+            "content": "CREATE TABLE orders (\n    id bigint NOT NULL,\n    customer_id bigint NOT NULL,\n    order_date date NOT NULL,\n    total_cents integer NOT NULL\n) PARTITION BY RANGE (order_date);\n-- one new partition created each month by a scheduled job\n-- old partitions dropped once past the retention window"
+          },
+          "codes": {
+            "sql": "CREATE TABLE orders (\n    id bigint NOT NULL,\n    customer_id bigint NOT NULL,\n    order_date date NOT NULL,\n    total_cents integer NOT NULL\n) PARTITION BY RANGE (order_date);\n-- one new partition created each month by a scheduled job\n-- old partitions dropped once past the retention window"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Option B, shard across a cluster",
+          "text": "8.2 Option B, shard across a cluster"
+        },
+        {
+          "type": "paragraph",
+          "content": "Instead, the team decides write throughput alone already exceeds what one instance can sustain, so they hash the customer id into sixteen shards, each shard its own separate Postgres instance, and route every query through an application level shard router."
+        },
+        {
+          "type": "code",
+          "content": "function routeQuery(customerId, query) {\n  const shardIndex = hash(customerId) % 16;\n  const connection = shardConnections[shardIndex];\n  return connection.execute(query);\n}\n\n// a query for one customer's orders hits exactly one shard\n// a report across all customers must fan out to all sixteen",
+          "code": {
+            "language": "javascript",
+            "content": "function routeQuery(customerId, query) {\n  const shardIndex = hash(customerId) % 16;\n  const connection = shardConnections[shardIndex];\n  return connection.execute(query);\n}\n\n// a query for one customer's orders hits exactly one shard\n// a report across all customers must fan out to all sixteen"
+          },
+          "codes": {
+            "javascript": "function routeQuery(customerId, query) {\n  const shardIndex = hash(customerId) % 16;\n  const connection = shardConnections[shardIndex];\n  return connection.execute(query);\n}\n\n// a query for one customer's orders hits exactly one shard\n// a report across all customers must fan out to all sixteen"
+          }
+        },
+        {
+          "type": "example-box",
+          "title": "Same table, two very different operational realities",
+          "text": "Option A keeps everything on one machine. Backups are one job, monitoring is one dashboard, and a query joining orders with a customers table still runs as one ordinary SQL statement. Option B multiplies every one of those concerns by sixteen. Sixteen instances to back up, sixteen to monitor, and a join between orders and customers now has to happen in application code after fetching from the right shards, because there is no single engine left that can see both tables at once. Option B only earns its cost if write throughput or total data volume has genuinely outgrown what one well sized instance in option A could sustain."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523738-970945292.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523738-970945292.png",
+          "alt": "Side by side comparison of the same orders dataset, shown as four partitions on one server on the left versus four shards spread across four separate servers on the right"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Trade offs",
+          "text": "9. Trade offs"
+        },
+        {
+          "type": "paragraph",
+          "content": "Neither approach is universally better, and the right choice depends entirely on which constraint is actually binding, storage and query manageability, or raw throughput and total capacity."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Simple to operate, one instance, one backup job, one thing to monitor\",\"Total capacity is capped by what a single machine can hold and serve\"],[\"Ordinary SQL joins and transactions keep working across the whole dataset\",\"A single slow query or lock can still affect every partition on that instance\"],[\"Built into the database engine, no custom routing code to maintain\",\"Does not add any additional write throughput beyond one server's limit\"],[\"Partition pruning speeds up queries that filter on the partition key\",\"\"]]}"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Scales write throughput and total storage roughly linearly by adding more shards\",\"Cross shard joins and transactions require application level work or are avoided entirely\"],[\"Each shard can fail over independently, containing the blast radius of a single instance failure\",\"Choosing the wrong shard key is expensive to fix, often requiring a full data migration\"],[\"Read and write load is spread across many machines instead of concentrated on one\",\"Operational surface area multiplies, every shard needs its own monitoring and backup\"],[\"\",\"Rebalancing shards as data grows unevenly is a genuinely hard operational project\"]]}"
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Concern\",\"Single instance partitioning\",\"Multi instance sharding\"],\"rows\":[[\"Operational overhead\",\"One instance to run and monitor\",\"One instance per shard, multiplied overhead\"],[\"Failure isolation\",\"One failure affects the whole table\",\"A shard failure affects only its own slice of data\"],[\"Cross piece queries\",\"Ordinary SQL, handled by the engine\",\"Requires fan out or application level joins\"],[\"Rebalancing\",\"Rare, mostly about adding new partitions\",\"Frequent concern as shards grow unevenly\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. When to Choose Which",
+          "text": "10. When to Choose Which"
+        },
+        {
+          "type": "paragraph",
+          "content": "A reasonable default is to treat partitioning as the first tool to reach for and sharding as the escalation you accept only once partitioning on a single, well provisioned instance has genuinely stopped being enough. Most systems, even fairly large ones, never actually cross that line, because modern hardware and a well tuned single instance database can absorb far more load than intuition suggests."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523739-216362981.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523739-216362981.png",
+          "alt": "A simple decision flow asking whether write throughput or data volume has outgrown one server, leading to sharding across multiple instances if yes, or partitioning on a single instance if no"
+        },
+        {
+          "type": "list",
+          "content": "[\"Start by partitioning within a single instance if the goal is faster queries, easier maintenance, or simpler data lifecycle management\",\"Move to sharding only once a single, appropriately sized instance cannot sustain the required write throughput or cannot physically hold the data\",\"Pick a shard key based on the access pattern that must stay fast, usually the field most queries already filter on\",\"Budget real engineering time for the routing layer and the operational tooling sharding requires, it is rarely a small addition\"]",
+          "items": [
+            "Start by partitioning within a single instance if the goal is faster queries, easier maintenance, or simpler data lifecycle management",
+            "Move to sharding only once a single, appropriately sized instance cannot sustain the required write throughput or cannot physically hold the data",
+            "Pick a shard key based on the access pattern that must stay fast, usually the field most queries already filter on",
+            "Budget real engineering time for the routing layer and the operational tooling sharding requires, it is rarely a small addition"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Common Mistakes",
+          "text": "11. Common Mistakes"
+        },
+        {
+          "type": "paragraph",
+          "content": "A handful of mistakes show up repeatedly, both in production systems and in interview answers, and most of them trace back to treating sharding and partitioning as the same decision."
+        },
+        {
+          "type": "list",
+          "content": "[\"Sharding a system that a single properly indexed and partitioned instance would have handled comfortably\",\"Picking a shard key based on convenience, such as an auto incrementing id, instead of the actual access pattern\",\"Underestimating how expensive resharding is once the initial shard key stops distributing load evenly\",\"Assuming partitioning alone will add capacity beyond what one machine can provide\",\"Describing a Cassandra or MongoDB deployment using Postgres style single instance assumptions, then being surprised that joins do not work the same way\"]",
+          "items": [
+            "Sharding a system that a single properly indexed and partitioned instance would have handled comfortably",
+            "Picking a shard key based on convenience, such as an auto incrementing id, instead of the actual access pattern",
+            "Underestimating how expensive resharding is once the initial shard key stops distributing load evenly",
+            "Assuming partitioning alone will add capacity beyond what one machine can provide",
+            "Describing a Cassandra or MongoDB deployment using Postgres style single instance assumptions, then being surprised that joins do not work the same way"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "Resharding deserves special attention because it is usually the most painful mistake to recover from. Once a shard key is chosen and data is distributed across a cluster on that basis, changing the key or the shard count later means physically moving large volumes of data between instances while keeping the system available."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523739-810691357.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396523739-810691357.png",
+          "alt": "The operational sequence of resharding: a shard growing too large, choosing a new shard count, moving rows between shard instances, and updating routing rules everywhere"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "12. Summary",
+          "text": "12. Summary"
+        },
+        {
+          "type": "paragraph",
+          "content": "If you remember nothing else from this lesson, remember the question to ask before either word leaves your mouth in a design discussion, does this split ever cross the boundary of a single machine. If the answer is no, you are talking about partitioning. If the answer is yes, you are talking about sharding, and you should be ready to explain the shard key, the routing layer, and the operational cost that decision carries."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Partitioning is the general act of splitting data. Sharding is the specific case of horizontal partitioning that crosses the boundary of a single machine."
+        },
+        {
+          "type": "paragraph",
+          "content": "Every shard is a partition, built by splitting rows according to a key, but not every partition is a shard, since most partitioning happens comfortably within one database instance and never needs to. Postgres, MySQL, MongoDB, and Cassandra each use the words slightly differently, which is exactly why precise usage matters more, not less, when you are talking across systems or in front of an interviewer."
+        },
+        {
+          "type": "paragraph",
+          "content": "The practical takeaway is to reach for partitioning first, since it solves most manageability and query performance problems without adding a single extra machine to operate, and to reach for sharding only once you can point to a concrete throughput or capacity ceiling that one well tuned instance genuinely cannot clear. Getting that sequencing right, and naming it correctly, is what separates a design that scales cleanly from one that pays the full operational cost of sharding for a problem partitioning would have solved."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,537 @@
+{
+  "slug": "mcp-server-architecture",
+  "title": "MCP Server Architecture",
+  "content": [
+    {
+      "id": "mcp-server-architecture",
+      "title": "MCP Server Architecture",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "A server is often described in one sentence, it exposes tools, resources, and prompts to a client, and that sentence is accurate but tells you almost nothing about how a real server is actually put together inside. Underneath that one sentence sits a request handler, a set of registries, and whatever real system the server is wrapping, a database, a filesystem, a third-party API. This lesson opens up that internal shape and follows one request all the way through it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. The Server as a Wrapper Around a Real System",
+          "id": "servarch-wrapper-real-system"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146802988-159911867.png",
+          "alt": "A real system goes through a server to become an MCP interface",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146802988-159911867.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "An MCP server is rarely a system in its own right, it is almost always a thin, standardized layer wrapped around something that already exists, a filesystem, a database, a ticketing system, a third-party API. The server's entire job is translating MCP requests into whatever that underlying system actually understands, and translating its responses back into the shapes MCP expects."
+        },
+        {
+          "type": "paragraph",
+          "text": "This wrapping role is exactly why writing a new MCP server is usually fast, the hard part, the database or the API, already exists, the server just needs to expose a clean, standardized face on top of it. Building MCP Servers covers the practical side of this in depth, this lesson focuses purely on the architecture, the internal shape every server tends to share regardless of what it wraps."
+        },
+        {
+          "type": "paragraph",
+          "text": "This wrapper framing also explains why two MCP servers exposing very different underlying systems, a filesystem server and a database server, say, can still look almost identical from the outside, same request handler shape, same registry pattern, only the handler functions and the system underneath them actually differ."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Why a Server Needs Internal Structure Too",
+          "id": "servarch-why-internal-structure"
+        },
+        {
+          "type": "paragraph",
+          "text": "It might seem like a server just needs to listen for requests and answer them, but a server exposing even a handful of tools, resources, and prompts quickly needs a defined way to look up what it offers, validate what comes in, and dispatch to the correct piece of underlying logic. Without that structure, every new tool added means more special-cased branching scattered through the request-handling code."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Without structure: one giant branch that grows forever\ndef handle_request(request):\n    if request.method == \"tools/call\" and request.params.name == \"read_file\":\n        return read_file_logic(request.params.arguments)\n    elif request.method == \"tools/call\" and request.params.name == \"write_file\":\n        return write_file_logic(request.params.arguments)\n    # every new tool adds another branch here"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The registry-based alternative replaces that ever-growing conditional with a flat lookup, adding a new tool means adding one new registry entry, never touching the request handler or method router at all, which is exactly the property that keeps a server maintainable as its tool count grows into the dozens."
+        },
+        {
+          "type": "paragraph",
+          "text": "This same structure also makes a server's behavior far easier to test in isolation, a registry entry and its handler function can be exercised directly in a unit test without ever spinning up a transport or a real client connection at all."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. The Request Handler: The Front Door for Every Incoming Call",
+          "id": "servarch-request-handler"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146805139-715532116.png",
+          "alt": "An incoming request reaches the request handler",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146805139-715532116.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every message that arrives at a server, regardless of what it eventually turns out to be, passes through one common entry point first, the request handler. It is responsible for parsing the raw JSON-RPC envelope, checking it is well-formed, and reading the method field so it knows what kind of request it is dealing with next."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 12,\n  \"method\": \"tools/call\",\n  \"params\": { \"name\": \"read_file\", \"arguments\": { \"path\": \"/data/report.txt\" } }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "If the envelope itself is malformed, missing a required jsonrpc field, for instance, the request handler is what returns a protocol-level error immediately, before any tool-specific or resource-specific logic ever gets a chance to run. This is the server's first line of defense, and it is deliberately kept generic, it knows nothing about individual tools at all."
+        },
+        {
+          "type": "paragraph",
+          "text": "The request handler is also the natural place to attach cross-cutting concerns that apply to every request equally, request logging, basic rate limiting, or authentication checks, since it is guaranteed to see every single incoming message before anything more specific happens."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def request_handler(raw_message):\n    try:\n        request = parse_json_rpc(raw_message)\n    except MalformedEnvelopeError:\n        return protocol_error(-32700, \"Parse error\")\n    return dispatch(request)"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. The Method Router: Dispatching by Request Type",
+          "id": "servarch-method-router"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146806705-898623642.png",
+          "alt": "A request goes through a method router to the correct handler",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146806705-898623642.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once a request has passed basic validation, the method router reads its method field, tools/call, resources/read, prompts/get, and sends it toward the correct registry. This router is usually a simple lookup table, not a long chain of conditionals, mapping method names directly to handler functions."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "METHOD_HANDLERS = {\n    \"tools/list\": handle_tools_list,\n    \"tools/call\": handle_tools_call,\n    \"resources/list\": handle_resources_list,\n    \"resources/read\": handle_resources_read,\n    \"prompts/list\": handle_prompts_list,\n    \"prompts/get\": handle_prompts_get,\n}\n\ndef dispatch(request):\n    handler = METHOD_HANDLERS.get(request.method)\n    if handler is None:\n        return protocol_error(-32601, f\"Method not found: {request.method}\")\n    return handler(request)"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Keep the router boring",
+          "content": "A method router that stays a flat lookup table rather than growing conditional branches over time is one of the simplest signals that a server's architecture has not started accumulating unnecessary complexity."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. The Tool Registry",
+          "id": "servarch-tool-registry"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146808373-521595696.png",
+          "alt": "A tool registers in the tool registry",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146808373-521595696.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The tool registry is where a server keeps its list of callable tools, each one with a name, a description, an input schema, and a reference to the actual function that runs when the tool is called. When a client sends tools/list, the server is simply reading this registry and serializing it back, no underlying system needs to be touched at all for a plain listing request."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"read_file\": {\n    \"description\": \"Read the contents of a file at a given path\",\n    \"inputSchema\": { \"type\": \"object\", \"properties\": { \"path\": { \"type\": \"string\" } }, \"required\": [\"path\"] },\n    \"handler\": \"handlers.read_file\"\n  },\n  \"write_file\": {\n    \"description\": \"Write text content to a file at a given path\",\n    \"inputSchema\": { \"type\": \"object\", \"properties\": { \"path\": { \"type\": \"string\" }, \"content\": { \"type\": \"string\" } }, \"required\": [\"path\", \"content\"] },\n    \"handler\": \"handlers.write_file\"\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Because the registry is the single source of truth for what a server offers, the exact same entries back both the tools/list response a client sees during discovery and the lookup the method router performs when tools/call actually arrives, there is no second, separate list to keep in sync."
+        },
+        {
+          "type": "paragraph",
+          "text": "It is worth noticing this registry is exactly what changes when a listChanged notification is sent to connected clients, adding, removing, or editing an entry in the tool registry is the event that triggers the server to tell every client its available tools have shifted."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. The Resource Registry",
+          "id": "servarch-resource-registry"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146809900-854825583.png",
+          "alt": "A resource registers in the resource registry",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146809900-854825583.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "The resource registry serves the same purpose for readable, addressable data instead of callable actions, tracking a uri, a name, a mimeType, and a way to fetch the actual content for each resource the server exposes. Resources can be a fixed, known list, or generated dynamically from a template uri pattern, covered fully in the MCP Resources module."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Field\",\"Meaning\"],\"rows\":[[\"uri\",\"Stable identifier the client uses to request this exact resource\"],[\"name\",\"Human-readable label shown in a host's UI\"],[\"mimeType\",\"Tells the client how to interpret the returned content\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "Some servers expose resources dynamically rather than from a fixed list, generating an entry on the fly whenever a uri matches a known template pattern, covered in depth in the Resource Templates lesson, but architecturally the registry still plays the identical role, mapping a uri pattern to a fetch function."
+        },
+        {
+          "type": "paragraph",
+          "text": "A resource registry entry rarely stores the full content of what it exposes, storing a large file's bytes directly in the registry would defeat the purpose of keeping it a lightweight index, instead it stores just enough, a uri and a fetch reference, to retrieve the actual content only when a client specifically asks for it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. The Prompt Registry",
+          "id": "servarch-prompt-registry"
+        },
+        {
+          "type": "paragraph",
+          "text": "The prompt registry holds reusable prompt templates the server ships with, each with a name, an optional set of arguments, and the logic to fill those arguments into an actual message when a client requests it with prompts/get. Architecturally it is a near-identical sibling of the tool and resource registries, same list-then-fetch shape, different payload."
+        },
+        {
+          "type": "paragraph",
+          "text": "Keeping tools, resources, and prompts in three separate registries rather than one mixed collection matters for a very practical reason, each has a distinct request shape and a distinct capability flag exchanged during initialization, and separating them keeps the method router's dispatch table simple and unambiguous."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"summarize_thread\": {\n    \"description\": \"Summarize a conversation thread given its id\",\n    \"arguments\": [{ \"name\": \"thread_id\", \"required\": true }],\n    \"handler\": \"handlers.summarize_thread\"\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "When a prompts/get request arrives naming summarize_thread with a thread_id argument, the handler fills that argument into the template and returns a fully composed message ready for the model, the same fill-in-the-template step every prompt in the registry follows."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Connecting the Registries to the Underlying System",
+          "id": "servarch-connecting-underlying-system"
+        },
+        {
+          "type": "paragraph",
+          "text": "A registry entry is only metadata, name, description, schema, until a request actually arrives asking to use it. The handler referenced by that entry is where the registry connects to the real, wrapped system, opening a file, running a database query, calling a downstream API, whatever the tool is actually supposed to do."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def read_file_handler(arguments):\n    path = arguments[\"path\"]\n    with open(path, \"r\") as f:\n        content = f.read()\n    return {\"content\": [{\"type\": \"text\", \"text\": content}], \"isError\": False}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This is deliberately the only place in the server where MCP-specific code and the underlying system's own code meet, everything upstream, the request handler, the method router, the registries, has no idea whether it is wrapping a filesystem or a database, that knowledge is fully contained inside individual handler functions."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "text": "8.1 Handler Functions Should Stay Narrow",
+          "id": "servarch-handlers-narrow"
+        },
+        {
+          "type": "paragraph",
+          "text": "A well-scoped handler function does exactly one thing, the work implied by its tool's description, and nothing more, it does not also perform logging, permission checks, or response formatting, those concerns belong to the request handler and surrounding middleware, kept consistent across every tool rather than duplicated inside each one."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Processing One Request End to End",
+          "id": "servarch-processing-end-to-end"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146811640-606480332.png",
+          "alt": "A request is validated, executed, and produces a response",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146811640-606480332.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Putting every earlier piece together, a single tools/call request travels through five distinct stages inside the server before a response goes back out: the request handler parses and validates the envelope, the method router dispatches based on method, the tool registry is consulted to look up the named tool, the input is validated against that tool's schema, and only then does the registered handler function actually run against the underlying system."
+        },
+        {
+          "type": "list",
+          "items": [
+            "1. Request handler parses the JSON-RPC envelope.",
+            "2. Method router reads \"tools/call\" and dispatches to the tools handler.",
+            "3. Tool registry is consulted to find the named tool's schema and handler.",
+            "4. Arguments are validated against the schema.",
+            "5. The handler runs against the underlying system and returns a result.",
+            "6. The result is wrapped back into a JSON-RPC response and sent to the client."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "text": "Notice that four of these six stages, parsing, dispatching, looking up, and wrapping the final response, are completely generic and identical no matter which tool was called, only stages three and five, the specific registry entry and its handler function, differ from one tool to the next, which is exactly the separation of concerns this architecture is built around."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# The same six-stage shape applies to prompts/get, only the registry and\n# handler differ, everything else is identical to the tools/call trace above\ndispatch({\"method\": \"prompts/get\", \"params\": {\"name\": \"summarize_thread\", \"arguments\": {\"thread_id\": \"42\"}}})"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The same trace applies almost unchanged to a resources/read or prompts/get call, only the registry consulted at stage three and the handler function invoked at stage five change, which is a strong signal the architecture has genuinely separated the generic protocol machinery from the tool-specific or resource-specific work."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. Validating Input Before Touching the Underlying System",
+          "id": "servarch-validating-input"
+        },
+        {
+          "type": "paragraph",
+          "text": "A well-architected server never lets unvalidated input reach a handler function. Arguments are checked against the tool's declared input schema first, missing required fields, wrong types, values outside an allowed set, are all caught and rejected before any file gets opened or any query gets run."
+        },
+        {
+          "type": "note",
+          "title": "Why this ordering matters",
+          "content": "Validating before executing means a malformed call fails cheaply and safely, with a clear message, instead of failing midway through a partially completed side effect against the real underlying system."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "def validate_arguments(schema, arguments):\n    for field in schema.get(\"required\", []):\n        if field not in arguments:\n            raise ValidationError(f\"Missing required field: {field}\")\n    return True"
+          }
+        },
+        {
+          "type": "note",
+          "title": "Schema validation is cheap, side effects are not",
+          "content": "Rejecting a malformed argument costs a server nothing more than a quick check, while letting that same malformed argument reach a handler that has already started writing to a database or a file can leave things in a half-finished state that is much harder to clean up."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. Returning Results and Errors Consistently",
+          "id": "servarch-returning-results"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every handler, regardless of which tool it belongs to, is expected to return results in the same shape, a content array and an isError flag, so the request handler can wrap any of them into a JSON-RPC response identically. This consistency is what lets a method router and request handler stay completely generic, never needing to know the specifics of any individual tool's output."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 12,\n  \"result\": {\n    \"content\": [{ \"type\": \"text\", \"text\": \"report contents here\" }],\n    \"isError\": false\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This consistency also extends to protocol-level errors, a request for an unknown tool name or a malformed method is answered with a JSON-RPC error object rather than a result, keeping the two failure categories, tool-level and protocol-level, cleanly distinguishable exactly as covered in MCP Workflow."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 12,\n  \"error\": { \"code\": -32602, \"message\": \"Unknown tool: raed_file\" }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "This split, isError for problems the tool itself understands, a JSON-RPC error for problems the protocol layer understands, is one of the most consistently useful design decisions in the entire protocol, and a server architecture that blurs the line between the two tends to confuse client-side error handling considerably."
+        },
+        {
+          "type": "paragraph",
+          "text": "A client relying on this consistency can implement one single result-handling code path for every tool it ever calls, rather than special-casing how it interprets a response depending on which server or which tool produced it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Statelessness and Why Most Servers Avoid Holding Session State",
+          "id": "servarch-statelessness"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146813586-500924677.png",
+          "alt": "A server avoids holding session state",
+          "caption": "",
+          "size": "small",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1785146813586-500924677.png"
+        },
+        {
+          "type": "paragraph",
+          "text": "Most well-designed MCP servers keep as little session-specific state in memory as they can get away with, treating each incoming request as independent and self-contained wherever possible. Anything that needs to persist across a whole session, like which client is connected and what it has been told, is usually kept to the bare minimum, with the heavier state living on the client and session side instead."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is explored fully in the State Management lesson later in this module, the short version here is that a server built to be as stateless as reasonably possible is far easier to scale horizontally, restart safely, and reason about under load, since there is little to lose or reconcile if any one server instance goes away."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# A stateless-leaning handler: everything it needs travels with the request\ndef search_records_handler(arguments, request_context):\n    query = arguments[\"query\"]\n    return database.search(query)  # no per-client memory required at all"
+          }
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Kept in the server\",\"Kept on the client or session side\"],\"rows\":[[\"Tool, resource, and prompt registries\",\"Which capabilities were negotiated\"],[\"Connections to the underlying system\",\"Conversation history\"],[\"Request-scoped validation results\",\"Which requests are still in flight\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Worked Example: Tracing a resources/read Call",
+          "id": "servarch-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "A client sends a resources/read request for uri file:///data/report.txt. Here is exactly what happens inside the server."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{ \"jsonrpc\": \"2.0\", \"id\": 20, \"method\": \"resources/read\", \"params\": { \"uri\": \"file:///data/report.txt\" } }"
+          }
+        },
+        {
+          "type": "list",
+          "items": [
+            "1. Request handler confirms the envelope is well-formed JSON-RPC.",
+            "2. Method router dispatches to the resources handler based on \"resources/read\".",
+            "3. Resource registry is checked for a matching uri or a matching uri template.",
+            "4. The registered fetch function opens the file and reads its bytes.",
+            "5. Content is wrapped with a mimeType and returned as a resources/read result."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Stage\",\"Component involved\",\"What it checks or does\"],\"rows\":[[\"Parse\",\"Request handler\",\"Confirms well-formed JSON-RPC envelope\"],[\"Dispatch\",\"Method router\",\"Matches method to the resources handler\"],[\"Lookup\",\"Resource registry\",\"Finds the uri or matching template\"],[\"Fetch\",\"Handler function\",\"Reads the actual file bytes\"],[\"Respond\",\"Request handler\",\"Wraps content and mimeType into a result\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Common Mistakes in Server Architecture",
+          "id": "servarch-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Mixing MCP protocol logic directly into the code that talks to the underlying system, instead of keeping that boundary inside individual handler functions only.",
+            "Skipping schema validation and letting a handler function fail midway through touching the underlying system with bad input.",
+            "Returning inconsistent result shapes from different tools, forcing the request handler to special-case how it wraps each one.",
+            "Storing large amounts of per-client session state inside the server when it could live on the client side instead, making horizontal scaling much harder.",
+            "Growing the method router into a long conditional chain instead of a simple lookup table as new methods are added.",
+            "Letting one slow handler block the request handler from processing unrelated, faster requests concurrently."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "note",
+          "title": "A quick diagnostic",
+          "content": "If adding a new tool to a server requires touching the request handler or method router at all, rather than only the tool registry, that is a sign the registries are not doing their job of isolating per-tool detail."
+        },
+        {
+          "type": "list",
+          "items": [
+            "Letting handler functions perform logging or formatting duties that belong in shared, generic middleware instead.",
+            "Building a separate list for discovery responses instead of generating tools/list directly from the same registry the router uses."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Practice: Trace a tools/call Request Through Your Own Server Design",
+          "id": "servarch-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Pick any real system you know well, a to-do list app, a weather API, a simple key-value store, and sketch an MCP server wrapping it with exactly one tool. Write out the tool registry entry, including its input schema, then trace a single tools/call request through the request handler, method router, and registry lookup, down to the handler function that would touch your chosen system."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "python",
+            "content": "# Fill in your own tool registry entry\ntool_registry = {\n    \"your_tool_name\": {\n        \"description\": \"?\",\n        \"inputSchema\": { \"type\": \"object\", \"properties\": {}, \"required\": [] },\n        \"handler\": \"?\"\n    }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Then write what your handler should return if the underlying system, your to-do list, your API, your store, fails partway through, and confirm that failure shape still matches the content-and-isError pattern every other tool on your server would use."
+        },
+        {
+          "type": "paragraph",
+          "text": "As a final step, consider what would need to change in your sketch if you added a second tool to the same server, confirm the request handler and method router would need no changes at all, and only the tool registry would grow."
+        },
+        {
+          "type": "paragraph",
+          "text": "If you can, actually run your sketch against a tiny real system, a plain text file or an in-memory dictionary works fine, and confirm your handler function returns the same content-and-isError shape whether the call succeeds or fails."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "servarch-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A server is a thin, standardized wrapper with real internal structure, a request handler at the front door, a method router dispatching by request type, three separate registries for tools, resources, and prompts, and handler functions where MCP logic finally meets whatever real system is being wrapped."
+        },
+        {
+          "type": "paragraph",
+          "text": "With both sides of a connection now mapped internally, the next lesson, Client-Server Communication, looks at the mechanics that tie a host's client instance and a server's request handler together across an actual session, how requests and responses are paired up by id, and how several calls can be in flight at once."
+        }
+      ]
+    }
+  ]
+}

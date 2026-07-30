@@ -1,0 +1,586 @@
+{
+  "slug": "data-compression",
+  "title": "Data Compression",
+  "content": [
+    {
+      "id": "data-compression",
+      "title": "Data Compression",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "content": "Every byte a system writes has to be stored somewhere, sent somewhere, or both. As data volume grows, the cost of storing it and the cost of moving it grow right along with it, and at some point that cost becomes the dominant line item in an infrastructure bill or the dominant bottleneck in a write path. Compression is the set of techniques a system uses to represent the same information in fewer bytes, and it is one of the cheapest, highest leverage tools available for scaling writes."
+        },
+        {
+          "type": "paragraph",
+          "content": "This lesson looks at compression specifically through the lens of database and system write scaling: why it matters, the difference between lossless and lossy approaches, the general purpose algorithms most engineers will encounter in practice, the specialized techniques columnar analytical databases use, where compression gets applied across a real system, and the trade offs involved in choosing a strategy."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524477-901195779.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524477-901195779.png",
+          "alt": "A write request passes through a compressor that encodes it into a smaller byte stream before it reaches a disk block"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. Introduction",
+          "text": "1. Introduction"
+        },
+        {
+          "type": "paragraph",
+          "content": "At its simplest, compression finds and removes redundancy. Text files repeat common words. Log lines share the same field names on every row. Sensor readings from one second to the next barely change. Database columns often contain the same value, or a value very close to the previous one, over and over. Compression algorithms exploit exactly this kind of repetition and predictability, replacing long, repeated, or predictable patterns with shorter representations."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Compression is the process of encoding data using fewer bits than the original representation, by exploiting redundancy and statistical structure in that data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "1.1 Why This Belongs in a System Design Discussion",
+          "text": "1.1 Why This Belongs in a System Design Discussion"
+        },
+        {
+          "type": "paragraph",
+          "content": "It is tempting to treat compression as a low level implementation detail buried inside a storage engine or a network library, something an application engineer never has to think about directly. In practice, the choice of compression strategy shows up constantly in system design interviews and in real production decisions: which codec a message queue uses, whether a database table is stored compressed on disk, whether an API response is gzipped before it leaves a server. Each of these choices trades CPU time for storage space or network bandwidth, and making that trade well requires understanding the mechanics behind it."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "2. Why Compression Matters for Write Scaling",
+          "text": "2. Why Compression Matters for Write Scaling"
+        },
+        {
+          "type": "paragraph",
+          "content": "Write scaling is usually framed around throughput: how many writes per second can a system absorb. But every write also has to land somewhere and often has to travel somewhere first, and both of those steps are where compression pays off directly."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.1 Reducing Storage Cost",
+          "text": "2.1 Reducing Storage Cost"
+        },
+        {
+          "type": "paragraph",
+          "content": "Storage is billed by the gigabyte, and that bill scales linearly with how much raw data a system keeps. A logging pipeline ingesting 2 terabytes of raw text per day at a modest cloud storage rate can turn into a genuinely large monthly bill once retention stretches to 90 days or a year. Text heavy data such as logs, JSON payloads, and application traces routinely compresses down to somewhere between a tenth and a third of its original size, which turns that same retention window into a fraction of the original storage footprint."
+        },
+        {
+          "type": "paragraph",
+          "content": "This matters even more for databases that keep multiple copies of data for durability. Three replicas of an uncompressed dataset cost three times the raw size. Three replicas of a compressed dataset cost three times the compressed size, and the saving compounds across every copy."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.2 Reducing I/O",
+          "text": "2.2 Reducing I/O"
+        },
+        {
+          "type": "paragraph",
+          "content": "Disks, even fast solid state drives, have a finite amount of bandwidth for reading and writing bytes. A write that is a quarter of its original size after compression consumes roughly a quarter of the disk I/O that the uncompressed write would have consumed. On a system where disk I/O, not CPU, is the bottleneck, this can be the difference between a write path that keeps up with incoming traffic and one that falls behind and builds a backlog."
+        },
+        {
+          "type": "paragraph",
+          "content": "The same logic applies to reads. A query that scans a compressed table on disk pulls fewer physical bytes off storage before decompressing them in memory, which is why compression often speeds up read heavy analytical workloads even though it adds a decompression step."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.3 Reducing Network Bandwidth",
+          "text": "2.3 Reducing Network Bandwidth"
+        },
+        {
+          "type": "paragraph",
+          "content": "Writes frequently cross a network before they are durable: a client sending data to an API, a producer publishing to a message queue, a primary database node streaming a write ahead log entry to a replica. Network bandwidth between data centers, and especially across regions, is both limited and often the most expensive part of the path. Shrinking the payload before it leaves the sender directly shrinks how much of that expensive bandwidth the write consumes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "2.4 Faster Replication",
+          "text": "2.4 Faster Replication"
+        },
+        {
+          "type": "paragraph",
+          "content": "Replication correctness depends on replicas keeping up with a primary. A replica that has to receive and apply more raw bytes per write falls further behind under the same network conditions than one receiving compressed batches of the same logical writes. Compressing replication traffic, whether that is a write ahead log stream, a change data capture feed, or a full snapshot transfer, directly reduces replication lag and shortens how long a new replica takes to catch up from scratch."
+        },
+        {
+          "type": "note",
+          "title": "The common thread",
+          "content": "Storage cost, disk I/O, network bandwidth, and replication lag are four different symptoms of the same root cause: too many raw bytes moving through a system. Compression attacks the root cause once, and every one of those four symptoms improves together."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. Lossless vs Lossy Compression",
+          "text": "3. Lossless vs Lossy Compression"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every compression algorithm falls into one of two families, and the distinction between them is not a minor implementation detail, it determines whether a system can even consider using a given algorithm for a given kind of data."
+        },
+        {
+          "type": "blockQuote",
+          "content": "Lossless compression guarantees that decompressing the output returns exactly the original bytes. Lossy compression accepts a controlled loss of detail in exchange for a much smaller size."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284861293-757455278.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785284861293-757455278.png",
+          "alt": "Original data can be run through a lossless codec that restores the exact original, or a lossy codec that only restores an approximation"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.1 Lossless Compression",
+          "text": "3.1 Lossless Compression"
+        },
+        {
+          "type": "paragraph",
+          "content": "A lossless algorithm reconstructs the input bit for bit. Feed it any file, compress it, decompress it, and the result is byte identical to the original. This property is what makes lossless compression safe for anything a system cannot afford to alter even slightly: source code, financial transaction records, database rows, configuration files, and log entries. Gzip, LZ4, Snappy, and Zstandard, covered in the next section, are all lossless."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.2 Lossy Compression",
+          "text": "3.2 Lossy Compression"
+        },
+        {
+          "type": "paragraph",
+          "content": "A lossy algorithm discards information that it judges unlikely to be missed, usually based on how humans perceive the data. JPEG discards image detail beyond what the human eye reliably notices. MP3 and modern audio codecs discard frequencies that are masked by louder nearby frequencies and therefore inaudible in practice. The saving from doing this is often dramatic, a lossy image codec routinely achieves five to ten times the reduction a lossless codec would achieve on the same photo."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "3.3 Why Storage Systems Use Lossless Compression Almost Exclusively",
+          "text": "3.3 Why Storage Systems Use Lossless Compression Almost Exclusively"
+        },
+        {
+          "type": "paragraph",
+          "content": "A database row, a log line, or a financial ledger entry has no notion of an acceptable approximation. Losing even a single digit of a currency amount, or silently corrupting a primary key, is not a minor quality tradeoff, it is data corruption. This is why the storage and replication layer of virtually every database and messaging system relies on lossless algorithms only. Lossy compression does still appear in these systems, but only at the edges, for genuinely perceptual media such as user uploaded images, video, or audio attachments, never for the structured records a database is responsible for keeping correct."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Data kind\",\"Compression family\",\"Reasoning\"],\"rows\":[[\"Database rows and indexes\",\"Lossless only\",\"Any bit flip is a correctness bug, not a quality tradeoff\"],[\"Application logs and traces\",\"Lossless only\",\"A dropped character can hide the exact detail an engineer needs during an incident\"],[\"Write ahead log and replication streams\",\"Lossless only\",\"Replicas must reconstruct the primary exactly, byte for byte\"],[\"User uploaded photos and video\",\"Lossy, often\",\"Small perceptual quality loss is an acceptable tradeoff for large size savings\"],[\"Voice and video call streams\",\"Lossy, always\",\"Real time bandwidth constraints require aggressive size reduction and humans tolerate some quality loss\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. General Purpose Compression Algorithms",
+          "text": "4. General Purpose Compression Algorithms"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most systems reach for one of a small handful of well known, general purpose lossless algorithms rather than inventing something new. Each one sits at a different point on a spectrum between compression speed and compression ratio, and picking between them is really about deciding where on that spectrum a given workload needs to sit."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524478-963017925.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524478-963017925.png",
+          "alt": "A spectrum from Snappy and LZ4 on the fast, lower ratio end through Zstandard in the middle to Gzip Deflate on the slower, higher ratio end"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.1 Gzip and Deflate",
+          "text": "4.1 Gzip and Deflate"
+        },
+        {
+          "type": "paragraph",
+          "content": "Deflate is the underlying algorithm, combining a dictionary based scheme called LZ77 with Huffman coding, and gzip is a widely used container format built around it. Gzip has been around since the early 1990s, is supported essentially everywhere, and produces good compression ratios. Its main weakness for high throughput write paths is speed, it is noticeably slower to compress than the newer algorithms below, which makes it a poor fit for latency sensitive hot paths but a fine fit for data that is compressed once and read many times, such as archived logs or static web assets."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.2 Snappy",
+          "text": "4.2 Snappy"
+        },
+        {
+          "type": "paragraph",
+          "content": "Snappy was built at Google specifically for internal systems like Bigtable and MapReduce, where compression happens constantly on the hot path and speed matters far more than squeezing out the last few percent of size reduction. It deliberately sacrifices compression ratio for extremely fast compression and, especially, extremely fast decompression, since a system that compresses once but decompresses on every single read benefits most from cheap decompression."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.3 LZ4",
+          "text": "4.3 LZ4"
+        },
+        {
+          "type": "paragraph",
+          "content": "LZ4 occupies similar territory to Snappy, prioritizing raw speed, and in practice tends to edge out Snappy on both compression and decompression speed while landing in a similar compression ratio range. It has become a common default in message queues such as Kafka and in some database storage engines, precisely because a write path that is CPU bound benefits more from a cheap, fast codec than from a slower one that shaves off a few extra percentage points of size."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "4.4 Zstandard",
+          "text": "4.4 Zstandard"
+        },
+        {
+          "type": "paragraph",
+          "content": "Zstandard, often shortened to zstd, was developed at Facebook and is the newest of the four discussed here. Its notable feature is a wide, tunable range of compression levels: at low levels it competes with LZ4 on speed, and at high levels it matches or beats gzip on ratio, all within the same algorithm. This tunability is why zstd has become a popular default across many newer systems, it lets an engineer pick a single codec and dial the speed versus ratio tradeoff per use case rather than committing to one algorithm for hot paths and a different one for cold storage."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Algorithm\",\"Compression speed\",\"Decompression speed\",\"Typical ratio\",\"Typical use case\"],\"rows\":[[\"Gzip Deflate\",\"Slow\",\"Moderate\",\"High\",\"Archived logs, static assets, HTTP responses where CPU budget is not tight\"],[\"Snappy\",\"Very fast\",\"Very fast\",\"Low to moderate\",\"Hot path storage engines and pipelines like Bigtable and MapReduce\"],[\"LZ4\",\"Very fast\",\"Extremely fast\",\"Low to moderate\",\"Message queues and storage engines with tight CPU budgets, such as Kafka\"],[\"Zstandard\",\"Tunable, fast to slow\",\"Fast\",\"Tunable, moderate to high\",\"General purpose default, from hot write paths to cold archival at high levels\"]]}"
+        },
+        {
+          "type": "note",
+          "title": "A practical rule of thumb",
+          "content": "If a codec runs on every single write and every single read on a latency sensitive path, favor LZ4 or Snappy. If a codec runs once on data that will be read rarely, such as a nightly backup or a cold archive, favor gzip or a high level Zstandard setting. If in doubt, Zstandard at a mid level setting is a reasonable default that rarely regrets its choice badly in either direction."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Columnar Compression Techniques",
+          "text": "5. Columnar Compression Techniques"
+        },
+        {
+          "type": "paragraph",
+          "content": "General purpose algorithms like the four above treat their input as an undifferentiated stream of bytes. Analytical databases that store data column by column, rather than row by row, can do meaningfully better by exploiting the fact that all the values in a single column tend to share the same type and often a very narrow range of actual values. This is the foundation of columnar compression, a family of techniques applied before or alongside a general purpose codec."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.1 Dictionary Encoding",
+          "text": "5.1 Dictionary Encoding"
+        },
+        {
+          "type": "paragraph",
+          "content": "Dictionary encoding replaces each distinct value in a column with a small integer code, and keeps a separate lookup table, the dictionary, mapping each code back to its original value. A status column containing only the values active, inactive, and pending across a hundred million rows only needs to store three actual strings once, then a hundred million tiny integer codes instead of a hundred million repeated strings."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524479-157391932.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524479-157391932.png",
+          "alt": "A column of repeated string values gets mapped through a small dictionary into a column of short integer codes"
+        },
+        {
+          "type": "paragraph",
+          "content": "This technique works best on columns with low cardinality, a small number of distinct values relative to the total row count, such as status flags, country codes, or category names. It works poorly on columns like a unique identifier or a precise timestamp, where nearly every value is distinct and the dictionary would end up almost as large as the original data."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.2 Run Length Encoding",
+          "text": "5.2 Run Length Encoding"
+        },
+        {
+          "type": "paragraph",
+          "content": "Run length encoding, commonly abbreviated RLE, replaces a run of consecutive identical values with a single copy of the value plus a count of how many times it repeats. It is especially effective on columns that are sorted or naturally clustered, where the same value tends to appear many times in a row before changing, such as a country column in a table sorted by country, or a boolean flag that stays constant across long stretches of rows."
+        },
+        {
+          "type": "code",
+          "content": "def run_length_encode(values):\n    encoded = []\n    i = 0\n    while i < len(values):\n        current = values[i]\n        run_length = 1\n        while i + run_length < len(values) and values[i + run_length] == current:\n            run_length += 1\n        encoded.append((current, run_length))\n        i += run_length\n    return encoded\n\ncolumn = [\"US\", \"US\", \"US\", \"IN\", \"IN\", \"UK\", \"UK\", \"UK\", \"UK\"]\nprint(run_length_encode(column))\n# [(\"US\", 3), (\"IN\", 2), (\"UK\", 4)]",
+          "code": {
+            "language": "python",
+            "content": "def run_length_encode(values):\n    encoded = []\n    i = 0\n    while i < len(values):\n        current = values[i]\n        run_length = 1\n        while i + run_length < len(values) and values[i + run_length] == current:\n            run_length += 1\n        encoded.append((current, run_length))\n        i += run_length\n    return encoded\n\ncolumn = [\"US\", \"US\", \"US\", \"IN\", \"IN\", \"UK\", \"UK\", \"UK\", \"UK\"]\nprint(run_length_encode(column))\n# [(\"US\", 3), (\"IN\", 2), (\"UK\", 4)]"
+          },
+          "codes": {
+            "python": "def run_length_encode(values):\n    encoded = []\n    i = 0\n    while i < len(values):\n        current = values[i]\n        run_length = 1\n        while i + run_length < len(values) and values[i + run_length] == current:\n            run_length += 1\n        encoded.append((current, run_length))\n        i += run_length\n    return encoded\n\ncolumn = [\"US\", \"US\", \"US\", \"IN\", \"IN\", \"UK\", \"UK\", \"UK\", \"UK\"]\nprint(run_length_encode(column))\n# [(\"US\", 3), (\"IN\", 2), (\"UK\", 4)]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.3 Delta Encoding",
+          "text": "5.3 Delta Encoding"
+        },
+        {
+          "type": "paragraph",
+          "content": "Delta encoding stores the first value in a column as is, then stores every following value as the difference from the value before it, rather than the value itself. This shrinks storage dramatically for columns where consecutive values are close together, such as sequential identifiers, timestamps recorded at a fixed interval, or a slowly changing sensor reading, because the differences are almost always far smaller numbers than the raw values, and small numbers encode into far fewer bits."
+        },
+        {
+          "type": "code",
+          "content": "def delta_encode(values):\n    if not values:\n        return []\n    deltas = [values[0]]\n    for i in range(1, len(values)):\n        deltas.append(values[i] - values[i - 1])\n    return deltas\n\ntimestamps = [1000000, 1000010, 1000021, 1000031, 1000042]\nprint(delta_encode(timestamps))\n# [1000000, 10, 11, 10, 11]\n# storing small deltas like 10 and 11 takes far fewer bits than storing full timestamps",
+          "code": {
+            "language": "python",
+            "content": "def delta_encode(values):\n    if not values:\n        return []\n    deltas = [values[0]]\n    for i in range(1, len(values)):\n        deltas.append(values[i] - values[i - 1])\n    return deltas\n\ntimestamps = [1000000, 1000010, 1000021, 1000031, 1000042]\nprint(delta_encode(timestamps))\n# [1000000, 10, 11, 10, 11]\n# storing small deltas like 10 and 11 takes far fewer bits than storing full timestamps"
+          },
+          "codes": {
+            "python": "def delta_encode(values):\n    if not values:\n        return []\n    deltas = [values[0]]\n    for i in range(1, len(values)):\n        deltas.append(values[i] - values[i - 1])\n    return deltas\n\ntimestamps = [1000000, 1000010, 1000021, 1000031, 1000042]\nprint(delta_encode(timestamps))\n# [1000000, 10, 11, 10, 11]\n# storing small deltas like 10 and 11 takes far fewer bits than storing full timestamps",
+            "javascript": "function deltaEncode(values) {\n  if (values.length === 0) return [];\n  const deltas = [values[0]];\n  for (let i = 1; i < values.length; i++) {\n    deltas.push(values[i] - values[i - 1]);\n  }\n  return deltas;\n}\n\nconst timestamps = [1000000, 1000010, 1000021, 1000031, 1000042];\nconsole.log(deltaEncode(timestamps));\n// [1000000, 10, 11, 10, 11]"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "5.4 Combining Techniques",
+          "text": "5.4 Combining Techniques"
+        },
+        {
+          "type": "paragraph",
+          "content": "These techniques are rarely used in isolation. A real analytical storage format typically applies dictionary encoding or delta encoding first to reshape the raw values into something smaller and more repetitive, then runs a general purpose codec such as Zstandard over the result to squeeze out any remaining redundancy. Formats like Parquet and ORC, and columnar databases like ClickHouse, layer these techniques together for exactly this reason, each stage removes a different kind of redundancy that the previous stage left behind."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Technique\",\"What it exploits\",\"Best fit column type\"],\"rows\":[[\"Dictionary encoding\",\"A small number of distinct values repeated across many rows\",\"Low cardinality columns like status, category, or country\"],[\"Run length encoding\",\"Long consecutive runs of the identical value\",\"Sorted or clustered columns, booleans, low cardinality sorted data\"],[\"Delta encoding\",\"Consecutive values being close in magnitude to each other\",\"Sequential identifiers, regular timestamps, slowly varying measurements\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. Where Compression Fits in a System",
+          "text": "6. Where Compression Fits in a System"
+        },
+        {
+          "type": "paragraph",
+          "content": "Compression is not a single decision made once, it is a series of independent decisions made at different points along the path a piece of data travels, from the moment an application creates it to the moment it lands, durably, at rest."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524479-53549746.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524479-53549746.png",
+          "alt": "An application payload gets compressed before crossing the network, then a replica recompresses it before writing it to disk at rest"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.1 At Rest on Disk",
+          "text": "6.1 At Rest on Disk"
+        },
+        {
+          "type": "paragraph",
+          "content": "Most databases and file systems support compressing data as it is written to disk, and decompressing it transparently as it is read back. This is usually the single biggest lever for reducing storage cost, since it applies to every byte a system keeps long term, not just to data actively moving through the system at a given moment."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.2 In Transit Over the Network",
+          "text": "6.2 In Transit Over the Network"
+        },
+        {
+          "type": "paragraph",
+          "content": "Data moving between services, between a primary and its replicas, or between a client and a server, can be compressed for the duration of that trip and decompressed on arrival. This is a separate decision from at rest compression, a system can compress its network traffic with a fast codec like LZ4 while separately compressing its disk storage with a higher ratio codec like Zstandard at a high level, since the two have different constraints."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "6.3 At the Application Payload Level",
+          "text": "6.3 At the Application Payload Level"
+        },
+        {
+          "type": "paragraph",
+          "content": "Above both the storage engine and the network layer, an application can choose to compress the actual payload it sends or stores, independent of whatever the underlying infrastructure does. An HTTP API returning gzip compressed JSON, or a mobile app storing a compressed cache file, are both examples of compression applied deliberately at the application layer, on top of whatever compression the transport or storage layer beneath it might already be doing."
+        },
+        {
+          "type": "note",
+          "title": "These layers stack, but redundantly compressing does not help",
+          "content": "Compressing an already compressed payload again rarely shrinks it further and sometimes makes it slightly larger, since a good compressor already removed the redundancy the next pass would look for. A sensible system picks one layer to do the compression work for a given kind of data rather than compressing the same bytes twice."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Trade-offs: CPU Cost Versus Storage and Bandwidth Savings",
+          "text": "7. Trade-offs: CPU Cost Versus Storage and Bandwidth Savings"
+        },
+        {
+          "type": "paragraph",
+          "content": "Compression is not free. Every byte saved on disk or on the wire was purchased with CPU cycles spent compressing it on the way in and decompressing it on the way out. Understanding this trade off, and where a given system sits on it, is the core skill behind choosing a compression strategy well."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Pros\",\"Cons\"],\"rows\":[[\"Smaller data on disk directly reduces storage cost, often the single largest infrastructure line item for data heavy systems\",\"Compression and decompression both consume CPU cycles that would otherwise be available for query processing or application logic\"],[\"Fewer physical bytes read or written per operation reduces disk I/O pressure and can raise effective throughput on I/O bound workloads\",\"A CPU bound system that adds an expensive codec can trade a storage bottleneck for a compute bottleneck instead\"],[\"Smaller payloads over the network reduce bandwidth cost and reduce transfer time, which speeds up replication and cross region transfers\",\"Higher compression ratios generally cost more CPU time, so the best ratio is rarely the best overall choice\"],[\"Modern codecs like LZ4 and Zstandard are fast enough that the CPU cost is negligible for many workloads\",\"Compressed data must be fully or partially decompressed before it can be inspected, which can complicate partial reads and random access patterns\"]]}"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "7.1 Reading the Trade-off in Practice",
+          "text": "7.1 Reading the Trade-off in Practice"
+        },
+        {
+          "type": "paragraph",
+          "content": "The right question is never simply is compression worth it, it almost always is at some level. The right question is which point on the speed versus ratio spectrum matches a specific workloads bottleneck. A system that is disk bound and has CPU to spare should lean toward a higher ratio codec. A system that is CPU bound and has plenty of disk should lean toward a cheaper, faster codec, or skip compression on that particular path entirely."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Worked Example: Choosing a Compression Strategy for a Logging Pipeline",
+          "text": "8. Worked Example: Choosing a Compression Strategy for a Logging Pipeline"
+        },
+        {
+          "type": "paragraph",
+          "content": "Consider a logging pipeline collecting application logs from several hundred hosts, shipping them across the network to a central log store, and retaining them for 90 days for debugging and audit purposes. Total raw volume is 2 terabytes per day."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524480-456218757.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-content-images/1785396524480-456218757.png",
+          "alt": "A log agent compresses with LZ4 before shipping over the network, and the central log store recompresses the same data with Zstandard before archiving it to cold storage"
+        },
+        {
+          "type": "example-box",
+          "title": "The naive approach",
+          "text": "Ship raw, uncompressed log lines from every host straight to the central store, and store them uncompressed. At 2 terabytes per day for 90 days, that is 180 terabytes sitting in storage at any given time, plus 2 terabytes per day of raw network traffic from every host to the central collector. Both the storage bill and the network link between edge hosts and the central store become the bottleneck almost immediately."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.1 Compressing on the Log Agent",
+          "text": "8.1 Compressing on the Log Agent"
+        },
+        {
+          "type": "paragraph",
+          "content": "Each host runs a lightweight log agent that batches log lines and compresses them with LZ4 before sending them over the network. LZ4 is chosen here specifically because it runs on every host, on every batch, continuously, so compression speed matters far more than squeezing out the absolute best ratio. Log text typically compresses to roughly a quarter to a third of its original size with a fast codec like this, which alone cuts the network traffic from the fleet to the central collector by well over half."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.2 Recompressing at the Central Store",
+          "text": "8.2 Recompressing at the Central Store"
+        },
+        {
+          "type": "paragraph",
+          "content": "Once log batches land at the central store, they are decompressed, merged, and written to disk again, this time recompressed at a higher ratio using Zstandard at a high compression level. This second pass runs once per batch centrally rather than continuously on hundreds of hosts, so the extra CPU cost of a slower, higher ratio codec is easy to absorb, and the resulting storage footprint shrinks further than the LZ4 pass alone achieved."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading2",
+          "content": "8.3 Tiering by Access Pattern",
+          "text": "8.3 Tiering by Access Pattern"
+        },
+        {
+          "type": "paragraph",
+          "content": "Recent logs, the ones actively queried during live incidents, are kept in a format that supports reasonably fast decompression for ad hoc queries. Logs older than roughly a week, rarely queried but still retained for the full 90 day window, are moved to a cold archive tier compressed at the highest practical Zstandard level, since query speed no longer matters nearly as much as storage cost for data that is read once in a while, if ever."
+        },
+        {
+          "type": "list",
+          "content": "[\"Hot tier, roughly the last 7 days: LZ4 or a low Zstandard level, optimized for fast query response during active incidents.\",\"Warm tier, roughly 7 to 30 days: mid level Zstandard, a balance of reasonable query speed and improved storage cost.\",\"Cold tier, roughly 30 to 90 days: high level Zstandard, optimized purely for storage cost since access is rare.\"]",
+          "items": [
+            "Hot tier, roughly the last 7 days: LZ4 or a low Zstandard level, optimized for fast query response during active incidents.",
+            "Warm tier, roughly 7 to 30 days: mid level Zstandard, a balance of reasonable query speed and improved storage cost.",
+            "Cold tier, roughly 30 to 90 days: high level Zstandard, optimized purely for storage cost since access is rare."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "content": "The overall result is a pipeline where raw text logs, which could have consumed 180 terabytes over the retention window and saturated the network links from the fleet, instead consume a small fraction of that footprint and bandwidth, at a CPU cost that is easy for both the edge hosts and the central store to absorb."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Interview Angle",
+          "text": "9. Interview Angle"
+        },
+        {
+          "type": "paragraph",
+          "content": "Compression rarely carries an entire system design interview on its own, but it comes up constantly as a supporting detail once storage cost, network bandwidth, or replication lag enters the discussion, and being able to speak to it precisely signals real depth."
+        },
+        {
+          "type": "list",
+          "content": "[\"Be ready to justify a specific codec choice rather than just saying compress it, name a codec, and explain why its position on the speed versus ratio spectrum fits the workload described.\",\"Distinguish clearly between lossless and lossy, and be explicit that structured data like database rows and logs requires lossless compression, while media like images or video can tolerate lossy compression.\",\"Mention that compression can be applied at more than one layer, at rest, in transit, and at the application level, and that these are independent decisions.\",\"If the system involves an analytical or columnar store, bring up dictionary encoding, run length encoding, or delta encoding rather than only general purpose codecs.\",\"Acknowledge the CPU cost explicitly, a good answer never presents compression as a free win, it presents it as a deliberate trade against a specific bottleneck.\"]",
+          "items": [
+            "Be ready to justify a specific codec choice rather than just saying compress it, name a codec, and explain why its position on the speed versus ratio spectrum fits the workload described.",
+            "Distinguish clearly between lossless and lossy, and be explicit that structured data like database rows and logs requires lossless compression, while media like images or video can tolerate lossy compression.",
+            "Mention that compression can be applied at more than one layer, at rest, in transit, and at the application level, and that these are independent decisions.",
+            "If the system involves an analytical or columnar store, bring up dictionary encoding, run length encoding, or delta encoding rather than only general purpose codecs.",
+            "Acknowledge the CPU cost explicitly, a good answer never presents compression as a free win, it presents it as a deliberate trade against a specific bottleneck."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Common Mistakes",
+          "text": "10. Common Mistakes"
+        },
+        {
+          "type": "list",
+          "content": "[\"Reaching for the highest compression ratio available by default, without checking whether the workload is CPU bound and can actually afford the extra compression time.\",\"Using a lossy codec on structured or transactional data because it happens to be smaller, without recognizing that any loss there is data corruption, not a quality tradeoff.\",\"Compressing the same bytes twice across two layers, for example an already gzip compressed HTTP response getting recompressed again by a lower layer, wasting CPU for no real size benefit.\",\"Ignoring low cardinality columns in an analytical schema, missing an easy dictionary encoding or run length encoding win that a general purpose codec alone would not fully capture.\",\"Choosing a single codec for an entire system rather than allowing different paths, a hot write path versus a cold archive, to use different points on the speed versus ratio spectrum.\",\"Assuming compression always speeds up reads without checking whether the decompression cost outweighs the reduced I/O for a particular access pattern.\"]",
+          "items": [
+            "Reaching for the highest compression ratio available by default, without checking whether the workload is CPU bound and can actually afford the extra compression time.",
+            "Using a lossy codec on structured or transactional data because it happens to be smaller, without recognizing that any loss there is data corruption, not a quality tradeoff.",
+            "Compressing the same bytes twice across two layers, for example an already gzip compressed HTTP response getting recompressed again by a lower layer, wasting CPU for no real size benefit.",
+            "Ignoring low cardinality columns in an analytical schema, missing an easy dictionary encoding or run length encoding win that a general purpose codec alone would not fully capture.",
+            "Choosing a single codec for an entire system rather than allowing different paths, a hot write path versus a cold archive, to use different points on the speed versus ratio spectrum.",
+            "Assuming compression always speeds up reads without checking whether the decompression cost outweighs the reduced I/O for a particular access pattern."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Summary",
+          "text": "11. Summary"
+        },
+        {
+          "type": "paragraph",
+          "content": "Compression reduces the number of bytes a system has to store and move, which directly lowers storage cost, disk I/O pressure, network bandwidth consumption, and replication lag, all of which matter more as write volume scales up. Lossless compression is the only acceptable choice for structured data like database rows, logs, and replication streams, since any loss there is corruption rather than an acceptable tradeoff, while lossy compression stays confined to genuinely perceptual media like images, audio, and video."
+        },
+        {
+          "type": "paragraph",
+          "content": "General purpose codecs such as gzip, Snappy, LZ4, and Zstandard each sit at a different point on the speed versus ratio spectrum, and choosing between them means matching that spectrum to a workloads actual bottleneck rather than defaulting to whichever one compresses smallest. Columnar databases go further, layering techniques like dictionary encoding, run length encoding, and delta encoding on top of a general purpose codec to exploit the specific structure of column data in ways a byte oriented codec alone cannot."
+        },
+        {
+          "type": "paragraph",
+          "content": "Compression is applied at several independent layers of a system, at rest on disk, in transit over the network, and at the application payload level, and a thoughtful design picks the right codec for each layer rather than treating compression as a single, uniform switch. Above all, compression is a trade of CPU cycles for storage and bandwidth savings, and the best strategy is always the one that matches that trade to where a specific system is actually constrained."
+        }
+      ]
+    }
+  ]
+}

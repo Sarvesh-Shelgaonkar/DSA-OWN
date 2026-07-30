@@ -1,0 +1,529 @@
+{
+  "slug": "strings-rolling-hash",
+  "content": [
+    {
+      "id": "introduction",
+      "title": "Introduction",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A&nbsp;<strong>Rolling Hash</strong>&nbsp;is a technique for computing a hash of a sliding window over a string (or array) such that moving the window by one position updates the hash in&nbsp;<strong>O(1)</strong>&nbsp;time, instead of recomputing the hash of the entire new window from scratch.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "This is a general purpose tool, not a single algorithm.&nbsp;<strong>Rabin Karp</strong>&nbsp;is the most famous consumer of rolling hash, it uses a rolling hash to slide a pattern across a text for string matching, but the technique itself is far more general and shows up anywhere you need to compare substrings quickly.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "This doc covers the rolling hash technique on its own: how the hash is built, how it updates in O(1), why the modulus matters, and how to guard against collisions. Rabin Karp is mentioned only briefly as one application, it is not re-derived here.",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>O(1) window update:</strong>&nbsp;slide the window by one character without touching the rest of the hash",
+            "<strong>O(1) substring queries:</strong>&nbsp;precomputed prefix hashes let you get the hash of any substring instantly",
+            "<strong>A reusable building block:</strong>&nbsp;pattern matching, duplicate substring detection, string rotation checks, and more all lean on this same idea"
+          ]
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "1-why-recomputing-the-hash-for-every-window-is-too-slow",
+      "title": "1. Why Recomputing the Hash for Every Window Is Too Slow",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Suppose you want a hash for every window of length&nbsp;<code>m</code>&nbsp;as it slides across a string of length&nbsp;<code>n</code>. There are&nbsp;<code>n minus m plus 1</code>&nbsp;such windows.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "The naive approach hashes each window independently: read all&nbsp;<code>m</code>&nbsp;characters of the window and combine them into a hash value. That costs&nbsp;<strong>O(m)</strong>&nbsp;per window, so hashing every window costs&nbsp;<strong>O(n&nbsp;*&nbsp;m)</strong>&nbsp;overall.",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "For a text of length 10^6 and a pattern of length 10^3, that is roughly 10^9 character comparisons, far too slow for most interview or contest time limits.",
+            "Yet consecutive windows overlap almost entirely: window&nbsp;<code>i+1</code>&nbsp;shares&nbsp;<code>m minus 1</code>&nbsp;characters with window&nbsp;<code>i</code>."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "That overlap is the opportunity. If the hash function is built the right way, moving the window by one position only needs to remove the contribution of the character that left and add the contribution of the character that entered.",
+          "items": []
+        },
+        {
+          "type": "callout",
+          "text": "The core idea behind a <b>rolling hash</b>: build the hash as an arithmetic expression where each character's contribution can be added or removed independently, so sliding the window becomes a handful of arithmetic operations instead of a full rescan.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "2-building-a-polynomial-hash",
+      "title": "2. Building a Polynomial Hash",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "The standard way to build a hash that supports O(1) rolling updates is a&nbsp;<strong>polynomial hash</strong>. Treat the string as a number written in some base&nbsp;<code>B</code>, exactly the way decimal digits form a number in base 10.",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "hash(s) = s[0]*B^(m-1) + s[1]*B^(m-2) + ... + s[m-1]*B^0   (mod P)"
+          }
+        },
+        {
+          "type": "image",
+          "items": [],
+          "url": "/engineering/dsa-media/1785250211717-546767271.png",
+          "caption": "Each character contributes value times base raised to its position",
+          "content": "/engineering/dsa-media/1785250211717-546767271.png",
+          "text": "/engineering/dsa-media/1785250211717-546767271.png",
+          "alt": "Polynomial hash formula visualized for the string cab"
+        },
+        {
+          "type": "text",
+          "text": "Here&nbsp;<code>s[i]</code>&nbsp;is a small integer value assigned to each character (for lowercase letters, a common choice is&nbsp;<code>&#39;a&#39; to 1, &#39;b&#39; to 2, ... , &#39;z&#39; to 26</code>), and&nbsp;<code>B</code>&nbsp;is a base larger than the alphabet size, commonly a value like 31 or 131.",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "Character values should start at&nbsp;<strong>1, not 0</strong>. If the first character of the alphabet maps to 0, then a leading occurrence of that character contributes nothing to the hash, so&nbsp;<code>&quot;ab&quot;</code>&nbsp;and&nbsp;<code>&quot;aab&quot;</code>&nbsp;could hash identically for the wrong reason.",
+            "Every position in the window gets its own weight,&nbsp;<code>B</code>&nbsp;raised to a power based on distance from the end, so the hash behaves like place value: swapping two characters changes the result."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "This construction is what makes the rolling update possible in the next section: because every character's contribution is just&nbsp;<code>value * B^power</code>, adding or removing one character's contribution is a single multiplication and addition or subtraction.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "3-the-rolling-update-formula",
+      "title": "3. The Rolling Update Formula",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Say the current window is&nbsp;<code>s[i .. i+m-1]</code>&nbsp;with hash&nbsp;<code>H</code>. Sliding forward by one gives the window&nbsp;<code>s[i+1 .. i+m]</code>. The character&nbsp;<code>s[i]</code>&nbsp;leaves the window and&nbsp;<code>s[i+m]</code>&nbsp;enters it.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "Three steps turn the old hash into the new one:",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>Remove the outgoing character:</strong>&nbsp;subtract&nbsp;<code>value(s[i]) * B^(m-1)</code>&nbsp;from&nbsp;<code>H</code>, this cancels the leftmost character's contribution.",
+            "<strong>Shift the remaining characters:</strong>&nbsp;multiply what is left by&nbsp;<code>B</code>, this moves every remaining character one power higher, exactly like every digit in a number shifting left when you multiply by the base.",
+            "<strong>Add the incoming character:</strong>&nbsp;add&nbsp;<code>value(s[i+m])</code>&nbsp;at the freed-up lowest position."
+          ]
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "newHash = ( (H - value(s[i]) * B^(m-1)) mod P ) * B + value(s[i+m])   (mod P, at every step)"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Every one of those operations is O(1) as long as&nbsp;<code>B^(m-1) mod P</code>&nbsp;has already been precomputed, so the whole slide is O(1) regardless of how large the window is.",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "// currentHash is the hash of the CURRENT window of length m\n// powHigh   = B^(m-1) mod P, precomputed once for the window length\n// outgoing  = value of the character leaving the window (leftmost)\n// incoming  = value of the character entering the window (new rightmost)\nlong long rollHash(long long currentHash, long long outgoing, long long incoming,\n                    long long powHigh, long long B, long long P) {\n    long long h = currentHash - (outgoing * powHigh) % P;  // remove outgoing contribution\n    h %= P;\n    if (h < 0) h += P;              // C++'s % can return negative for negative operands\n    h = (h * B) % P;                // shift everything left by one position\n    h = (h + incoming) % P;         // add the incoming character\n    return h;\n}"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "4-why-you-need-a-large-prime-modulus",
+      "title": "4. Why You Need a Large Prime Modulus",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Without a modulus, the hash value grows exponentially with&nbsp;<code>B^m</code>, for even a modestly long window this overflows any fixed-width integer type and becomes useless for comparison.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "Taking everything&nbsp;<code>mod P</code>&nbsp;for a fixed modulus&nbsp;<code>P</code>&nbsp;keeps the hash bounded in&nbsp;<code>[0, P-1]</code>&nbsp;no matter how long the string is, while still letting the rolling update formula work, since modular arithmetic distributes over addition, subtraction, and multiplication.",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>Pick&nbsp;<code>P</code>&nbsp;to be prime.</strong>&nbsp;A prime modulus avoids the value space splitting into small subgroups the way a composite modulus can, which reduces the chance that structurally different strings land on the same residue purely because of shared factors with&nbsp;<code>P</code>.",
+            "<strong>Pick&nbsp;<code>P</code>&nbsp;to be large.</strong>&nbsp;Common choices in practice are primes just above 10^9 (like 1000000007 or 998244353) so that&nbsp;<code>P * P</code>&nbsp;still fits in a 64-bit integer during multiplication.",
+            "<strong>Pick&nbsp;<code>B</code>&nbsp;larger than the alphabet size</strong>&nbsp;and coprime with&nbsp;<code>P</code>&nbsp;(automatic when&nbsp;<code>P</code>&nbsp;is prime and&nbsp;<code>B &lt; P</code>), so distinct characters cannot alias each other through the modulus."
+          ]
+        },
+        {
+          "type": "text",
+          "text": "None of this makes collisions impossible. It only makes them rare enough, roughly&nbsp;<code>1 in P</code>&nbsp;for two random distinct strings, that a single hash is good enough for most practical use, and the next section covers what to do when it is not.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "5-collisions-and-double-hashing",
+      "title": "5. Collisions and Double Hashing",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A hash collision happens when two different substrings produce the same hash value under the modulus. With a good&nbsp;<code>(B, P)</code>&nbsp;pair, random collisions are rare, but they are not the only risk.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "Competitive programming judges sometimes include adversarial test cases built specifically to break the small set of&nbsp;<code>(B, P)</code>&nbsp;pairs that appear in popular templates. A single hash, however well chosen, can be forced to collide on such inputs.",
+          "items": []
+        },
+        {
+          "type": "image",
+          "items": [],
+          "url": "/engineering/dsa-media/1785250213495-612834716.png",
+          "caption": "Double hashing accepts a match only when both independent hashes agree",
+          "content": "/engineering/dsa-media/1785250213495-612834716.png",
+          "text": "/engineering/dsa-media/1785250213495-612834716.png",
+          "alt": "Double hashing combines two independent hash functions"
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "<strong>Double hashing</strong>&nbsp;runs two independent rolling hashes over the same string at the same time, using a different base and a different modulus for each,&nbsp;<code>(B1, P1)</code>&nbsp;and&nbsp;<code>(B2, P2)</code>.",
+            "Two substrings are only treated as equal if&nbsp;<strong>both</strong>&nbsp;hashes match. The probability that two genuinely different substrings collide on both hashes simultaneously is roughly the product of the two individual collision probabilities, which is astronomically small.",
+            "This costs twice the arithmetic, still O(1) per query, in exchange for a collision probability that is effectively negligible even against adversarial inputs."
+          ]
+        },
+        {
+          "type": "callout",
+          "text": "A single rolling hash is fine for most day-to-day problems. <b>Double hashing</b> is the technique worth reaching for specifically in competitive programming, where the test data may have been constructed to target a known hash pair.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "6-implementation-a-rolling-hash-class-in-c",
+      "title": "6. Implementation: A Rolling Hash Class in C++",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "A practical implementation precomputes a&nbsp;<strong>prefix hash array</strong>&nbsp;and a&nbsp;<strong>power table</strong>&nbsp;once, in O(n), then answers the hash of any substring in O(1), which also covers the sliding window case since consecutive windows are just substrings at neighboring offsets.",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "// C++ Rolling Hash with O(1) substring queries (single hash)\nclass RollingHash {\n    vector<long long> prefixHash; // prefixHash[i] = hash of s[0..i-1]\n    vector<long long> power;      // power[i] = B^i mod P\n    long long B, P;\n\npublic:\n    RollingHash(const string& s, long long base, long long mod) : B(base), P(mod) {\n        int n = (int)s.size();\n        prefixHash.assign(n + 1, 0);\n        power.assign(n + 1, 1);\n\n        for (int i = 0; i < n; i++) {\n            prefixHash[i + 1] = (prefixHash[i] * B + charValue(s[i])) % P;\n            power[i + 1] = (power[i] * B) % P;\n        }\n    }\n\n    static long long charValue(char c) {\n        return (long long)(c - 'a' + 1); // start at 1, never map a character to 0\n    }\n\n    // hash of s[l..r], inclusive, 0-indexed\n    long long substringHash(int l, int r) const {\n        long long high = prefixHash[r + 1];\n        long long low = (prefixHash[l] * power[r - l + 1]) % P;\n        long long result = (high - low) % P;\n        if (result < 0) result += P;   // guard against negative results from %\n        return result;\n    }\n};"
+          }
+        },
+        {
+          "type": "text",
+          "text": "The prefix array stores&nbsp;<code>hash(s[0..i-1])</code>&nbsp;for every prefix, and&nbsp;<code>substringHash(l, r)</code>&nbsp;peels off the unwanted low-order part the same way&nbsp;<code>prefixSum[r] minus prefixSum[l-1]</code>&nbsp;peels off a range sum, except here the low part must first be scaled by the matching power of&nbsp;<code>B</code>&nbsp;before subtracting.",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "Wrapping two of these together gives double hashing directly:",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "// Two independent rolling hashes combined for a much lower collision probability\nstruct DoubleHash {\n    RollingHash h1, h2;\n    DoubleHash(const string& s)\n        : h1(s, 131, 1000000007), h2(s, 137, 998244353) {}\n\n    pair<long long, long long> substringHash(int l, int r) const {\n        return { h1.substringHash(l, r), h2.substringHash(l, r) };\n    }\n};\n\n// Two substrings are treated as equal only when BOTH hashes match\nbool equalSubstrings(const DoubleHash& dh, int l1, int r1, int l2, int r2) {\n    return dh.substringHash(l1, r1) == dh.substringHash(l2, r2);\n}"
+          }
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "7-worked-example-rolling-the-hash-across-a-string",
+      "title": "7. Worked Example: Rolling the Hash Across a String",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Take&nbsp;<code>s = &quot;abcab&quot;</code>&nbsp;with a window length&nbsp;<code>m = 3</code>. Use&nbsp;<code>a to 1, b to 2, c to 3</code>, base&nbsp;<code>B = 31</code>, and, purely to keep the arithmetic readable by hand, a small modulus&nbsp;<code>P = 101</code>&nbsp;(real code should use a prime far larger than this, like 1000000007).",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "String:  a  b  c  a  b\nValues:  1  2  3  1  2\nB = 31, P = 101, m = 3\nB^(m-1) mod P = 31^2 mod 101 = 961 mod 101 = 52   (precomputed once)"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Window 1,&nbsp;<code>&quot;abc&quot;</code>, hashed directly:",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "hash(\"abc\") = (1*31^2 + 2*31^1 + 3*31^0) mod 101\n            = (961 + 62 + 3) mod 101\n            = 1026 mod 101\n            = 16"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Slide to window 2,&nbsp;<code>&quot;bca&quot;</code>: outgoing character is&nbsp;<code>&#39;a&#39; = 1</code>, incoming character is&nbsp;<code>&#39;a&#39; = 1</code>&nbsp;(the second&nbsp;<code>a</code>&nbsp;in the string).",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "step 1, remove outgoing:  (16 - 1*52) mod 101 = (16 - 52) mod 101 = -36 mod 101 = 65\nstep 2, shift by B:       (65 * 31) mod 101 = 2015 mod 101 = 96\nstep 3, add incoming:     (96 + 1) mod 101 = 97\n\nNew hash = 97.  Direct check: hash(\"bca\") = (2*961 + 3*31 + 1) mod 101 = 2016 mod 101 = 97.  Matches."
+          }
+        },
+        {
+          "type": "text",
+          "text": "Slide to window 3,&nbsp;<code>&quot;cab&quot;</code>: outgoing character is&nbsp;<code>&#39;b&#39; = 2</code>, incoming character is&nbsp;<code>&#39;b&#39; = 2</code>.",
+          "items": []
+        },
+        {
+          "type": "code",
+          "items": [],
+          "codes": {
+            "javascript": "step 1, remove outgoing:  (97 - 2*52) mod 101 = (97 - 104) mod 101 = -7 mod 101 = 94\nstep 2, shift by B:       (94 * 31) mod 101 = 2914 mod 101 = 86\nstep 3, add incoming:     (86 + 2) mod 101 = 88\n\nNew hash = 88.  Direct check: hash(\"cab\") = (3*961 + 1*31 + 2) mod 101 = 2916 mod 101 = 88.  Matches."
+          }
+        },
+        {
+          "type": "text",
+          "text": "Each slide reused only the previous hash, the fixed&nbsp;<code>B^(m-1) mod P</code>&nbsp;value, and the two boundary characters. Neither slide looked at the middle character of the window at all, that is the entire point of a rolling hash.",
+          "items": []
+        },
+        {
+          "type": "image",
+          "items": [],
+          "url": "/engineering/dsa-media/1785250215085-28993018.png",
+          "caption": "Rolling the window forward touches a fixed number of values regardless of window length, instead of rescanning the whole window",
+          "content": "/engineering/dsa-media/1785250215085-28993018.png",
+          "text": "/engineering/dsa-media/1785250215085-28993018.png",
+          "alt": "Rolling hash window sliding from abc to bcd"
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "8-applications-beyond-pattern-matching",
+      "title": "8. Applications Beyond Pattern Matching",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "Once substring hashes can be compared in O(1), a surprising number of string problems reduce to hash comparisons plus a well-chosen search strategy.",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "Longest common substring via binary search",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "To find the longest common substring of two strings, binary search on the candidate length&nbsp;<code>L</code>. For a fixed&nbsp;<code>L</code>, compute the rolling hash of every length&nbsp;<code>L</code>&nbsp;window in both strings, put the first string's hashes into a set, and check whether any window of the second string produces a hash already in that set. If a match exists, try a larger&nbsp;<code>L</code>, otherwise try a smaller one. Each check is O(n), so the whole search is O((n+m) log(min(n, m))).",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "Detecting duplicate substrings",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "The same binary search on length, applied to a single string, finds the longest substring that repeats somewhere else in that same string, hash every window of a candidate length and watch for a hash that has already been seen, this is the core idea behind problems like Longest Duplicate Substring.",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "Checking if one string is a rotation of another",
+          "items": []
+        },
+        {
+          "type": "text",
+          "text": "To check whether&nbsp;<code>t</code>&nbsp;is a rotation of&nbsp;<code>s</code>&nbsp;(same length, characters shifted around), concatenate&nbsp;<code>s + s</code>&nbsp;and slide a window of length&nbsp;<code>|s|</code>&nbsp;across it, comparing the rolling hash of each window against the hash of&nbsp;<code>t</code>. This finds a match in O(n) without ever materializing a substring to compare character by character.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "9-common-mistakes",
+      "title": "9. Common Mistakes",
+      "blocks": [
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "Using a modulus that is not prime, or is too small, both increase the practical collision rate far above the theoretical&nbsp;<code>1 in P</code>&nbsp;estimate.",
+            "Forgetting that C++'s&nbsp;<code>%</code>&nbsp;operator can return a negative result when the left-hand side is negative, after subtracting the outgoing character's contribution, always check for a negative value and add&nbsp;<code>P</code>&nbsp;back before continuing.",
+            "Mapping the first alphabet character to value 0, which lets leading occurrences of that character vanish from the hash and creates avoidable collisions.",
+            "Recomputing&nbsp;<code>B^(m-1) mod P</code>&nbsp;on every slide instead of precomputing it once, this silently turns an O(1) update back into an O(log m) or worse operation.",
+            "Trusting a single hash on adversarial competitive programming inputs instead of using double hashing, or at minimum, picking an unusual&nbsp;<code>(B, P)</code>&nbsp;pair instead of the same textbook values everyone else uses.",
+            "Off-by-one errors in the prefix hash array, remember that&nbsp;<code>prefixHash[i]</code>&nbsp;covers&nbsp;<code>s[0..i-1]</code>, not&nbsp;<code>s[0..i]</code>, which is exactly what makes&nbsp;<code>substringHash(l, r)</code>&nbsp;read&nbsp;<code>prefixHash[r+1]</code>&nbsp;and&nbsp;<code>prefixHash[l]</code>."
+          ]
+        },
+        {
+          "type": "divider",
+          "text": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "id": "10-problem-patterns-and-interview-checklist",
+      "title": "10. Problem Patterns and Interview Checklist",
+      "blocks": [
+        {
+          "type": "heading2",
+          "text": "Problem patterns",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "Hard&nbsp;Longest Duplicate Substring (LC 1044): binary search on length plus rolling hash to detect a repeat",
+            "Medium&nbsp;Repeated String Match (LC 686): rolling hash to check if one string appears inside repeated copies of another",
+            "Hard&nbsp;Distinct Echo Substrings (LC 1316): count distinct substrings of the form&nbsp;<code>t + t</code>&nbsp;using rolling hash to deduplicate",
+            "Hard&nbsp;Find Substring With Given Hash Value (LC 2156): roll the hash backward across a string to find a window matching a target hash"
+          ]
+        },
+        {
+          "type": "heading2",
+          "text": "Interview checklist",
+          "items": []
+        },
+        {
+          "type": "list",
+          "text": "",
+          "items": [
+            "Can you derive the rolling update formula, remove outgoing, shift, add incoming, from scratch, including the modular arithmetic?",
+            "Do you know why the character value mapping must start at 1 and not 0?",
+            "Can you explain why the modulus should be both large and prime?",
+            "Do you know how to handle a negative result from C++'s&nbsp;<code>%</code>&nbsp;operator during the rolling update?",
+            "Can you explain when a single hash is good enough and when double hashing is worth the extra cost?",
+            "Can you implement a prefix hash array with a power table to answer O(1) substring hash queries?"
+          ]
+        }
+      ]
+    }
+  ],
+  "description": "Learn the general rolling hash technique for updating a substring hash in O(1) as a window slides, and how double hashing reduces collision risk",
+  "isPremium": false,
+  "order": 0,
+  "patternId": "696a3fea9f270f2334e457e2",
+  "sections": [
+    {
+      "id": "introduction",
+      "title": "Introduction"
+    },
+    {
+      "id": "1-why-recomputing-the-hash-for-every-window-is-too-slow",
+      "title": "1. Why Recomputing the Hash for Every Window Is Too Slow"
+    },
+    {
+      "id": "2-building-a-polynomial-hash",
+      "title": "2. Building a Polynomial Hash"
+    },
+    {
+      "id": "3-the-rolling-update-formula",
+      "title": "3. The Rolling Update Formula"
+    },
+    {
+      "id": "4-why-you-need-a-large-prime-modulus",
+      "title": "4. Why You Need a Large Prime Modulus"
+    },
+    {
+      "id": "5-collisions-and-double-hashing",
+      "title": "5. Collisions and Double Hashing"
+    },
+    {
+      "id": "6-implementation-a-rolling-hash-class-in-c",
+      "title": "6. Implementation: A Rolling Hash Class in C++"
+    },
+    {
+      "id": "7-worked-example-rolling-the-hash-across-a-string",
+      "title": "7. Worked Example: Rolling the Hash Across a String"
+    },
+    {
+      "id": "8-applications-beyond-pattern-matching",
+      "title": "8. Applications Beyond Pattern Matching"
+    },
+    {
+      "id": "9-common-mistakes",
+      "title": "9. Common Mistakes"
+    },
+    {
+      "id": "10-problem-patterns-and-interview-checklist",
+      "title": "10. Problem Patterns and Interview Checklist"
+    }
+  ],
+  "tags": [],
+  "title": "Introduction to Rolling Hash"
+}

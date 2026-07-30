@@ -1,0 +1,725 @@
+{
+  "problemId": "p-design-locking-service",
+  "title": "Design Locking Service",
+  "slug": "design-locking-service",
+  "sections": [
+    {
+      "id": "content",
+      "title": "Content"
+    }
+  ],
+  "content": [
+    {
+      "id": "content",
+      "title": "Content",
+      "blocks": [
+        {
+          "type": "heading1",
+          "text": "1. Problem Statement",
+          "content": "1. Problem Statement",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Design a distributed locking service, the kind of system behind Zookeeper or a Redis-based Redlock, that guarantees only one process across an entire distributed system can hold a given lock at a time, protecting a shared resource from concurrent, conflicting access. The famous, genuinely hard problem here is not acquiring a lock, it is what happens when a lock holder pauses for an unusually long time, a garbage collection pause or a network partition, has its lock automatically expire and handed to someone else, and then wakes up still believing it safely holds it. Solving this correctly, without simply hoping pauses never happen, is what this design is actually about.",
+          "content": "Design a distributed locking service, the kind of system behind Zookeeper or a Redis-based Redlock, that guarantees only one process across an entire distributed system can hold a given lock at a time, protecting a shared resource from concurrent, conflicting access. The famous, genuinely hard problem here is not acquiring a lock, it is what happens when a lock holder pauses for an unusually long time, a garbage collection pause or a network partition, has its lock automatically expire and handed to someone else, and then wakes up still believing it safely holds it. Solving this correctly, without simply hoping pauses never happen, is what this design is actually about."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207955180-80898285.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207955180-80898285.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207955180-80898285.png",
+          "alt": "A lock grant issues a strictly increasing fencing token, and the protected resource itself rejects any write whose token is not higher than the highest one it has already accepted"
+        },
+        {
+          "type": "paragraph",
+          "text": "The technique that solves this is fencing tokens, every successful lock acquisition returns a token strictly greater than any issued before it, and the protected resource, not the lock service, is the one that actually enforces safety, refusing any write carrying a token lower than the highest one it has already seen, regardless of whether the client sending it still believes it holds the lock.",
+          "content": "The technique that solves this is fencing tokens, every successful lock acquisition returns a token strictly greater than any issued before it, and the protected resource, not the lock service, is the one that actually enforces safety, refusing any write carrying a token lower than the highest one it has already seen, regardless of whether the client sending it still believes it holds the lock."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "2. Functional Requirements",
+          "content": "2. Functional Requirements",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A client should be able to acquire an exclusive lock on a named resource, receiving a fencing token on success. A lock should automatically expire after a configured time-to-live if its holder never releases or renews it, preventing a crashed client from blocking everyone else forever. A protected resource should reject any write carrying a token lower than the highest one it has already accepted. A client should be able to explicitly release a lock it holds before its natural expiry.",
+          "content": "A client should be able to acquire an exclusive lock on a named resource, receiving a fencing token on success. A lock should automatically expire after a configured time-to-live if its holder never releases or renews it, preventing a crashed client from blocking everyone else forever. A protected resource should reject any write carrying a token lower than the highest one it has already accepted. A client should be able to explicitly release a lock it holds before its natural expiry."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "3. Non-Functional Requirements",
+          "content": "3. Non-Functional Requirements",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Five qualities matter here, and the second is the entire reason this design exists in its current form.",
+          "content": "Five qualities matter here, and the second is the entire reason this design exists in its current form."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207967736-693504306.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207967736-693504306.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207967736-693504306.png",
+          "alt": "True mutual exclusion across machines, safety even when a lock holder pauses or crashes, never deadlocking on a dead client, low latency acquire and release, and tokens trusted only from the real lock service"
+        },
+        {
+          "type": "paragraph",
+          "text": "True mutual exclusion across machines means only one process across the entire distributed system should ever hold a given lock at once, not merely within one machine or process. Safety even when a lock holder pauses means a client that pauses past its lock's expiry must never be allowed to corrupt shared state later, once it eventually wakes up still believing it holds the lock. Never deadlocking on a dead client means a crashed holder's lock has to expire and become available again, rather than blocking every other client indefinitely. Low latency acquire and release means using this service on a real, busy critical section has to stay fast. And tokens trusted only from the real lock service means a fencing token only means anything if it genuinely, verifiably came from the lock service itself, not something a client fabricated.",
+          "content": "True mutual exclusion across machines means only one process across the entire distributed system should ever hold a given lock at once, not merely within one machine or process. Safety even when a lock holder pauses means a client that pauses past its lock's expiry must never be allowed to corrupt shared state later, once it eventually wakes up still believing it holds the lock. Never deadlocking on a dead client means a crashed holder's lock has to expire and become available again, rather than blocking every other client indefinitely. Low latency acquire and release means using this service on a real, busy critical section has to stay fast. And tokens trusted only from the real lock service means a fencing token only means anything if it genuinely, verifiably came from the lock service itself, not something a client fabricated."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "4. Clarifying Questions",
+          "content": "4. Clarifying Questions",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"Should the lock service itself run as a small, consensus-based cluster for its own high availability, or is a single instance acceptable for this design?\",\"What lock time-to-live is appropriate, and should it be renewable by an actively working client that needs more time?\",\"Is fencing token enforcement expected at every protected resource, or only at a subset of genuinely critical ones?\",\"Should locks support reentrancy, the same client acquiring a lock it already holds again without blocking on itself?\",\"What happens if a protected resource itself fails to implement fencing token checks correctly, is that treated as an integration bug outside this design's own scope?\"]",
+          "items": [
+            "Should the lock service itself run as a small, consensus-based cluster for its own high availability, or is a single instance acceptable for this design?",
+            "What lock time-to-live is appropriate, and should it be renewable by an actively working client that needs more time?",
+            "Is fencing token enforcement expected at every protected resource, or only at a subset of genuinely critical ones?",
+            "Should locks support reentrancy, the same client acquiring a lock it already holds again without blocking on itself?",
+            "What happens if a protected resource itself fails to implement fencing token checks correctly, is that treated as an integration bug outside this design's own scope?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "5. Assumptions & Constraints",
+          "content": "5. Assumptions & Constraints",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "This design assumes the lock service itself runs as a small, consensus-based cluster, so its own failure does not mean losing track of every current lock's true owner and token. Fencing tokens are assumed strictly increasing and globally unique across the entire lock service, never reused, even across different resources. Enforcing the fencing token check is assumed to be the protected resource's own responsibility, the lock service issues correct, trustworthy tokens, but cannot itself force a resource to actually check them.",
+          "content": "This design assumes the lock service itself runs as a small, consensus-based cluster, so its own failure does not mean losing track of every current lock's true owner and token. Fencing tokens are assumed strictly increasing and globally unique across the entire lock service, never reused, even across different resources. Enforcing the fencing token check is assumed to be the protected resource's own responsibility, the lock service issues correct, trustworthy tokens, but cannot itself force a resource to actually check them."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "6. Capacity Estimation",
+          "content": "6. Capacity Estimation",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A platform at real scale might see tens of thousands of lock acquire and release operations per second across an enormous number of distinct, independently lockable resources. Acquiring or releasing a lock is expected to complete in a few milliseconds, fast enough to genuinely protect a real, busy critical section without becoming its own bottleneck. Given real-world operating conditions, a meaningful fraction of clients will genuinely pause, due to garbage collection or a network partition, or crash outright, while holding a lock at some point, which is exactly the ordinary condition this design has to handle safely, not an exotic edge case.",
+          "content": "A platform at real scale might see tens of thousands of lock acquire and release operations per second across an enormous number of distinct, independently lockable resources. Acquiring or releasing a lock is expected to complete in a few milliseconds, fast enough to genuinely protect a real, busy critical section without becoming its own bottleneck. Given real-world operating conditions, a meaningful fraction of clients will genuinely pause, due to garbage collection or a network partition, or crash outright, while holding a lock at some point, which is exactly the ordinary condition this design has to handle safely, not an exotic edge case."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207975041-980778572.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207975041-980778572.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207975041-980778572.png",
+          "alt": "Tens of thousands of lock operations per second, a few milliseconds of latency per acquire or release, locks spanning an enormous number of distinct resources, and pausing or crashing lock holders as a routine, expected condition"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "7. High-Level Architecture",
+          "content": "7. High-Level Architecture",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A client requests a lock from the lock service, which checks whether the resource is currently held and not yet expired, and if it is free, grants the lock along with a strictly increasing fencing token. The client then writes to the actual protected resource, always including its own token, and that resource itself, not the lock service, is what enforces safety, rejecting any write whose token is not higher than the highest one it has already accepted.",
+          "content": "A client requests a lock from the lock service, which checks whether the resource is currently held and not yet expired, and if it is free, grants the lock along with a strictly increasing fencing token. The client then writes to the actual protected resource, always including its own token, and that resource itself, not the lock service, is what enforces safety, rejecting any write whose token is not higher than the highest one it has already accepted."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207984538-842025292.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207984538-842025292.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207984538-842025292.png",
+          "alt": "The lock service grants locks with strictly increasing fencing tokens, and the protected resource itself rejects any write whose token is not higher than the highest one already seen"
+        },
+        {
+          "type": "heading2",
+          "text": "7.1 The Lock Expiry Race",
+          "content": "7.1 The Lock Expiry Race",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A client acquires a lock and then pauses for an unusually long time, longer than the lock's configured time-to-live. The lock service, having no way to distinguish a genuine crash from a temporary pause, correctly expires the lock and grants it to a different client. The original, paused client eventually wakes up still believing it safely holds the lock it actually lost.",
+          "content": "A client acquires a lock and then pauses for an unusually long time, longer than the lock's configured time-to-live. The lock service, having no way to distinguish a genuine crash from a temporary pause, correctly expires the lock and grants it to a different client. The original, paused client eventually wakes up still believing it safely holds the lock it actually lost."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207996358-677335150.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207996358-677335150.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785207996358-677335150.png",
+          "alt": "A paused client's lock expires and is granted to a different client; the original client eventually wakes up still believing it holds a lock it has actually already lost"
+        },
+        {
+          "type": "heading2",
+          "text": "7.2 Fencing Tokens",
+          "content": "7.2 Fencing Tokens",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Every lock grant returns a token strictly greater than any token issued before it. Every write to the protected resource carries its own token, and the resource accepts a write only if that token is higher than the highest one it has already seen, making the resource itself, not the lock service, the actual enforcer of safety.",
+          "content": "Every lock grant returns a token strictly greater than any token issued before it. Every write to the protected resource carries its own token, and the resource accepts a write only if that token is higher than the highest one it has already seen, making the resource itself, not the lock service, the actual enforcer of safety."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208013221-85421307.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208013221-85421307.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208013221-85421307.png",
+          "alt": "Every lock grant returns a strictly increasing token, and a write is only accepted if its token exceeds the highest one the resource has already seen"
+        },
+        {
+          "type": "heading2",
+          "text": "7.3 Rejecting A Stale Write",
+          "content": "7.3 Rejecting A Stale Write",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "When the original, paused client finally sends its delayed write carrying its old, now-stale token, the resource has already accepted a newer client's write with a higher token, so the stale write is rejected outright, keeping the resource's actual data correct even though the paused client never realized it had lost the lock.",
+          "content": "When the original, paused client finally sends its delayed write carrying its old, now-stale token, the resource has already accepted a newer client's write with a higher token, so the stale write is rejected outright, keeping the resource's actual data correct even though the paused client never realized it had lost the lock."
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208025728-27841068.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208025728-27841068.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208025728-27841068.png",
+          "alt": "A stale write arriving after a newer, higher-token write has already been accepted is correctly rejected, keeping the resource's data safe despite the paused client's mistaken belief it still held the lock"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "8. Core Components",
+          "content": "8. Core Components",
+          "items": []
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Component\",\"Responsibility\",\"Why it exists\",\"Scaling consideration\"],\"rows\":[[\"Lock Service\",\"Grants and releases locks, issuing a strictly increasing fencing token per grant\",\"The single, authoritative arbiter of who currently holds each lock\",\"Runs as a small, consensus-based cluster for its own availability\"],[\"Lock State Store\",\"Durably holds each resource's current owner, token, and expiry time\",\"The record the lock service itself reads and writes on every operation\",\"Partitioned by resource id, replicated across the consensus cluster\"],[\"Protected Resource\",\"Applies a write only if its carried token exceeds the highest one already seen\",\"This is where the actual safety guarantee is enforced, not at the lock service\",\"Independent of the lock service, scales with its own workload\"],[\"Audit and Metrics Pipeline\",\"Records every lock acquire, release, and expiry event\",\"Lets operators diagnose contention and unusual lock behavior after the fact\",\"Scales with lock operation volume\"]]}",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "9. API Design",
+          "content": "9. API Design",
+          "items": []
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Endpoint\",\"Method\",\"Purpose\"],\"rows\":[[\"/locks/:resourceId/acquire\",\"POST\",\"Attempt to acquire an exclusive lock, returning a fencing token on success\"],[\"/locks/:resourceId/release\",\"POST\",\"Explicitly release a lock this client currently holds\"],[\"/locks/:resourceId/renew\",\"POST\",\"Extend an actively held lock's expiry before it lapses\"]]}",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The acquire response deliberately always includes the fencing token directly, not as a separate lookup, since a client should never be able to act on a granted lock without also having the exact token it needs to safely write to the protected resource.",
+          "content": "The acquire response deliberately always includes the fencing token directly, not as a separate lookup, since a client should never be able to act on a granted lock without also having the exact token it needs to safely write to the protected resource."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "10. Database Design",
+          "content": "10. Database Design",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017690-522762915.png",
+          "content": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017690-522762915.png",
+          "text": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-problem-images/1785396017690-522762915.png",
+          "alt": "Lock tracking a resource's current owner, fencing token, and expiry, and Resource tracking the highest fencing token it has itself already accepted"
+        },
+        {
+          "type": "paragraph",
+          "text": "Resource's own highestTokenSeen column lives entirely outside the lock service's own state, deliberately, since the whole point of fencing tokens is that the resource enforces safety independently, without needing to ask the lock service anything at write time.",
+          "content": "Resource's own highestTokenSeen column lives entirely outside the lock service's own state, deliberately, since the whole point of fencing tokens is that the resource enforces safety independently, without needing to ask the lock service anything at write time."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "11. Data Modeling Decisions",
+          "content": "11. Data Modeling Decisions",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Fencing tokens are modeled as a single, globally increasing counter across the entire lock service, rather than per-resource counters, since a globally unique, strictly increasing sequence is simpler to reason about and guarantees uniqueness without any risk of two different resources' tokens ever colliding. Lock expiry is stored as an absolute timestamp rather than a remaining duration, letting any lock service node determine expiry correctly without needing to track elapsed time relative to when it originally observed the grant.",
+          "content": "Fencing tokens are modeled as a single, globally increasing counter across the entire lock service, rather than per-resource counters, since a globally unique, strictly increasing sequence is simpler to reason about and guarantees uniqueness without any risk of two different resources' tokens ever colliding. Lock expiry is stored as an absolute timestamp rather than a remaining duration, letting any lock service node determine expiry correctly without needing to track elapsed time relative to when it originally observed the grant."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "12. High-Level Data Flow",
+          "content": "12. High-Level Data Flow",
+          "items": []
+        },
+        {
+          "type": "heading2",
+          "text": "12.1 Normal Flow",
+          "content": "12.1 Normal Flow",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785209684472-828339873.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785209684472-828339873.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785209684472-828339873.png",
+          "alt": "A client acquires a lock, receives a fencing token, writes to the protected resource carrying that token, and releases the lock when done"
+        },
+        {
+          "type": "heading2",
+          "text": "12.2 Fencing Race Flow",
+          "content": "12.2 Fencing Race Flow",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785209696537-128035891.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785209696537-128035891.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785209696537-128035891.png",
+          "alt": "A paused client's lock expires and is granted to a different client with a higher token; the original client's eventual stale write is correctly rejected"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "13. Detailed Workflows",
+          "content": "13. Detailed Workflows",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "The happy path is the normal flow above, a clean acquire, a token-carrying write, and an explicit release. The workflow worth walking through separately is the fencing race, a client pauses past its lock's expiry, a different client acquires the same lock with a genuinely higher token and successfully writes, and only when the original, paused client eventually sends its own delayed write does the protected resource, comparing tokens directly, correctly reject it as stale, exactly the scenario this entire design exists to prevent from silently corrupting shared state.",
+          "content": "The happy path is the normal flow above, a clean acquire, a token-carrying write, and an explicit release. The workflow worth walking through separately is the fencing race, a client pauses past its lock's expiry, a different client acquires the same lock with a genuinely higher token and successfully writes, and only when the original, paused client eventually sends its own delayed write does the protected resource, comparing tokens directly, correctly reject it as stale, exactly the scenario this entire design exists to prevent from silently corrupting shared state."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "14. Caching Strategy",
+          "content": "14. Caching Strategy",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208066465-576378054.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208066465-576378054.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208066465-576378054.png",
+          "alt": "A check for whether a resource is currently locked always reads the lock service's own live, authoritative state directly, never a cached answer"
+        },
+        {
+          "type": "paragraph",
+          "text": "This is a deliberate rejection of caching on the one read path where it would actually be dangerous, a stale cached answer about lock ownership could directly cause two clients to both believe they safely hold the same lock at once.",
+          "content": "This is a deliberate rejection of caching on the one read path where it would actually be dangerous, a stale cached answer about lock ownership could directly cause two clients to both believe they safely hold the same lock at once."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "15. Message Queues & Async Processing",
+          "content": "15. Message Queues & Async Processing",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208079099-245793271.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208079099-245793271.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208079099-245793271.png",
+          "alt": "Every lock acquired, released, or expired event is queued and processed asynchronously by logging workers, off the lock service's own critical path"
+        },
+        {
+          "type": "paragraph",
+          "text": "Queuing audit logging keeps it from ever adding latency to the actual lock acquire and release operations, which need to stay as fast as possible given how directly they sit on a real critical section's path.",
+          "content": "Queuing audit logging keeps it from ever adding latency to the actual lock acquire and release operations, which need to stay as fast as possible given how directly they sit on a real critical section's path."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "16. Load Balancing Strategy",
+          "content": "16. Load Balancing Strategy",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208085631-482687884.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208085631-482687884.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208085631-482687884.png",
+          "alt": "A lock request is routed by hashing the resource id, so every operation on one resource's lock is always handled consistently"
+        },
+        {
+          "type": "paragraph",
+          "text": "Partitioning by resource id keeps a specific resource's lock state strictly local to one partition, letting an especially popular, frequently locked resource be reasoned about and handled without needing coordination across every other resource's locks.",
+          "content": "Partitioning by resource id keeps a specific resource's lock state strictly local to one partition, letting an especially popular, frequently locked resource be reasoned about and handled without needing coordination across every other resource's locks."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "17. Scaling Strategy",
+          "content": "17. Scaling Strategy",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208092070-161051651.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208092070-161051651.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208092070-161051651.png",
+          "alt": "Rising lock acquire or release latency triggers adding more lock service capacity, partitioned by resource"
+        },
+        {
+          "type": "paragraph",
+          "text": "Because each resource's lock state is independent of every other resource's, scaling out is simply a matter of spreading more resources across more partitions, with the consensus cluster itself sized for its own availability requirements rather than raw throughput alone.",
+          "content": "Because each resource's lock state is independent of every other resource's, scaling out is simply a matter of spreading more resources across more partitions, with the consensus cluster itself sized for its own availability requirements rather than raw throughput alone."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "18. Database Scaling",
+          "content": "18. Database Scaling",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Lock state is partitioned by resource id and replicated across the consensus cluster for durability, since losing track of who currently holds a lock is exactly the kind of failure this entire design exists to prevent. The audit and metrics pipeline scales separately, as a much larger, append-heavy store read primarily for diagnostics rather than live lock decisions.",
+          "content": "Lock state is partitioned by resource id and replicated across the consensus cluster for durability, since losing track of who currently holds a lock is exactly the kind of failure this entire design exists to prevent. The audit and metrics pipeline scales separately, as a much larger, append-heavy store read primarily for diagnostics rather than live lock decisions."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "19. Consistency & Availability",
+          "content": "19. Consistency & Availability",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208099499-14406362.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208099499-14406362.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208099499-14406362.png",
+          "alt": "Who currently holds a given lock, and its token, is strongly consistent, one single authoritative owner at a time; whether a specific write is accepted is a fast, purely local comparison at the resource itself, needing no coordination per write"
+        },
+        {
+          "type": "paragraph",
+          "text": "This split is what keeps the design both correct and fast, the lock service alone needs strong consistency for who owns what, while the actual safety enforcement at write time is a cheap, local token comparison that never needs to talk back to the lock service at all.",
+          "content": "This split is what keeps the design both correct and fast, the lock service alone needs strong consistency for who owns what, while the actual safety enforcement at write time is a cheap, local token comparison that never needs to talk back to the lock service at all."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "20. Reliability & Fault Tolerance",
+          "content": "20. Reliability & Fault Tolerance",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208107202-932186966.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208107202-932186966.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208107202-932186966.png",
+          "alt": "A single lock service node failing does not lose track of any lock's true owner and token, since lock state is replicated across a small consensus-based cluster"
+        },
+        {
+          "type": "paragraph",
+          "text": "Running the lock service itself as a consensus cluster, rather than a single instance, is what keeps the entire design from having its own single point of failure, exactly the kind of failure that would otherwise undermine every guarantee this design provides everyone depending on it.",
+          "content": "Running the lock service itself as a consensus cluster, rather than a single instance, is what keeps the entire design from having its own single point of failure, exactly the kind of failure that would otherwise undermine every guarantee this design provides everyone depending on it."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "21. Security Considerations",
+          "content": "21. Security Considerations",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208113710-819788862.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208113710-819788862.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208113710-819788862.png",
+          "alt": "A write carrying a claimed token is only meaningful if that token genuinely came from the real lock service; an invented or forged token is rejected outright"
+        },
+        {
+          "type": "paragraph",
+          "text": "Trusting only genuinely-issued tokens is this design's defining security concern, distinct from every other category's angle in this project, since the entire fencing guarantee collapses if a client could simply fabricate a higher token itself rather than actually earning one through a real lock acquisition.",
+          "content": "Trusting only genuinely-issued tokens is this design's defining security concern, distinct from every other category's angle in this project, since the entire fencing guarantee collapses if a client could simply fabricate a higher token itself rather than actually earning one through a real lock acquisition."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "22. Monitoring & Observability",
+          "content": "22. Monitoring & Observability",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Lock hold duration and expiry rate are the clearest signals of whether clients are behaving as expected, an unusually high expiry rate for a specific resource often points to a client that is pausing or crashing more than expected while holding that lock. Lock acquire latency, tracked separately from actual hold duration, directly reflects whether the lock service itself is keeping up with demand.",
+          "content": "Lock hold duration and expiry rate are the clearest signals of whether clients are behaving as expected, an unusually high expiry rate for a specific resource often points to a client that is pausing or crashing more than expected while holding that lock. Lock acquire latency, tracked separately from actual hold duration, directly reflects whether the lock service itself is keeping up with demand."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "23. Bottlenecks & Single Points of Failure",
+          "content": "23. Bottlenecks & Single Points of Failure",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208119929-617915510.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208119929-617915510.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208119929-617915510.png",
+          "alt": "One extremely popular, frequently locked resource becoming a hotspot, the lock service cluster itself becoming unavailable and blocking every dependent operation platform-wide, and a protected resource that forgets to enforce fencing token checks at all"
+        },
+        {
+          "type": "paragraph",
+          "text": "The third of these is a genuinely dangerous integration failure mode worth calling out explicitly, fencing tokens provide no protection whatsoever if the protected resource simply never checks them, the entire safety guarantee depends on that check actually being implemented correctly at every resource that needs it.",
+          "content": "The third of these is a genuinely dangerous integration failure mode worth calling out explicitly, fencing tokens provide no protection whatsoever if the protected resource simply never checks them, the entire safety guarantee depends on that check actually being implemented correctly at every resource that needs it."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "24. Trade-Offs",
+          "content": "24. Trade-Offs",
+          "items": []
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Approach\",\"Safety under a paused lock holder\",\"Added complexity\",\"Where it breaks down\"],\"rows\":[[\"Fencing tokens enforced at the protected resource\",\"Genuinely safe, a stale write is rejected regardless of what the paused client believes\",\"Every protected resource must implement the token check itself\",\"Provides no protection at all if a resource forgets to check tokens\"],[\"Lock alone, no fencing tokens\",\"Unsafe, a paused client's late write can silently corrupt the resource\",\"Simpler, nothing for the resource to check\",\"The exact, well known race this design exists to prevent\"],[\"No expiry at all, locks held until explicitly released\",\"Avoids the race entirely, in theory\",\"Simple locking logic\",\"A crashed client's lock is held forever, deadlocking every other client indefinitely\"]]}",
+          "items": []
+        },
+        {
+          "type": "blockQuote",
+          "text": "Fencing tokens are the right default because they are the only approach that stays safe under the one condition every distributed lock eventually faces in practice, a client pausing longer than expected, without either risking silent corruption or deadlocking forever on a client that will never come back.",
+          "content": "Fencing tokens are the right default because they are the only approach that stays safe under the one condition every distributed lock eventually faces in practice, a client pausing longer than expected, without either risking silent corruption or deadlocking forever on a client that will never come back.",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "25. Cost Optimization",
+          "content": "25. Cost Optimization",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Fencing tokens themselves add essentially no meaningful cost, a monotonically increasing counter and a cheap comparison at write time, for a correctness guarantee that would otherwise require far more expensive coordination to achieve any other way. Never caching live lock-ownership checks avoids an entire class of subtle, hard-to-reproduce correctness bugs that a stale cache read could otherwise introduce.",
+          "content": "Fencing tokens themselves add essentially no meaningful cost, a monotonically increasing counter and a cheap comparison at write time, for a correctness guarantee that would otherwise require far more expensive coordination to achieve any other way. Never caching live lock-ownership checks avoids an entire class of subtle, hard-to-reproduce correctness bugs that a stale cache read could otherwise introduce."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "26. Edge Cases",
+          "content": "26. Edge Cases",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"A client pauses for exactly its lock's TTL duration, correctly treated as expired rather than a borderline, ambiguous case.\",\"A stale write from a client that lost its lock arrives at the protected resource before any newer client has actually written anything yet, correctly still rejected once compared against the resource's already-updated highest seen token from the newer acquisition, not merely from whether a write has happened.\",\"Two clients race to acquire the same just-expired lock at nearly the same instant, correctly resulting in exactly one of them winning, with a genuinely higher token than any previously issued.\",\"A protected resource restarts and loses its own in-memory highest-seen-token state, correctly requiring that state to be durably persisted rather than assumed safe to lose.\"]",
+          "items": [
+            "A client pauses for exactly its lock's TTL duration, correctly treated as expired rather than a borderline, ambiguous case.",
+            "A stale write from a client that lost its lock arrives at the protected resource before any newer client has actually written anything yet, correctly still rejected once compared against the resource's already-updated highest seen token from the newer acquisition, not merely from whether a write has happened.",
+            "Two clients race to acquire the same just-expired lock at nearly the same instant, correctly resulting in exactly one of them winning, with a genuinely higher token than any previously issued.",
+            "A protected resource restarts and loses its own in-memory highest-seen-token state, correctly requiring that state to be durably persisted rather than assumed safe to lose."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "27. Production Considerations",
+          "content": "27. Production Considerations",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A change to the lock service's token-issuance logic needs extremely careful testing, since a bug that ever issues two clients the same token, or a token that is not genuinely higher than the last one, would silently break the entire safety guarantee this design provides. Onboarding a new protected resource onto this locking service needs a deliberate integration check confirming it genuinely enforces the fencing token comparison, not just an assumption that it does.",
+          "content": "A change to the lock service's token-issuance logic needs extremely careful testing, since a bug that ever issues two clients the same token, or a token that is not genuinely higher than the last one, would silently break the entire safety guarantee this design provides. Onboarding a new protected resource onto this locking service needs a deliberate integration check confirming it genuinely enforces the fencing token comparison, not just an assumption that it does."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "28. Future Improvements",
+          "content": "28. Future Improvements",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "Renewable locks, letting an actively working client extend its lock's expiry before it lapses, would reduce unnecessary expirations for genuinely long-running, still-healthy critical sections. A client-side library providing automatic, transparent lease renewal and fencing token propagation would reduce the chance of an application developer forgetting to actually carry and check tokens correctly.",
+          "content": "Renewable locks, letting an actively working client extend its lock's expiry before it lapses, would reduce unnecessary expirations for genuinely long-running, still-healthy critical sections. A client-side library providing automatic, transparent lease renewal and fencing token propagation would reduce the chance of an application developer forgetting to actually carry and check tokens correctly."
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "29. Follow-Up Questions",
+          "content": "29. Follow-Up Questions",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"How would you design renewable locks that let an actively working client extend its lease before expiry, without reintroducing the original race?\",\"How would you verify, as an integration test, that a newly onboarded protected resource correctly enforces fencing token checks?\",\"How would you handle a fencing token counter approaching the limits of its numeric type at extremely high lock throughput over a very long time?\"]",
+          "items": [
+            "How would you design renewable locks that let an actively working client extend its lease before expiry, without reintroducing the original race?",
+            "How would you verify, as an integration test, that a newly onboarded protected resource correctly enforces fencing token checks?",
+            "How would you handle a fencing token counter approaching the limits of its numeric type at extremely high lock throughput over a very long time?"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "30. Final Architecture Diagram",
+          "content": "30. Final Architecture Diagram",
+          "items": []
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208124218-843770975.png",
+          "content": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208124218-843770975.png",
+          "text": "https://algorithmxlr8-content-media.s3.ap-south-1.amazonaws.com/hld-problem-images/1785208124218-843770975.png",
+          "alt": "The complete system: the lock service grants locks with strictly increasing fencing tokens, and every protected resource independently enforces safety by rejecting any write whose token is not higher than the highest one already seen, all watched by monitoring"
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Complete Code Implementation",
+          "content": "Complete Code Implementation",
+          "items": []
+        },
+        {
+          "type": "paragraph",
+          "text": "A real, self-contained, directly runnable implementation of a lock service issuing fencing tokens and a protected resource enforcing them, in Java, Python, and C++, exactly as you would actually copy, compile and run it, demonstrating the exact, classic race: a paused client's lock expiring, a second client acquiring it and writing successfully, and the first client's eventual stale write being correctly rejected.",
+          "content": "A real, self-contained, directly runnable implementation of a lock service issuing fencing tokens and a protected resource enforcing them, in Java, Python, and C++, exactly as you would actually copy, compile and run it, demonstrating the exact, classic race: a paused client's lock expiring, a second client acquiring it and writing successfully, and the first client's eventual stale write being correctly rejected."
+        },
+        {
+          "type": "code",
+          "codes": {
+            "java": "public class Main {\n    public static void main(String[] args) {\n        LockService lockService = new LockService();\n        ProtectedResource resource = new ProtectedResource();\n\n        // Client A acquires the lock at time 0, with a 1000ms time-to-live.\n        LockGrant grantA = lockService.acquire(\"resource-1\", \"client-A\", 0, 1000);\n        System.out.println(\"Client A acquires lock: granted=\" + grantA.granted + \" token=\" + grantA.token);\n\n        // Client A \"pauses\" (a long GC pause or network partition) and never renews or releases.\n        // Time passes well beyond the lock's 1000ms TTL.\n\n        // Client B acquires the lock at time 1500, since A's lock has already expired.\n        LockGrant grantB = lockService.acquire(\"resource-1\", \"client-B\", 1500, 1000);\n        System.out.println(\"Client B acquires lock after A's expired: granted=\" + grantB.granted + \" token=\" + grantB.token);\n\n        // Client B writes using its genuinely current, higher token.\n        boolean bWriteAccepted = resource.applyWrite(grantB.token, \"B's update\");\n        System.out.println(\"Client B's write accepted: \" + bWriteAccepted);\n\n        // Client A finally wakes up, still believing it holds token 1, and tries to write.\n        boolean aWriteAccepted = resource.applyWrite(grantA.token, \"A's stale update\");\n        System.out.println(\"Client A's stale write accepted (should be false): \" + aWriteAccepted);\n\n        System.out.println(\"Resource's final data (should only reflect B's write): \" + resource.currentData());\n    }\n}\n\n// The result of a lock acquisition attempt: whether it succeeded, and, if\n// so, the strictly increasing fencing token issued for this grant.\nclass LockGrant {\n    boolean granted;\n    long token;\n\n    LockGrant(boolean granted, long token) {\n        this.granted = granted;\n        this.token = token;\n    }\n}\n\n// One resource's current lock state: who holds it, its fencing token, and\n// when it expires.\nclass LockState {\n    String ownerClientId;\n    long token;\n    long expiresAt;\n\n    LockState(String ownerClientId, long token, long expiresAt) {\n        this.ownerClientId = ownerClientId;\n        this.token = token;\n        this.expiresAt = expiresAt;\n    }\n}\n\n// Grants exclusive locks with strictly increasing fencing tokens; a lock\n// past its expiry is treated as free and can be granted to a new client\n// with a genuinely higher token than any issued before.\nclass LockService {\n    private final java.util.Map<String, LockState> locks = new java.util.HashMap<>();\n    private long nextToken = 1;\n\n    LockGrant acquire(String resourceId, String clientId, long now, long ttlMillis) {\n        LockState existing = locks.get(resourceId);\n        if (existing != null && existing.expiresAt > now) {\n            return new LockGrant(false, -1); // still held by someone else, not yet expired\n        }\n        long token = nextToken++; // always strictly greater than any token issued before\n        locks.put(resourceId, new LockState(clientId, token, now + ttlMillis));\n        return new LockGrant(true, token);\n    }\n}\n\n// A resource protected by fencing tokens: it independently rejects any\n// write whose token is not higher than the highest one it has already\n// accepted, regardless of what the lock service or the writing client believes.\nclass ProtectedResource {\n    private long highestTokenSeen = 0;\n    private String data = \"\";\n\n    boolean applyWrite(long token, String newData) {\n        if (token <= highestTokenSeen) {\n            return false; // stale token: this client no longer safely holds the lock\n        }\n        highestTokenSeen = token;\n        data = newData;\n        return true;\n    }\n\n    String currentData() {\n        return data;\n    }\n}",
+            "python": "class LockGrant:\n    # The result of a lock acquisition attempt: whether it succeeded, and, if\n    # so, the strictly increasing fencing token issued for this grant.\n    def __init__(self, granted, token):\n        self.granted = granted\n        self.token = token\n\n\nclass LockState:\n    # One resource's current lock state: who holds it, its fencing token, and\n    # when it expires.\n    def __init__(self, owner_client_id, token, expires_at):\n        self.owner_client_id = owner_client_id\n        self.token = token\n        self.expires_at = expires_at\n\n\nclass LockService:\n    # Grants exclusive locks with strictly increasing fencing tokens; a lock\n    # past its expiry is treated as free and can be granted to a new client\n    # with a genuinely higher token than any issued before.\n    def __init__(self):\n        self.locks = {}\n        self.next_token = 1\n\n    def acquire(self, resource_id, client_id, now, ttl_millis):\n        existing = self.locks.get(resource_id)\n        if existing is not None and existing.expires_at > now:\n            return LockGrant(False, -1)  # still held by someone else, not yet expired\n        token = self.next_token\n        self.next_token += 1  # always strictly greater than any token issued before\n        self.locks[resource_id] = LockState(client_id, token, now + ttl_millis)\n        return LockGrant(True, token)\n\n\nclass ProtectedResource:\n    # A resource protected by fencing tokens: it independently rejects any\n    # write whose token is not higher than the highest one it has already\n    # accepted, regardless of what the lock service or the writing client believes.\n    def __init__(self):\n        self.highest_token_seen = 0\n        self.data = \"\"\n\n    def apply_write(self, token, new_data):\n        if token <= self.highest_token_seen:\n            return False  # stale token: this client no longer safely holds the lock\n        self.highest_token_seen = token\n        self.data = new_data\n        return True\n\n    def current_data(self):\n        return self.data\n\n\ndef main():\n    lock_service = LockService()\n    resource = ProtectedResource()\n\n    # Client A acquires the lock at time 0, with a 1000ms time-to-live.\n    grant_a = lock_service.acquire(\"resource-1\", \"client-A\", 0, 1000)\n    print(f\"Client A acquires lock: granted={grant_a.granted} token={grant_a.token}\")\n\n    # Client A \"pauses\" (a long GC pause or network partition) and never renews or releases.\n    # Time passes well beyond the lock's 1000ms TTL.\n\n    # Client B acquires the lock at time 1500, since A's lock has already expired.\n    grant_b = lock_service.acquire(\"resource-1\", \"client-B\", 1500, 1000)\n    print(f\"Client B acquires lock after A's expired: granted={grant_b.granted} token={grant_b.token}\")\n\n    # Client B writes using its genuinely current, higher token.\n    b_write_accepted = resource.apply_write(grant_b.token, \"B's update\")\n    print(\"Client B's write accepted:\", b_write_accepted)\n\n    # Client A finally wakes up, still believing it holds token 1, and tries to write.\n    a_write_accepted = resource.apply_write(grant_a.token, \"A's stale update\")\n    print(\"Client A's stale write accepted (should be false):\", a_write_accepted)\n\n    print(\"Resource's final data (should only reflect B's write):\", resource.current_data())\n\n\nif __name__ == \"__main__\":\n    main()",
+            "cpp": "#include <iostream>\n#include <map>\n#include <string>\nusing namespace std;\n\n// The result of a lock acquisition attempt: whether it succeeded, and, if\n// so, the strictly increasing fencing token issued for this grant.\nstruct LockGrant {\n    bool granted;\n    long token;\n};\n\n// One resource's current lock state: who holds it, its fencing token, and\n// when it expires.\nstruct LockState {\n    string ownerClientId;\n    long token;\n    long expiresAt;\n};\n\n// Grants exclusive locks with strictly increasing fencing tokens; a lock\n// past its expiry is treated as free and can be granted to a new client\n// with a genuinely higher token than any issued before.\nclass LockService {\npublic:\n    LockGrant acquire(const string& resourceId, const string& clientId, long now, long ttlMillis) {\n        auto it = locks.find(resourceId);\n        if (it != locks.end() && it->second.expiresAt > now) {\n            return {false, -1}; // still held by someone else, not yet expired\n        }\n        long token = nextToken++; // always strictly greater than any token issued before\n        locks[resourceId] = {clientId, token, now + ttlMillis};\n        return {true, token};\n    }\n\nprivate:\n    map<string, LockState> locks;\n    long nextToken = 1;\n};\n\n// A resource protected by fencing tokens: it independently rejects any\n// write whose token is not higher than the highest one it has already\n// accepted, regardless of what the lock service or the writing client believes.\nclass ProtectedResource {\npublic:\n    bool applyWrite(long token, const string& newData) {\n        if (token <= highestTokenSeen) {\n            return false; // stale token: this client no longer safely holds the lock\n        }\n        highestTokenSeen = token;\n        data = newData;\n        return true;\n    }\n\n    string currentData() {\n        return data;\n    }\n\nprivate:\n    long highestTokenSeen = 0;\n    string data = \"\";\n};\n\nint main() {\n    LockService lockService;\n    ProtectedResource resource;\n\n    // Client A acquires the lock at time 0, with a 1000ms time-to-live.\n    LockGrant grantA = lockService.acquire(\"resource-1\", \"client-A\", 0, 1000);\n    cout << \"Client A acquires lock: granted=\" << (grantA.granted ? \"true\" : \"false\") << \" token=\" << grantA.token << endl;\n\n    // Client A \"pauses\" (a long GC pause or network partition) and never renews or releases.\n    // Time passes well beyond the lock's 1000ms TTL.\n\n    // Client B acquires the lock at time 1500, since A's lock has already expired.\n    LockGrant grantB = lockService.acquire(\"resource-1\", \"client-B\", 1500, 1000);\n    cout << \"Client B acquires lock after A's expired: granted=\" << (grantB.granted ? \"true\" : \"false\") << \" token=\" << grantB.token << endl;\n\n    // Client B writes using its genuinely current, higher token.\n    bool bWriteAccepted = resource.applyWrite(grantB.token, \"B's update\");\n    cout << \"Client B's write accepted: \" << (bWriteAccepted ? \"true\" : \"false\") << endl;\n\n    // Client A finally wakes up, still believing it holds token 1, and tries to write.\n    bool aWriteAccepted = resource.applyWrite(grantA.token, \"A's stale update\");\n    cout << \"Client A's stale write accepted (should be false): \" << (aWriteAccepted ? \"true\" : \"false\") << endl;\n\n    cout << \"Resource's final data (should only reflect B's write): \" << resource.currentData() << endl;\n\n    return 0;\n}"
+          },
+          "code": {
+            "language": "java",
+            "content": "public class Main {\n    public static void main(String[] args) {\n        LockService lockService = new LockService();\n        ProtectedResource resource = new ProtectedResource();\n\n        // Client A acquires the lock at time 0, with a 1000ms time-to-live.\n        LockGrant grantA = lockService.acquire(\"resource-1\", \"client-A\", 0, 1000);\n        System.out.println(\"Client A acquires lock: granted=\" + grantA.granted + \" token=\" + grantA.token);\n\n        // Client A \"pauses\" (a long GC pause or network partition) and never renews or releases.\n        // Time passes well beyond the lock's 1000ms TTL.\n\n        // Client B acquires the lock at time 1500, since A's lock has already expired.\n        LockGrant grantB = lockService.acquire(\"resource-1\", \"client-B\", 1500, 1000);\n        System.out.println(\"Client B acquires lock after A's expired: granted=\" + grantB.granted + \" token=\" + grantB.token);\n\n        // Client B writes using its genuinely current, higher token.\n        boolean bWriteAccepted = resource.applyWrite(grantB.token, \"B's update\");\n        System.out.println(\"Client B's write accepted: \" + bWriteAccepted);\n\n        // Client A finally wakes up, still believing it holds token 1, and tries to write.\n        boolean aWriteAccepted = resource.applyWrite(grantA.token, \"A's stale update\");\n        System.out.println(\"Client A's stale write accepted (should be false): \" + aWriteAccepted);\n\n        System.out.println(\"Resource's final data (should only reflect B's write): \" + resource.currentData());\n    }\n}\n\n// The result of a lock acquisition attempt: whether it succeeded, and, if\n// so, the strictly increasing fencing token issued for this grant.\nclass LockGrant {\n    boolean granted;\n    long token;\n\n    LockGrant(boolean granted, long token) {\n        this.granted = granted;\n        this.token = token;\n    }\n}\n\n// One resource's current lock state: who holds it, its fencing token, and\n// when it expires.\nclass LockState {\n    String ownerClientId;\n    long token;\n    long expiresAt;\n\n    LockState(String ownerClientId, long token, long expiresAt) {\n        this.ownerClientId = ownerClientId;\n        this.token = token;\n        this.expiresAt = expiresAt;\n    }\n}\n\n// Grants exclusive locks with strictly increasing fencing tokens; a lock\n// past its expiry is treated as free and can be granted to a new client\n// with a genuinely higher token than any issued before.\nclass LockService {\n    private final java.util.Map<String, LockState> locks = new java.util.HashMap<>();\n    private long nextToken = 1;\n\n    LockGrant acquire(String resourceId, String clientId, long now, long ttlMillis) {\n        LockState existing = locks.get(resourceId);\n        if (existing != null && existing.expiresAt > now) {\n            return new LockGrant(false, -1); // still held by someone else, not yet expired\n        }\n        long token = nextToken++; // always strictly greater than any token issued before\n        locks.put(resourceId, new LockState(clientId, token, now + ttlMillis));\n        return new LockGrant(true, token);\n    }\n}\n\n// A resource protected by fencing tokens: it independently rejects any\n// write whose token is not higher than the highest one it has already\n// accepted, regardless of what the lock service or the writing client believes.\nclass ProtectedResource {\n    private long highestTokenSeen = 0;\n    private String data = \"\";\n\n    boolean applyWrite(long token, String newData) {\n        if (token <= highestTokenSeen) {\n            return false; // stale token: this client no longer safely holds the lock\n        }\n        highestTokenSeen = token;\n        data = newData;\n        return true;\n    }\n\n    String currentData() {\n        return data;\n    }\n}"
+          },
+          "content": "public class Main {\n    public static void main(String[] args) {\n        LockService lockService = new LockService();\n        ProtectedResource resource = new ProtectedResource();\n\n        // Client A acquires the lock at time 0, with a 1000ms time-to-live.\n        LockGrant grantA = lockService.acquire(\"resource-1\", \"client-A\", 0, 1000);\n        System.out.println(\"Client A acquires lock: granted=\" + grantA.granted + \" token=\" + grantA.token);\n\n        // Client A \"pauses\" (a long GC pause or network partition) and never renews or releases.\n        // Time passes well beyond the lock's 1000ms TTL.\n\n        // Client B acquires the lock at time 1500, since A's lock has already expired.\n        LockGrant grantB = lockService.acquire(\"resource-1\", \"client-B\", 1500, 1000);\n        System.out.println(\"Client B acquires lock after A's expired: granted=\" + grantB.granted + \" token=\" + grantB.token);\n\n        // Client B writes using its genuinely current, higher token.\n        boolean bWriteAccepted = resource.applyWrite(grantB.token, \"B's update\");\n        System.out.println(\"Client B's write accepted: \" + bWriteAccepted);\n\n        // Client A finally wakes up, still believing it holds token 1, and tries to write.\n        boolean aWriteAccepted = resource.applyWrite(grantA.token, \"A's stale update\");\n        System.out.println(\"Client A's stale write accepted (should be false): \" + aWriteAccepted);\n\n        System.out.println(\"Resource's final data (should only reflect B's write): \" + resource.currentData());\n    }\n}\n\n// The result of a lock acquisition attempt: whether it succeeded, and, if\n// so, the strictly increasing fencing token issued for this grant.\nclass LockGrant {\n    boolean granted;\n    long token;\n\n    LockGrant(boolean granted, long token) {\n        this.granted = granted;\n        this.token = token;\n    }\n}\n\n// One resource's current lock state: who holds it, its fencing token, and\n// when it expires.\nclass LockState {\n    String ownerClientId;\n    long token;\n    long expiresAt;\n\n    LockState(String ownerClientId, long token, long expiresAt) {\n        this.ownerClientId = ownerClientId;\n        this.token = token;\n        this.expiresAt = expiresAt;\n    }\n}\n\n// Grants exclusive locks with strictly increasing fencing tokens; a lock\n// past its expiry is treated as free and can be granted to a new client\n// with a genuinely higher token than any issued before.\nclass LockService {\n    private final java.util.Map<String, LockState> locks = new java.util.HashMap<>();\n    private long nextToken = 1;\n\n    LockGrant acquire(String resourceId, String clientId, long now, long ttlMillis) {\n        LockState existing = locks.get(resourceId);\n        if (existing != null && existing.expiresAt > now) {\n            return new LockGrant(false, -1); // still held by someone else, not yet expired\n        }\n        long token = nextToken++; // always strictly greater than any token issued before\n        locks.put(resourceId, new LockState(clientId, token, now + ttlMillis));\n        return new LockGrant(true, token);\n    }\n}\n\n// A resource protected by fencing tokens: it independently rejects any\n// write whose token is not higher than the highest one it has already\n// accepted, regardless of what the lock service or the writing client believes.\nclass ProtectedResource {\n    private long highestTokenSeen = 0;\n    private String data = \"\";\n\n    boolean applyWrite(long token, String newData) {\n        if (token <= highestTokenSeen) {\n            return false; // stale token: this client no longer safely holds the lock\n        }\n        highestTokenSeen = token;\n        data = newData;\n        return true;\n    }\n\n    String currentData() {\n        return data;\n    }\n}",
+          "items": []
+        },
+        {
+          "type": "divider",
+          "items": []
+        },
+        {
+          "type": "heading1",
+          "text": "Deliverables Recap",
+          "content": "Deliverables Recap",
+          "items": []
+        },
+        {
+          "type": "list",
+          "content": "[\"Architecture: a consensus-based lock service issuing strictly increasing fencing tokens, with the protected resource itself, not the lock service, enforcing write safety.\",\"Capacity: tens of thousands of lock operations per second, a few milliseconds of latency per operation, and pausing or crashing lock holders treated as a routine, expected condition.\",\"The core technique: fencing tokens, worked through with a real, verified implementation in Java, Python, and C++.\",\"Database: resource-partitioned, consensus-replicated lock state, with the resource's own highest-seen-token tracked entirely separately.\",\"End-to-end workflows: a normal acquire-write-release flow and the classic paused-client fencing race, both traced as sequence diagrams.\",\"Consistency: strongly consistent lock ownership at the lock service, paired with a fast, purely local token comparison at the protected resource.\",\"Trade-offs: fencing tokens versus locking alone versus never expiring locks at all, compared directly on safety under a paused lock holder and added complexity.\"]",
+          "items": [
+            "Architecture: a consensus-based lock service issuing strictly increasing fencing tokens, with the protected resource itself, not the lock service, enforcing write safety.",
+            "Capacity: tens of thousands of lock operations per second, a few milliseconds of latency per operation, and pausing or crashing lock holders treated as a routine, expected condition.",
+            "The core technique: fencing tokens, worked through with a real, verified implementation in Java, Python, and C++.",
+            "Database: resource-partitioned, consensus-replicated lock state, with the resource's own highest-seen-token tracked entirely separately.",
+            "End-to-end workflows: a normal acquire-write-release flow and the classic paused-client fencing race, both traced as sequence diagrams.",
+            "Consistency: strongly consistent lock ownership at the lock service, paired with a fast, purely local token comparison at the protected resource.",
+            "Trade-offs: fencing tokens versus locking alone versus never expiring locks at all, compared directly on safety under a paused lock holder and added complexity."
+          ],
+          "ordered": false
+        }
+      ]
+    }
+  ]
+}

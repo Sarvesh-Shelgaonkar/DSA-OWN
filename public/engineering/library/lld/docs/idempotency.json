@@ -1,0 +1,611 @@
+{
+  "title": "Idempotency",
+  "slug": "idempotency",
+  "content": [
+    {
+      "id": "idempotency",
+      "title": "Idempotency",
+      "blocks": [
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>In distributed systems, communication between clients and servers happens over networks, and networks are inherently unreliable. A request may reach the server successfully, but the response can be lost due to a timeout, network failure, or temporary outage.&nbsp;</p>",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781597795569-677601531.png\" alt=\"Idempotency request flow\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<p><span style=\"letter-spacing: -0.003em;\">From the client's perspective, it is impossible to know whether the operation actually executed or not. <b>To improve reliability, clients often retry failed requests. However, retries create a new challenge: the same operation may be executed multiple times.&nbsp;</b></span><br></p>",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>For read operations, this is usually harmless, but for write operations such as creating an order, processing a payment, or booking a ticket, duplicate execution can lead to serious issues like double charges, duplicate records, or multiple shipments.&nbsp;</p>",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>To safely support retries without causing unintended side effects, distributed systems rely on the concept of idempotency.</p>",
+          "text": ""
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "1. What is Idempotency?",
+          "text": "1. What is Idempotency?"
+        },
+        {
+          "type": "paragraph",
+          "content": "Idempotency is the property that calling an operation multiple times produces exactly the same result as calling it once. In distributed systems, the network can drop a response after the server has already acted on the request.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "The client retries, thinking the first attempt failed. Without idempotency, the user gets charged twice, the order ships twice, or the record is duplicated.&nbsp;"
+        },
+        {
+          "type": "blockQuote",
+          "content": "With <b>idempotency</b>, the second call simply returns the already-computed result as if the first call were the only one."
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>This lesson covers:</b> what idempotency means, the problem it solves, idempotency keys, server-side deduplication, database-level enforcement, HTTP method semantics, expiry and storage design, and the mistakes that break idempotency guarantees."
+        },
+        {
+          "type": "heading2",
+          "content": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">",
+          "text": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">"
+        },
+        {
+          "type": "heading1",
+          "content": "<span style=\"font-size: 2.5rem; letter-spacing: -0.003em;\">2. The core problem: at-most-once vs at-least-once</span><br>",
+          "text": "<span style=\"font-size: 2.5rem; letter-spacing: -0.003em;\">2. The core problem: at-most-once vs at-least-once</span><br>"
+        },
+        {
+          "type": "paragraph",
+          "content": "Every distributed call falls into one of two delivery guarantees. At-most-once means the operation runs zero or one times if the network drops, the client accepts the loss.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "At-least-once means the client retries until it gets confirmation but that creates the risk of the operation running more than once. Idempotency is what makes at-least-once delivery safe for writes."
+        },
+        {
+          "type": "heading2",
+          "content": "Without Idempotency&nbsp;",
+          "text": "Without Idempotency&nbsp;"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781597795724-593395980.png\" alt=\"Vehicle Parking Process Flow-2026-06-16-075306.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"The client sends a request:&nbsp;<strong>\\\"Charge $100\\\"</strong>.\",\"The server receives the request and successfully charges the customer.\",\"Before the response reaches the client, the response is lost due to a network issue.\",\"The client assumes the request failed because it never received confirmation.\",\"The client retries the same request:&nbsp;<strong>\\\"Charge $100\\\"</strong>.\",\"The server treats it as a completely new request and charges the customer again.\"]",
+          "items": [
+            "The client sends a request:&nbsp;<strong>\"Charge $100\"</strong>.",
+            "The server receives the request and successfully charges the customer.",
+            "Before the response reaches the client, the response is lost due to a network issue.",
+            "The client assumes the request failed because it never received confirmation.",
+            "The client retries the same request:&nbsp;<strong>\"Charge $100\"</strong>.",
+            "The server treats it as a completely new request and charges the customer again."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "blockQuote",
+          "content": "<strong>Result:</strong>&nbsp;The customer is charged&nbsp;<strong>twice</strong>&nbsp;even though they intended to make only one payment."
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "With Idempotency Key&nbsp;",
+          "text": "With Idempotency Key&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781597796269-263887700.png\" alt=\"Vehicle Parking Process Flow-2026-06-16-075433.png\" style=\"letter-spacing: -0.003em;\">"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"The client generates a unique idempotency key, for example&nbsp;<strong>\\\"abc\\\"</strong>.\",\"The request becomes:&nbsp;<strong>\\\"Charge $100, Key=abc\\\"</strong>.\",\"The server processes the payment, stores the result, and associates it with key&nbsp;<strong>abc</strong>.\",\"The response is lost.\",\"The client retries with the&nbsp;<strong>same idempotency key</strong>.\",\"The server checks its storage and finds that key&nbsp;<strong>abc</strong>&nbsp;has already been processed.\",\"Instead of charging again, it returns the previously stored result.\"]",
+          "items": [
+            "The client generates a unique idempotency key, for example&nbsp;<strong>\"abc\"</strong>.",
+            "The request becomes:&nbsp;<strong>\"Charge $100, Key=abc\"</strong>.",
+            "The server processes the payment, stores the result, and associates it with key&nbsp;<strong>abc</strong>.",
+            "The response is lost.",
+            "The client retries with the&nbsp;<strong>same idempotency key</strong>.",
+            "The server checks its storage and finds that key&nbsp;<strong>abc</strong>&nbsp;has already been processed.",
+            "Instead of charging again, it returns the previously stored result."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "blockQuote",
+          "content": "<strong style=\"letter-spacing: -0.003em;\">Result:</strong><span style=\"letter-spacing: -0.003em;\">&nbsp;The customer is charged&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">only once</strong><span style=\"letter-spacing: -0.003em;\">.</span>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "3. HTTP method idempotency",
+          "text": "3. HTTP method idempotency"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781597796613-885281708.png\" alt=\"Vehicle Parking Process Flow-2026-06-16-081144.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">The HTTP spec defines which methods are safe to call multiple times. This is the first line of idempotency in any API design choosing the right verb communicates the contract to every caller and every infrastructure layer in between.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<span style=\\\"letter-spacing: -0.003em;\\\">GET;&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">Idempotent and safe.</strong><span style=\\\"letter-spacing: -0.003em;\\\">Reads the same data every time. No side effects. Safe to retry unconditionally.</span><br>\",\"<span style=\\\"letter-spacing: -0.003em;\\\">PUT:&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">Idempotent.</strong><span style=\\\"letter-spacing: -0.003em;\\\">Replaces a resource entirely. Sending</span><code style=\\\"letter-spacing: -0.003em;\\\">PUT /orders/42</code><span style=\\\"letter-spacing: -0.003em;\\\">twice with the same body leaves exactly one order in the exact same state.</span><br>\",\"<span style=\\\"letter-spacing: -0.003em;\\\">DELETE:&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">Idempotent.</strong><span style=\\\"letter-spacing: -0.003em;\\\">Deleting something that is already deleted is a no-op. The resource is absent either way same final state.</span><br>\",\"<span style=\\\"letter-spacing: -0.003em;\\\">POST:&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">Not idempotent by default.</strong><span style=\\\"letter-spacing: -0.003em;\\\">Creates a new resource each time. Safe to retry only when the server implements an idempotency key mechanism on top.</span><br>\",\"<span style=\\\"letter-spacing: -0.003em;\\\">PATCH:&nbsp;</span><strong style=\\\"letter-spacing: -0.003em;\\\">Depends on the operation.</strong><code style=\\\"letter-spacing: -0.003em;\\\">PATCH balance += 100</code><span style=\\\"letter-spacing: -0.003em;\\\">is not idempotent.</span><code style=\\\"letter-spacing: -0.003em;\\\">PATCH balance = 500</code><span style=\\\"letter-spacing: -0.003em;\\\">is. Design PATCH bodies as absolute replacements, not relative increments, to make them safe to retry.</span><br>\"]",
+          "items": [
+            "<span style=\"letter-spacing: -0.003em;\">GET;&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">Idempotent and safe.</strong><span style=\"letter-spacing: -0.003em;\">Reads the same data every time. No side effects. Safe to retry unconditionally.</span><br>",
+            "<span style=\"letter-spacing: -0.003em;\">PUT:&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">Idempotent.</strong><span style=\"letter-spacing: -0.003em;\">Replaces a resource entirely. Sending</span><code style=\"letter-spacing: -0.003em;\">PUT /orders/42</code><span style=\"letter-spacing: -0.003em;\">twice with the same body leaves exactly one order in the exact same state.</span><br>",
+            "<span style=\"letter-spacing: -0.003em;\">DELETE:&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">Idempotent.</strong><span style=\"letter-spacing: -0.003em;\">Deleting something that is already deleted is a no-op. The resource is absent either way same final state.</span><br>",
+            "<span style=\"letter-spacing: -0.003em;\">POST:&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">Not idempotent by default.</strong><span style=\"letter-spacing: -0.003em;\">Creates a new resource each time. Safe to retry only when the server implements an idempotency key mechanism on top.</span><br>",
+            "<span style=\"letter-spacing: -0.003em;\">PATCH:&nbsp;</span><strong style=\"letter-spacing: -0.003em;\">Depends on the operation.</strong><code style=\"letter-spacing: -0.003em;\">PATCH balance += 100</code><span style=\"letter-spacing: -0.003em;\">is not idempotent.</span><code style=\"letter-spacing: -0.003em;\">PATCH balance = 500</code><span style=\"letter-spacing: -0.003em;\">is. Design PATCH bodies as absolute replacements, not relative increments, to make them safe to retry.</span><br>"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "4. Idempotency keys",
+          "text": "4. Idempotency keys"
+        },
+        {
+          "type": "paragraph",
+          "content": "When an operation cannot be made inherently idempotent through its semantics (such as a payment charge via POST), the standard pattern is an idempotency key.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "The client generates a unique token before the first attempt and sends it in every retry.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "The server stores the result of the first successful execution against that key and returns it on every subsequent call with the same key without re-executing the operation."
+        },
+        {
+          "type": "heading2",
+          "content": "Key generation rules",
+          "text": "Key generation rules"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong style=\\\"letter-spacing: -0.003em;\\\">Generate once, before the first attempt.&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">The key must be stable across all retries of the same logical operation. Generate it at the point you decide to perform the operation, not inside the retry loop.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Use a UUID v4 or ULID.&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Cryptographically random, globally unique, no coordination needed. ULIDs have the bonus of being lexicographically sortable by creation time.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Scope the key to the logical operation.&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">A key for \\\"charge order #99\\\" should not be reused for \\\"refund order #99.\\\" Each distinct business action gets its own key.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Never generate a new key inside the retry loop.</strong><span style=\\\"letter-spacing: -0.003em;\\\">This defeats the entire purpose each retry would be treated as a fresh first call, and you're back to double-charging.</span><br>\"]",
+          "items": [
+            "<strong style=\"letter-spacing: -0.003em;\">Generate once, before the first attempt.&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">The key must be stable across all retries of the same logical operation. Generate it at the point you decide to perform the operation, not inside the retry loop.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Use a UUID v4 or ULID.&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Cryptographically random, globally unique, no coordination needed. ULIDs have the bonus of being lexicographically sortable by creation time.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Scope the key to the logical operation.&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">A key for \"charge order #99\" should not be reused for \"refund order #99.\" Each distinct business action gets its own key.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Never generate a new key inside the retry loop.</strong><span style=\"letter-spacing: -0.003em;\">This defeats the entire purpose each retry would be treated as a fresh first call, and you're back to double-charging.</span><br>"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "code",
+          "content": "class OrderService {\n\n    PaymentResult chargeForOrder(long orderId, double amount) {\n        // generate key ONCE before the retry loop\n        String idempotencyKey = \"order-charge-\" + orderId + \"-\" + UUID.randomUUID();\n\n        return retryWithBackoff(3, () -> {\n            return paymentClient.charge(\n                ChargeRequest.builder()\n                    .amount(amount)\n                    .currency(\"USD\")\n                    .idempotencyKey(idempotencyKey)\n                    .build()\n            );\n        });\n    }\n}\n\n// HTTP client — sends key as header on every call\n\nclass PaymentClient {\n    PaymentResult charge(ChargeRequest req) {\n        return httpClient.post(\"/charges\")\n            .header(\"Idempotency-Key\", req.getIdempotencyKey())\n            .body(req)\n            .execute(PaymentResult.class);\n    }\n}",
+          "code": "class OrderService {\n\n    PaymentResult chargeForOrder(long orderId, double amount) {\n        // generate key ONCE before the retry loop\n        String idempotencyKey = \"order-charge-\" + orderId + \"-\" + UUID.randomUUID();\n\n        return retryWithBackoff(3, () -> {\n            return paymentClient.charge(\n                ChargeRequest.builder()\n                    .amount(amount)\n                    .currency(\"USD\")\n                    .idempotencyKey(idempotencyKey)\n                    .build()\n            );\n        });\n    }\n}\n\n// HTTP client — sends key as header on every call\n\nclass PaymentClient {\n    PaymentResult charge(ChargeRequest req) {\n        return httpClient.post(\"/charges\")\n            .header(\"Idempotency-Key\", req.getIdempotencyKey())\n            .body(req)\n            .execute(PaymentResult.class);\n    }\n}",
+          "codes": {
+            "javascript": "class OrderService {\n\n    PaymentResult chargeForOrder(long orderId, double amount) {\n        // generate key ONCE before the retry loop\n        String idempotencyKey = \"order-charge-\" + orderId + \"-\" + UUID.randomUUID();\n\n        return retryWithBackoff(3, () -> {\n            return paymentClient.charge(\n                ChargeRequest.builder()\n                    .amount(amount)\n                    .currency(\"USD\")\n                    .idempotencyKey(idempotencyKey)\n                    .build()\n            );\n        });\n    }\n}\n\n// HTTP client — sends key as header on every call\n\nclass PaymentClient {\n    PaymentResult charge(ChargeRequest req) {\n        return httpClient.post(\"/charges\")\n            .header(\"Idempotency-Key\", req.getIdempotencyKey())\n            .body(req)\n            .execute(PaymentResult.class);\n    }\n}",
+            "python": "import uuid\n\n\nclass ChargeRequest:\n    def __init__(self, amount, currency, idempotency_key):\n        self.amount = amount\n        self.currency = currency\n        self.idempotency_key = idempotency_key\n\n\nclass PaymentResult:\n    def __init__(self, status):\n        self.status = status\n\n\n# HTTP client, sends key as header on every call (simulated here without a real network call)\nclass PaymentClient:\n    def charge(self, req):\n        print(f\"POST /charges with Idempotency-Key: {req.idempotency_key}\")\n        return PaymentResult(f\"charged {req.amount} dollars\")\n\n\nclass OrderService:\n    def __init__(self):\n        self.payment_client = PaymentClient()\n\n    def charge_for_order(self, order_id, amount):\n        # generate key ONCE before the retry loop\n        idempotency_key = f\"order-charge-{order_id}-{uuid.uuid4()}\"\n\n        return self._retry_with_backoff(3, lambda: self.payment_client.charge(\n            ChargeRequest(amount, \"USD\", idempotency_key)\n        ))\n\n    def _retry_with_backoff(self, max_attempts, action):\n        return action()\n\n\nif __name__ == \"__main__\":\n    service = OrderService()\n    result = service.charge_for_order(42, 250.0)\n    print(f\"Result: {result.status}\")",
+            "java": "import java.util.*;\n\nclass ChargeRequest {\n    double amount;\n    String currency;\n    String idempotencyKey;\n\n    static Builder builder() { return new Builder(); }\n\n    static class Builder {\n        private ChargeRequest req = new ChargeRequest();\n        Builder amount(double amount) { req.amount = amount; return this; }\n        Builder currency(String currency) { req.currency = currency; return this; }\n        Builder idempotencyKey(String key) { req.idempotencyKey = key; return this; }\n        ChargeRequest build() { return req; }\n    }\n\n    String getIdempotencyKey() { return idempotencyKey; }\n}\n\nclass PaymentResult {\n    String status;\n    PaymentResult(String status) { this.status = status; }\n}\n\n// HTTP client, sends key as header on every call (simulated here without a real network call)\nclass PaymentClient {\n    PaymentResult charge(ChargeRequest req) {\n        System.out.println(\"POST /charges with Idempotency-Key: \" + req.getIdempotencyKey());\n        return new PaymentResult(\"charged $\" + req.amount);\n    }\n}\n\nclass OrderService {\n    PaymentClient paymentClient = new PaymentClient();\n\n    PaymentResult chargeForOrder(long orderId, double amount) {\n        // generate key ONCE before the retry loop\n        String idempotencyKey = \"order-charge-\" + orderId + \"-\" + UUID.randomUUID();\n\n        return retryWithBackoff(3, () -> paymentClient.charge(\n            ChargeRequest.builder()\n                .amount(amount)\n                .currency(\"USD\")\n                .idempotencyKey(idempotencyKey)\n                .build()\n        ));\n    }\n\n    PaymentResult retryWithBackoff(int maxAttempts, java.util.concurrent.Callable<PaymentResult> action) {\n        try {\n            return action.call();\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        OrderService service = new OrderService();\n        PaymentResult result = service.chargeForOrder(42, 250.0);\n        System.out.println(\"Result: \" + result.status);\n    }\n}",
+            "cpp": "#include <bits/stdc++.h>\nusing namespace std;\n\nstruct ChargeRequest {\n    double amount;\n    string currency;\n    string idempotencyKey;\n};\n\nstruct PaymentResult {\n    string status;\n};\n\n// HTTP client, sends key as header on every call (simulated here without a real network call)\nclass PaymentClient {\npublic:\n    PaymentResult charge(const ChargeRequest& req) {\n        cout << \"POST /charges with Idempotency-Key: \" << req.idempotencyKey << endl;\n        return {\"charged \" + to_string(req.amount) + \" dollars\"};\n    }\n};\n\nclass OrderService {\n    PaymentClient paymentClient;\npublic:\n    PaymentResult chargeForOrder(long orderId, double amount) {\n        // generate key ONCE before the retry loop\n        string idempotencyKey = \"order-charge-\" + to_string(orderId) + \"-fixed-uuid-1234\";\n\n        ChargeRequest req{amount, \"USD\", idempotencyKey};\n        return retryWithBackoff(3, [&]() { return paymentClient.charge(req); });\n    }\n\n    template <typename Func>\n    PaymentResult retryWithBackoff(int maxAttempts, Func action) {\n        return action();\n    }\n};\n\nint main() {\n    OrderService service;\n    PaymentResult result = service.chargeForOrder(42, 250.0);\n    cout << \"Result: \" << result.status << endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "5. Server-side deduplication",
+          "text": "5. Server-side deduplication"
+        },
+        {
+          "type": "paragraph",
+          "content": "The server receives the key and must decide: have I seen this key before? If yes, return the stored result.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781597796882-718337904.png\" alt=\"image.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">If no, execute the operation, store the result, and return it. The store must be fast enough to check on every request and durable enough to survive restarts.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "code",
+          "content": "@Service\nclass PaymentService {\n    private final IdempotencyStore store;   // backed by Redis or DB\n\n    public PaymentResult charge(ChargeRequest req) {\n        String key = req.getIdempotencyKey();\n\n        // 1. check store first\n        Optional<PaymentResult> cached = store.get(key);\n        if (cached.isPresent()) {\n            log.info(\"Idempotent replay for key={}\", key);\n            return cached.get();\n        }\n\n        // 2. execute — only runs once per key\n        PaymentResult result = doCharge(req.getAmount(), req.getCurrency());\n\n        // 3. store result with TTL\n        store.put(key, result, Duration.ofDays(7));\n\n        return result;\n    }\n}",
+          "code": "@Service\nclass PaymentService {\n    private final IdempotencyStore store;   // backed by Redis or DB\n\n    public PaymentResult charge(ChargeRequest req) {\n        String key = req.getIdempotencyKey();\n\n        // 1. check store first\n        Optional<PaymentResult> cached = store.get(key);\n        if (cached.isPresent()) {\n            log.info(\"Idempotent replay for key={}\", key);\n            return cached.get();\n        }\n\n        // 2. execute — only runs once per key\n        PaymentResult result = doCharge(req.getAmount(), req.getCurrency());\n\n        // 3. store result with TTL\n        store.put(key, result, Duration.ofDays(7));\n\n        return result;\n    }\n}",
+          "codes": {
+            "javascript": "@Service\nclass PaymentService {\n    private final IdempotencyStore store;   // backed by Redis or DB\n\n    public PaymentResult charge(ChargeRequest req) {\n        String key = req.getIdempotencyKey();\n\n        // 1. check store first\n        Optional<PaymentResult> cached = store.get(key);\n        if (cached.isPresent()) {\n            log.info(\"Idempotent replay for key={}\", key);\n            return cached.get();\n        }\n\n        // 2. execute — only runs once per key\n        PaymentResult result = doCharge(req.getAmount(), req.getCurrency());\n\n        // 3. store result with TTL\n        store.put(key, result, Duration.ofDays(7));\n\n        return result;\n    }\n}",
+            "python": "class ChargeRequest:\n    def __init__(self, amount, currency, idempotency_key):\n        self.amount = amount\n        self.currency = currency\n        self.idempotency_key = idempotency_key\n\n\nclass PaymentResult:\n    def __init__(self, status):\n        self.status = status\n\n\n# backed by Redis or a DB in production, an in-memory dict here for demonstration\nclass IdempotencyStore:\n    def __init__(self):\n        self.store = {}\n\n    def get(self, key):\n        return self.store.get(key)\n\n    def put(self, key, result):\n        self.store[key] = result\n\n\nclass PaymentService:\n    def __init__(self):\n        self.store = IdempotencyStore()\n\n    def charge(self, req):\n        key = req.idempotency_key\n\n        # 1. check store first\n        cached = self.store.get(key)\n        if cached is not None:\n            print(f\"Idempotent replay for key={key}\")\n            return cached\n\n        # 2. execute, only runs once per key\n        result = self._do_charge(req.amount, req.currency)\n\n        # 3. store result (with a TTL in a real store)\n        self.store.put(key, result)\n\n        return result\n\n    def _do_charge(self, amount, currency):\n        return PaymentResult(f\"charged {amount} {currency}\")\n\n\nif __name__ == \"__main__\":\n    service = PaymentService()\n    req = ChargeRequest(100.0, \"USD\", \"key-abc\")\n\n    print(service.charge(req).status)\n    print(service.charge(req).status)   # same key, replayed from store",
+            "java": "import java.util.*;\n\nclass ChargeRequest {\n    double amount;\n    String currency;\n    String idempotencyKey;\n    ChargeRequest(double amount, String currency, String idempotencyKey) {\n        this.amount = amount;\n        this.currency = currency;\n        this.idempotencyKey = idempotencyKey;\n    }\n    String getIdempotencyKey() { return idempotencyKey; }\n    double getAmount() { return amount; }\n    String getCurrency() { return currency; }\n}\n\nclass PaymentResult {\n    String status;\n    PaymentResult(String status) { this.status = status; }\n}\n\n// backed by Redis or a DB in production, an in-memory map here for demonstration\nclass IdempotencyStore {\n    Map<String, PaymentResult> store = new HashMap<>();\n\n    Optional<PaymentResult> get(String key) {\n        return Optional.ofNullable(store.get(key));\n    }\n\n    void put(String key, PaymentResult result) {\n        store.put(key, result);\n    }\n}\n\nclass PaymentService {\n    private final IdempotencyStore store = new IdempotencyStore();\n\n    public PaymentResult charge(ChargeRequest req) {\n        String key = req.getIdempotencyKey();\n\n        // 1. check store first\n        Optional<PaymentResult> cached = store.get(key);\n        if (cached.isPresent()) {\n            System.out.println(\"Idempotent replay for key=\" + key);\n            return cached.get();\n        }\n\n        // 2. execute, only runs once per key\n        PaymentResult result = doCharge(req.getAmount(), req.getCurrency());\n\n        // 3. store result (with a TTL in a real store)\n        store.put(key, result);\n\n        return result;\n    }\n\n    private PaymentResult doCharge(double amount, String currency) {\n        return new PaymentResult(\"charged \" + amount + \" \" + currency);\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        PaymentService service = new PaymentService();\n        ChargeRequest req = new ChargeRequest(100.0, \"USD\", \"key-abc\");\n\n        System.out.println(service.charge(req).status);\n        System.out.println(service.charge(req).status);   // same key, replayed from store\n    }\n}",
+            "cpp": "#include <bits/stdc++.h>\nusing namespace std;\n\nstruct ChargeRequest {\n    double amount;\n    string currency;\n    string idempotencyKey;\n};\n\nstruct PaymentResult {\n    string status;\n};\n\n// backed by Redis or a DB in production, an in-memory map here for demonstration\nclass IdempotencyStore {\npublic:\n    unordered_map<string, PaymentResult> store;\n\n    optional<PaymentResult> get(const string& key) {\n        auto it = store.find(key);\n        if (it == store.end()) return nullopt;\n        return it->second;\n    }\n\n    void put(const string& key, const PaymentResult& result) {\n        store[key] = result;\n    }\n};\n\nclass PaymentService {\n    IdempotencyStore store;\npublic:\n    PaymentResult charge(const ChargeRequest& req) {\n        const string& key = req.idempotencyKey;\n\n        // 1. check store first\n        auto cached = store.get(key);\n        if (cached.has_value()) {\n            cout << \"Idempotent replay for key=\" << key << endl;\n            return cached.value();\n        }\n\n        // 2. execute, only runs once per key\n        PaymentResult result = doCharge(req.amount, req.currency);\n\n        // 3. store result (with a TTL in a real store)\n        store.put(key, result);\n\n        return result;\n    }\n\nprivate:\n    PaymentResult doCharge(double amount, const string& currency) {\n        return {\"charged \" + to_string(amount) + \" \" + currency};\n    }\n};\n\nint main() {\n    PaymentService service;\n    ChargeRequest req{100.0, \"USD\", \"key-abc\"};\n\n    cout << service.charge(req).status << endl;\n    cout << service.charge(req).status << endl;   // same key, replayed from store\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "6. In-flight deduplication (concurrent same key)",
+          "text": "6. In-flight deduplication (concurrent same key)"
+        },
+        {
+          "type": "paragraph",
+          "content": "<b>A subtle race:</b> two retries arrive at the server simultaneously, before either has finished executing.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781597797069-157724558.png\" alt=\"image.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">Both check the store, both find nothing, both start executing and you get two charges again. The fix is to lock the key for the duration of the first execution so the second waits and then reads the stored result.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "code",
+          "content": "class PaymentService {\n    // Redis SET NX (set-if-not-exists) as a distributed lock\n    PaymentResult charge(ChargeRequest req) throws Exception {\n        String key = req.getIdempotencyKey();\n        String lockKey = \"lock:\" + key;\n\n        // try to acquire lock — only first caller wins\n        boolean locked = redis.setNX(lockKey, \"1\", Duration.ofSeconds(30));\n\n        if (!locked) {\n            // another thread is executing — wait for result\n            return waitForResult(key);\n        }\n\n        try {\n            Optional<PaymentResult> cached = store.get(key);\n            if (cached.isPresent()) return cached.get();\n\n            PaymentResult result = doCharge(req.getAmount(), req.getCurrency());\n            store.put(key, result, Duration.ofDays(7));\n            return result;\n        } finally {\n            redis.del(lockKey);\n        }\n    }\n}",
+          "code": "class PaymentService {\n    // Redis SET NX (set-if-not-exists) as a distributed lock\n    PaymentResult charge(ChargeRequest req) throws Exception {\n        String key = req.getIdempotencyKey();\n        String lockKey = \"lock:\" + key;\n\n        // try to acquire lock — only first caller wins\n        boolean locked = redis.setNX(lockKey, \"1\", Duration.ofSeconds(30));\n\n        if (!locked) {\n            // another thread is executing — wait for result\n            return waitForResult(key);\n        }\n\n        try {\n            Optional<PaymentResult> cached = store.get(key);\n            if (cached.isPresent()) return cached.get();\n\n            PaymentResult result = doCharge(req.getAmount(), req.getCurrency());\n            store.put(key, result, Duration.ofDays(7));\n            return result;\n        } finally {\n            redis.del(lockKey);\n        }\n    }\n}",
+          "codes": {
+            "javascript": "class PaymentService {\n    // Redis SET NX (set-if-not-exists) as a distributed lock\n    PaymentResult charge(ChargeRequest req) throws Exception {\n        String key = req.getIdempotencyKey();\n        String lockKey = \"lock:\" + key;\n\n        // try to acquire lock — only first caller wins\n        boolean locked = redis.setNX(lockKey, \"1\", Duration.ofSeconds(30));\n\n        if (!locked) {\n            // another thread is executing — wait for result\n            return waitForResult(key);\n        }\n\n        try {\n            Optional<PaymentResult> cached = store.get(key);\n            if (cached.isPresent()) return cached.get();\n\n            PaymentResult result = doCharge(req.getAmount(), req.getCurrency());\n            store.put(key, result, Duration.ofDays(7));\n            return result;\n        } finally {\n            redis.del(lockKey);\n        }\n    }\n}",
+            "python": "class PaymentResult:\n    def __init__(self, status):\n        self.status = status\n\n\nclass ChargeRequest:\n    def __init__(self, amount, currency, idempotency_key):\n        self.amount = amount\n        self.currency = currency\n        self.idempotency_key = idempotency_key\n\n\n# simulates a Redis client's SET NX (set-if-not-exists) as a distributed lock,\n# using an in-memory set here since there is no real Redis in this demo\nclass FakeRedis:\n    def __init__(self):\n        self.locks = set()\n\n    def set_nx(self, key):\n        if key in self.locks:\n            return False\n        self.locks.add(key)\n        return True\n\n    def delete(self, key):\n        self.locks.discard(key)\n\n\nclass PaymentService:\n    def __init__(self):\n        self.redis = FakeRedis()\n        self.store = {}\n\n    def charge(self, req):\n        key = req.idempotency_key\n        lock_key = f\"lock:{key}\"\n\n        # try to acquire lock, only first caller wins\n        locked = self.redis.set_nx(lock_key)\n\n        if not locked:\n            # another thread is executing, wait for result\n            return self._wait_for_result(key)\n\n        try:\n            cached = self.store.get(key)\n            if cached is not None:\n                return cached\n\n            result = PaymentResult(f\"charged {req.amount} {req.currency}\")\n            self.store[key] = result\n            return result\n        finally:\n            self.redis.delete(lock_key)\n\n    def _wait_for_result(self, key):\n        return self.store.get(key)\n\n\nif __name__ == \"__main__\":\n    service = PaymentService()\n    result = service.charge(ChargeRequest(75.0, \"USD\", \"key-xyz\"))\n    print(result.status)",
+            "java": "import java.util.*;\nimport java.util.concurrent.*;\n\nclass PaymentResult {\n    String status;\n    PaymentResult(String status) { this.status = status; }\n}\n\nclass ChargeRequest {\n    double amount;\n    String currency;\n    String idempotencyKey;\n    ChargeRequest(double amount, String currency, String idempotencyKey) {\n        this.amount = amount;\n        this.currency = currency;\n        this.idempotencyKey = idempotencyKey;\n    }\n    String getIdempotencyKey() { return idempotencyKey; }\n    double getAmount() { return amount; }\n    String getCurrency() { return currency; }\n}\n\n// simulates a Redis client's SET NX (set-if-not-exists) as a distributed lock,\n// using an in-memory set here since there is no real Redis in this demo\nclass FakeRedis {\n    Set<String> locks = ConcurrentHashMap.newKeySet();\n\n    boolean setNX(String key) {\n        return locks.add(key);   // true only if key was not already present\n    }\n\n    void del(String key) {\n        locks.remove(key);\n    }\n}\n\nclass PaymentService {\n    FakeRedis redis = new FakeRedis();\n    Map<String, PaymentResult> store = new ConcurrentHashMap<>();\n\n    PaymentResult charge(ChargeRequest req) {\n        String key = req.getIdempotencyKey();\n        String lockKey = \"lock:\" + key;\n\n        // try to acquire lock, only first caller wins\n        boolean locked = redis.setNX(lockKey);\n\n        if (!locked) {\n            // another thread is executing, wait for result\n            return waitForResult(key);\n        }\n\n        try {\n            PaymentResult cached = store.get(key);\n            if (cached != null) return cached;\n\n            PaymentResult result = new PaymentResult(\"charged \" + req.getAmount() + \" \" + req.getCurrency());\n            store.put(key, result);\n            return result;\n        } finally {\n            redis.del(lockKey);\n        }\n    }\n\n    PaymentResult waitForResult(String key) {\n        return store.get(key);\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        PaymentService service = new PaymentService();\n        PaymentResult result = service.charge(new ChargeRequest(75.0, \"USD\", \"key-xyz\"));\n        System.out.println(result.status);\n    }\n}",
+            "cpp": "#include <bits/stdc++.h>\nusing namespace std;\n\nstruct PaymentResult {\n    string status;\n};\n\nstruct ChargeRequest {\n    double amount;\n    string currency;\n    string idempotencyKey;\n};\n\n// simulates a Redis client's SET NX (set-if-not-exists) as a distributed lock,\n// using an in-memory set here since there is no real Redis in this demo\nclass FakeRedis {\npublic:\n    set<string> locks;\n\n    bool setNX(const string& key) {\n        if (locks.count(key)) return false;\n        locks.insert(key);\n        return true;\n    }\n\n    void del(const string& key) {\n        locks.erase(key);\n    }\n};\n\nclass PaymentService {\n    FakeRedis redis;\n    unordered_map<string, PaymentResult> store;\npublic:\n    PaymentResult charge(const ChargeRequest& req) {\n        const string& key = req.idempotencyKey;\n        string lockKey = \"lock:\" + key;\n\n        // try to acquire lock, only first caller wins\n        bool locked = redis.setNX(lockKey);\n\n        if (!locked) {\n            // another thread is executing, wait for result\n            return waitForResult(key);\n        }\n\n        auto cached = store.find(key);\n        if (cached != store.end()) {\n            redis.del(lockKey);\n            return cached->second;\n        }\n\n        PaymentResult result{\"charged \" + to_string(req.amount) + \" \" + req.currency};\n        store[key] = result;\n        redis.del(lockKey);\n        return result;\n    }\n\n    PaymentResult waitForResult(const string& key) {\n        return store[key];\n    }\n};\n\nint main() {\n    PaymentService service;\n    PaymentResult result = service.charge({75.0, \"USD\", \"key-xyz\"});\n    cout << result.status << endl;\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">",
+          "text": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">"
+        },
+        {
+          "type": "heading1",
+          "content": "7. Database-level enforcement",
+          "text": "7. Database-level enforcement"
+        },
+        {
+          "type": "paragraph",
+          "content": "For operations that write to a database, a unique constraint on the idempotency key column is the most reliable safety net."
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781597797218-822173870.png\" alt=\"image.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">Even if application logic has a bug that skips the key check, the database will reject the duplicate insert. The unique constraint is the last line of defence.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "code",
+          "content": "-- Schema: unique constraint on idempotency_key\nCREATE TABLE payments (\n    id               BIGSERIAL PRIMARY KEY,\n    idempotency_key  TEXT        NOT NULL UNIQUE,\n    account_id       BIGINT      NOT NULL,\n    amount           NUMERIC     NOT NULL,\n    status           TEXT        NOT NULL,\n    created_at       TIMESTAMPTZ DEFAULT now()\n);\n\n// Java: catch duplicate key violation\ntry {\n    paymentRepo.insert(new Payment(key, accountId, amount, \"COMPLETED\"));\n} catch (DataIntegrityViolationException e) {\n    // duplicate key — return existing record\n    return paymentRepo.findByIdempotencyKey(key)\n                      .orElseThrow();\n}",
+          "code": "-- Schema: unique constraint on idempotency_key\nCREATE TABLE payments (\n    id               BIGSERIAL PRIMARY KEY,\n    idempotency_key  TEXT        NOT NULL UNIQUE,\n    account_id       BIGINT      NOT NULL,\n    amount           NUMERIC     NOT NULL,\n    status           TEXT        NOT NULL,\n    created_at       TIMESTAMPTZ DEFAULT now()\n);\n\n// Java: catch duplicate key violation\ntry {\n    paymentRepo.insert(new Payment(key, accountId, amount, \"COMPLETED\"));\n} catch (DataIntegrityViolationException e) {\n    // duplicate key — return existing record\n    return paymentRepo.findByIdempotencyKey(key)\n                      .orElseThrow();\n}",
+          "codes": {
+            "javascript": "-- Schema: unique constraint on idempotency_key\nCREATE TABLE payments (\n    id               BIGSERIAL PRIMARY KEY,\n    idempotency_key  TEXT        NOT NULL UNIQUE,\n    account_id       BIGINT      NOT NULL,\n    amount           NUMERIC     NOT NULL,\n    status           TEXT        NOT NULL,\n    created_at       TIMESTAMPTZ DEFAULT now()\n);\n\n// Java: catch duplicate key violation\ntry {\n    paymentRepo.insert(new Payment(key, accountId, amount, \"COMPLETED\"));\n} catch (DataIntegrityViolationException e) {\n    // duplicate key — return existing record\n    return paymentRepo.findByIdempotencyKey(key)\n                      .orElseThrow();\n}",
+            "python": "# Schema: unique constraint on idempotency_key\n# CREATE TABLE payments (\n#     id               BIGSERIAL PRIMARY KEY,\n#     idempotency_key  TEXT        NOT NULL UNIQUE,\n#     account_id       BIGINT      NOT NULL,\n#     amount           NUMERIC     NOT NULL,\n#     status           TEXT        NOT NULL,\n#     created_at       TIMESTAMPTZ DEFAULT now()\n# );\n\nclass Payment:\n    def __init__(self, idempotency_key, account_id, amount, status):\n        self.idempotency_key = idempotency_key\n        self.account_id = account_id\n        self.amount = amount\n        self.status = status\n\n\nclass DuplicateKeyError(Exception):\n    pass\n\n\n# simulates a database enforcing a UNIQUE constraint on idempotency_key\nclass PaymentRepository:\n    def __init__(self):\n        self.by_key = {}\n\n    def insert(self, payment):\n        if payment.idempotency_key in self.by_key:\n            raise DuplicateKeyError()\n        self.by_key[payment.idempotency_key] = payment\n        return payment\n\n    def find_by_idempotency_key(self, key):\n        return self.by_key.get(key)\n\n\nif __name__ == \"__main__\":\n    payment_repo = PaymentRepository()\n    key = \"key-1\"\n    account_id = 7\n    amount = 250.0\n\n    try:\n        result = payment_repo.insert(Payment(key, account_id, amount, \"COMPLETED\"))\n    except DuplicateKeyError:\n        # duplicate key, return existing record\n        result = payment_repo.find_by_idempotency_key(key)\n    print(f\"Status: {result.status}\")\n\n    # second attempt with the same key hits the duplicate branch\n    try:\n        result = payment_repo.insert(Payment(key, account_id, amount, \"COMPLETED\"))\n    except DuplicateKeyError:\n        result = payment_repo.find_by_idempotency_key(key)\n        print(\"Duplicate detected, returned existing record\")",
+            "java": "import java.util.*;\n\n// Schema: unique constraint on idempotency_key\n// CREATE TABLE payments (\n//     id               BIGSERIAL PRIMARY KEY,\n//     idempotency_key  TEXT        NOT NULL UNIQUE,\n//     account_id       BIGINT      NOT NULL,\n//     amount           NUMERIC     NOT NULL,\n//     status           TEXT        NOT NULL,\n//     created_at       TIMESTAMPTZ DEFAULT now()\n// );\n\nclass Payment {\n    String idempotencyKey;\n    long accountId;\n    double amount;\n    String status;\n    Payment(String idempotencyKey, long accountId, double amount, String status) {\n        this.idempotencyKey = idempotencyKey;\n        this.accountId = accountId;\n        this.amount = amount;\n        this.status = status;\n    }\n}\n\nclass DuplicateKeyException extends RuntimeException {}\n\n// simulates a database enforcing a UNIQUE constraint on idempotency_key\nclass PaymentRepository {\n    Map<String, Payment> byKey = new HashMap<>();\n\n    Payment insert(Payment payment) {\n        if (byKey.containsKey(payment.idempotencyKey)) {\n            throw new DuplicateKeyException();\n        }\n        byKey.put(payment.idempotencyKey, payment);\n        return payment;\n    }\n\n    Payment findByIdempotencyKey(String key) {\n        return byKey.get(key);\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        PaymentRepository paymentRepo = new PaymentRepository();\n        String key = \"key-1\";\n        long accountId = 7;\n        double amount = 250.0;\n\n        Payment result;\n        try {\n            result = paymentRepo.insert(new Payment(key, accountId, amount, \"COMPLETED\"));\n        } catch (DuplicateKeyException e) {\n            // duplicate key, return existing record\n            result = paymentRepo.findByIdempotencyKey(key);\n        }\n        System.out.println(\"Status: \" + result.status);\n\n        // second attempt with the same key hits the duplicate branch\n        try {\n            result = paymentRepo.insert(new Payment(key, accountId, amount, \"COMPLETED\"));\n        } catch (DuplicateKeyException e) {\n            result = paymentRepo.findByIdempotencyKey(key);\n            System.out.println(\"Duplicate detected, returned existing record\");\n        }\n    }\n}",
+            "cpp": "#include <bits/stdc++.h>\nusing namespace std;\n\n// Schema: unique constraint on idempotency_key\n// CREATE TABLE payments (\n//     id               BIGSERIAL PRIMARY KEY,\n//     idempotency_key  TEXT        NOT NULL UNIQUE,\n//     account_id       BIGINT      NOT NULL,\n//     amount           NUMERIC     NOT NULL,\n//     status           TEXT        NOT NULL,\n//     created_at       TIMESTAMPTZ DEFAULT now()\n// );\n\nstruct Payment {\n    string idempotencyKey;\n    long accountId;\n    double amount;\n    string status;\n};\n\nstruct DuplicateKeyException : public exception {};\n\n// simulates a database enforcing a UNIQUE constraint on idempotency_key\nclass PaymentRepository {\npublic:\n    unordered_map<string, Payment> byKey;\n\n    Payment insert(const Payment& payment) {\n        if (byKey.count(payment.idempotencyKey)) {\n            throw DuplicateKeyException();\n        }\n        byKey[payment.idempotencyKey] = payment;\n        return payment;\n    }\n\n    Payment findByIdempotencyKey(const string& key) {\n        return byKey[key];\n    }\n};\n\nint main() {\n    PaymentRepository paymentRepo;\n    string key = \"key-1\";\n    long accountId = 7;\n    double amount = 250.0;\n\n    Payment result;\n    try {\n        result = paymentRepo.insert({key, accountId, amount, \"COMPLETED\"});\n    } catch (const DuplicateKeyException&) {\n        // duplicate key, return existing record\n        result = paymentRepo.findByIdempotencyKey(key);\n    }\n    cout << \"Status: \" << result.status << endl;\n\n    // second attempt with the same key hits the duplicate branch\n    try {\n        result = paymentRepo.insert({key, accountId, amount, \"COMPLETED\"});\n    } catch (const DuplicateKeyException&) {\n        result = paymentRepo.findByIdempotencyKey(key);\n        cout << \"Duplicate detected, returned existing record\" << endl;\n    }\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "heading2",
+          "content": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">",
+          "text": "<hr style=\"border-width: 1px medium medium; border-style: solid none none; border-color: rgb(224, 224, 224) currentcolor currentcolor; border-image: none; margin: 24px 0px;\">"
+        },
+        {
+          "type": "heading1",
+          "content": "8. Key expiry and storage design",
+          "text": "8. Key expiry and storage design"
+        },
+        {
+          "type": "paragraph",
+          "content": "Idempotency keys cannot be stored forever the store would grow unboundedly.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "The TTL (time-to-live) must be long enough that any realistic retry window fits comfortably inside it, but short enough to reclaim space. A common choice is 7 to 30 days for payment-level operations."
+        },
+        {
+          "type": "heading4",
+          "content": "What to store",
+          "text": "What to store"
+        },
+        {
+          "type": "list",
+          "content": "[\"The idempotency key itself\",\"The serialised response body\",\"The HTTP status code returned\",\"A timestamp of first execution\",\"The request fingerprint (optional, to detect key reuse with a different payload)\"]",
+          "items": [
+            "The idempotency key itself",
+            "The serialised response body",
+            "The HTTP status code returned",
+            "A timestamp of first execution",
+            "The request fingerprint (optional, to detect key reuse with a different payload)"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "heading4",
+          "content": "Storage backend choice",
+          "text": "Storage backend choice"
+        },
+        {
+          "type": "list",
+          "content": "[\"Redis with&nbsp;<code>SET key value EX ttl</code>&nbsp;fast, simple, right for most cases\",\"Database unique column slower but durable across restarts, doubles as audit trail\",\"In-memory map only valid for single-node, single-process, non-persistent scenarios\",\"<b>Avoid</b>: Bloom filters alone (false negatives possible), file system (no atomic check-and-set)\"]",
+          "items": [
+            "Redis with&nbsp;<code>SET key value EX ttl</code>&nbsp;fast, simple, right for most cases",
+            "Database unique column slower but durable across restarts, doubles as audit trail",
+            "In-memory map only valid for single-node, single-process, non-persistent scenarios",
+            "<b>Avoid</b>: Bloom filters alone (false negatives possible), file system (no atomic check-and-set)"
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "9. Payload fingerprinting",
+          "text": "9. Payload fingerprinting"
+        },
+        {
+          "type": "paragraph",
+          "content": "What should the server do if the same key arrives with a different payload? The safe answer is to reject it return a 422 or 409 and tell the caller that this key has already been used for a different operation.&nbsp;"
+        },
+        {
+          "type": "paragraph",
+          "content": "<img src=\"https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/lld-content-images/1781597797360-437969272.png\" alt=\"Vehicle Parking Process Flow-2026-06-16-081552.png\" style=\"max-width: 100%; height: auto; margin: 16px 0px; border-radius: 4px;\">"
+        },
+        {
+          "type": "paragraph",
+          "content": "<span style=\"letter-spacing: -0.003em;\">This prevents an attacker (or a buggy client) from reusing a key to change the amount of an already-processed charge.</span><br>"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "code",
+          "content": "class IdempotencyStore {\n    record Entry(String fingerprint, Object result) {}\n\n    Object getOrExecute(String key, String fingerprint,\n                         Supplier<Object> action) {\n        Entry existing = store.get(key);\n        if (existing != null) {\n            if (!existing.fingerprint().equals(fingerprint))\n                throw new ConflictException(\n                    \"Key already used with different payload\");\n            return existing.result();\n        }\n        Object result = action.get();\n        store.put(key, new Entry(fingerprint, result), TTL);\n        return result;\n    }\n}\n\n// fingerprint = SHA-256 hash of sorted request body\nString fingerprint = sha256(sortedJson(req));",
+          "code": "class IdempotencyStore {\n    record Entry(String fingerprint, Object result) {}\n\n    Object getOrExecute(String key, String fingerprint,\n                         Supplier<Object> action) {\n        Entry existing = store.get(key);\n        if (existing != null) {\n            if (!existing.fingerprint().equals(fingerprint))\n                throw new ConflictException(\n                    \"Key already used with different payload\");\n            return existing.result();\n        }\n        Object result = action.get();\n        store.put(key, new Entry(fingerprint, result), TTL);\n        return result;\n    }\n}\n\n// fingerprint = SHA-256 hash of sorted request body\nString fingerprint = sha256(sortedJson(req));",
+          "codes": {
+            "javascript": "class IdempotencyStore {\n    record Entry(String fingerprint, Object result) {}\n\n    Object getOrExecute(String key, String fingerprint,\n                         Supplier<Object> action) {\n        Entry existing = store.get(key);\n        if (existing != null) {\n            if (!existing.fingerprint().equals(fingerprint))\n                throw new ConflictException(\n                    \"Key already used with different payload\");\n            return existing.result();\n        }\n        Object result = action.get();\n        store.put(key, new Entry(fingerprint, result), TTL);\n        return result;\n    }\n}\n\n// fingerprint = SHA-256 hash of sorted request body\nString fingerprint = sha256(sortedJson(req));",
+            "python": "import hashlib\n\n\nclass ConflictError(Exception):\n    pass\n\n\nclass Entry:\n    def __init__(self, fingerprint, result):\n        self.fingerprint = fingerprint\n        self.result = result\n\n\nclass IdempotencyStore:\n    def __init__(self):\n        self.store = {}\n\n    def get_or_execute(self, key, fingerprint, action):\n        existing = self.store.get(key)\n        if existing is not None:\n            if existing.fingerprint != fingerprint:\n                raise ConflictError(\"Key already used with different payload\")\n            return existing.result\n        result = action()\n        self.store[key] = Entry(fingerprint, result)\n        return result\n\n    @staticmethod\n    def sha256(text):\n        return hashlib.sha256(text.encode()).hexdigest()\n\n\nif __name__ == \"__main__\":\n    idempotency_store = IdempotencyStore()\n    key = \"key-1\"\n\n    # fingerprint = SHA-256 hash of sorted request body\n    fingerprint = IdempotencyStore.sha256('{\"amount\":100}')\n\n    result = idempotency_store.get_or_execute(key, fingerprint, lambda: \"charged $100\")\n    print(f\"Result: {result}\")\n\n    # same key and same fingerprint, replayed\n    replay = idempotency_store.get_or_execute(key, fingerprint, lambda: \"charged $100\")\n    print(f\"Replay: {replay}\")\n\n    # same key but different payload, conflict\n    try:\n        different_fingerprint = IdempotencyStore.sha256('{\"amount\":500}')\n        idempotency_store.get_or_execute(key, different_fingerprint, lambda: \"charged $500\")\n    except ConflictError as e:\n        print(f\"Conflict detected: {e}\")",
+            "java": "import java.util.*;\nimport java.security.MessageDigest;\n\nclass ConflictException extends RuntimeException {\n    ConflictException(String msg) { super(msg); }\n}\n\nclass Entry {\n    String fingerprint;\n    Object result;\n    Entry(String fingerprint, Object result) {\n        this.fingerprint = fingerprint;\n        this.result = result;\n    }\n}\n\nclass IdempotencyStore {\n    Map<String, Entry> store = new HashMap<>();\n\n    Object getOrExecute(String key, String fingerprint, java.util.function.Supplier<Object> action) {\n        Entry existing = store.get(key);\n        if (existing != null) {\n            if (!existing.fingerprint.equals(fingerprint))\n                throw new ConflictException(\"Key already used with different payload\");\n            return existing.result;\n        }\n        Object result = action.get();\n        store.put(key, new Entry(fingerprint, result));\n        return result;\n    }\n\n    static String sha256(String input) {\n        try {\n            MessageDigest digest = MessageDigest.getInstance(\"SHA-256\");\n            byte[] hash = digest.digest(input.getBytes());\n            StringBuilder hex = new StringBuilder();\n            for (byte b : hash) hex.append(String.format(\"%02x\", b));\n            return hex.toString();\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n}\n\npublic class Main {\n    public static void main(String[] args) {\n        IdempotencyStore idempotencyStore = new IdempotencyStore();\n        String key = \"key-1\";\n\n        // fingerprint = SHA-256 hash of sorted request body\n        String fingerprint = IdempotencyStore.sha256(\"{\\\"amount\\\":100}\");\n\n        Object result = idempotencyStore.getOrExecute(key, fingerprint, () -> \"charged $100\");\n        System.out.println(\"Result: \" + result);\n\n        // same key and same fingerprint, replayed\n        Object replay = idempotencyStore.getOrExecute(key, fingerprint, () -> \"charged $100\");\n        System.out.println(\"Replay: \" + replay);\n\n        // same key but different payload, conflict\n        try {\n            String differentFingerprint = IdempotencyStore.sha256(\"{\\\"amount\\\":500}\");\n            idempotencyStore.getOrExecute(key, differentFingerprint, () -> \"charged $500\");\n        } catch (ConflictException e) {\n            System.out.println(\"Conflict detected: \" + e.getMessage());\n        }\n    }\n}",
+            "cpp": "#include <bits/stdc++.h>\nusing namespace std;\n\nstruct ConflictException : public runtime_error {\n    ConflictException(const string& msg) : runtime_error(msg) {}\n};\n\nstruct Entry {\n    string fingerprint;\n    string result;\n};\n\nclass IdempotencyStore {\npublic:\n    unordered_map<string, Entry> store;\n\n    template <typename Func>\n    string getOrExecute(const string& key, const string& fingerprint, Func action) {\n        auto it = store.find(key);\n        if (it != store.end()) {\n            if (it->second.fingerprint != fingerprint)\n                throw ConflictException(\"Key already used with different payload\");\n            return it->second.result;\n        }\n        string result = action();\n        store[key] = {fingerprint, result};\n        return result;\n    }\n\n    // simplified stand-in for a real SHA-256 hash, just for demo purposes\n    static string fingerprintOf(const string& input) {\n        return \"fp-\" + to_string(hash<string>{}(input));\n    }\n};\n\nint main() {\n    IdempotencyStore idempotencyStore;\n    string key = \"key-1\";\n\n    // fingerprint represents a hash of the sorted request body\n    string fingerprint = IdempotencyStore::fingerprintOf(R\"({\"amount\":100})\");\n\n    string result = idempotencyStore.getOrExecute(key, fingerprint, []() { return string(\"charged $100\"); });\n    cout << \"Result: \" << result << endl;\n\n    // same key and same fingerprint, replayed\n    string replay = idempotencyStore.getOrExecute(key, fingerprint, []() { return string(\"charged $100\"); });\n    cout << \"Replay: \" << replay << endl;\n\n    // same key but different payload, conflict\n    try {\n        string differentFingerprint = IdempotencyStore::fingerprintOf(R\"({\"amount\":500})\");\n        idempotencyStore.getOrExecute(key, differentFingerprint, []() { return string(\"charged $500\"); });\n    } catch (const ConflictException& e) {\n        cout << \"Conflict detected: \" << e.what() << endl;\n    }\n    return 0;\n}"
+          }
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>Suppose a client sends:</p>",
+          "text": ""
+        },
+        {
+          "type": "code",
+          "content": "Key = abc\nAmount = $100",
+          "code": "Key = abc\nAmount = $100",
+          "codes": {
+            "java": "Key = abc\nAmount = $100",
+            "python": "Key = abc\nAmount = $100",
+            "cpp": "Key = abc\nAmount = $100"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>The server processes the payment and stores:</p>",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<ul><li>Idempotency Key:&nbsp;<code>abc</code></li><li>Fingerprint (hash of the request payload)</li><li>Result</li></ul>",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>Later, someone sends:</p>",
+          "text": ""
+        },
+        {
+          "type": "code",
+          "content": "Key = abc\nAmount = $500",
+          "code": "Key = abc\nAmount = $500",
+          "codes": {
+            "java": "Key = abc\nAmount = $500",
+            "python": "Key = abc\nAmount = $500",
+            "cpp": "Key = abc\nAmount = $500"
+          }
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>using the&nbsp;<strong>same idempotency key</strong>&nbsp;but with a&nbsp;<strong>different payload</strong>.</p>",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>The server checks the stored fingerprint against the new request's fingerprint. If they don't match, it rejects the request with an error such as&nbsp;<strong>409 Conflict</strong>&nbsp;or&nbsp;<strong>422 Unprocessable Entity</strong>.</p>",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>This prevents a buggy client or attacker from reusing an old idempotency key to perform a different operation.</p>",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>In short:</p>",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<ul><li><strong>Same key + same payload</strong>&nbsp;→ Return the cached result.</li><li><strong>Same key + different payload</strong>&nbsp;→ Reject the request.</li><li><strong>New key</strong>&nbsp;→ Process normally.</li></ul>",
+          "text": ""
+        },
+        {
+          "type": "paragraph",
+          "content": "<p>This ensures that an idempotency key always represents&nbsp;<strong>one specific operation and one specific payload</strong>.</p>",
+          "text": ""
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "10. Common mistakes",
+          "text": "10. Common mistakes"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 1: new key per retry&nbsp;</strong>The most common mistake. The key is generated inside the retry loop, so every attempt is a fresh first call. The server sees three different keys, executes three times, and the user is charged three times. Generate the key once, before any attempt."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 2: no concurrent deduplication&nbsp;</strong>Two retries arrive simultaneously. Both check the store and find nothing. Both execute. The unique constraint on the database catches it, but only after both charges have been issued to the payment network. Add a distributed lock (Redis SET NX) to prevent concurrent execution of the same key, not just sequential deduplication."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 3: no payload fingerprint check&nbsp;</strong>Same key, different amount. Without fingerprinting the payload, the server happily charges the new amount and treats it as the cached response for the original key. Always hash the request body and reject mismatches."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 4: storing keys in memory only&nbsp;</strong>An in-memory map works until the server restarts. After restart, the store is empty every previously-seen key looks new, and the next retry causes a duplicate execution. Use Redis or a database for the idempotency store in any production service."
+        },
+        {
+          "type": "paragraph",
+          "content": "<strong>Mistake 5: TTL too short&nbsp;</strong>A 60-second TTL means any client that retries after a minute sees a fresh key and causes a duplicate. TTL must cover the entire realistic retry window including backoff, plus a margin. For payment-level operations, 7 days is the industry standard minimum."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "content": "11. Quick reference",
+          "text": "11. Quick reference"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "list",
+          "content": "[\"<strong style=\\\"letter-spacing: -0.003em;\\\">Idempotency key&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">UUID generated once per logical operation, before any attempt, sent on every retry as a header or body field.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Server deduplication&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Check store on arrival. Cache hit → return stored result. Cache miss → execute, store, return.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Concurrent safety&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Redis SET NX lock per key prevents two simultaneous first executions from both slipping through the empty store check.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Database constraint&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">Unique index on the idempotency key column is the last-resort safety net even if application logic has a bug.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">Payload fingerprint&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">SHA-256 of the canonical request body stored with the key. Reject any replay that arrives with a different hash.</span><br>\",\"<strong style=\\\"letter-spacing: -0.003em;\\\">TTL&nbsp;</strong><span style=\\\"letter-spacing: -0.003em;\\\">7–30 days for payment-scale operations. Must exceed the maximum realistic retry window by a comfortable margin.</span>\"]",
+          "items": [
+            "<strong style=\"letter-spacing: -0.003em;\">Idempotency key&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">UUID generated once per logical operation, before any attempt, sent on every retry as a header or body field.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Server deduplication&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Check store on arrival. Cache hit → return stored result. Cache miss → execute, store, return.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Concurrent safety&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Redis SET NX lock per key prevents two simultaneous first executions from both slipping through the empty store check.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Database constraint&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">Unique index on the idempotency key column is the last-resort safety net even if application logic has a bug.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">Payload fingerprint&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">SHA-256 of the canonical request body stored with the key. Reject any replay that arrives with a different hash.</span><br>",
+            "<strong style=\"letter-spacing: -0.003em;\">TTL&nbsp;</strong><span style=\"letter-spacing: -0.003em;\">7–30 days for payment-scale operations. Must exceed the maximum realistic retry window by a comfortable margin.</span>"
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        },
+        {
+          "type": "paragraph"
+        }
+      ]
+    }
+  ]
+}

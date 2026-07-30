@@ -1,0 +1,515 @@
+{
+  "slug": "google-drive-server",
+  "title": "Google Drive Server",
+  "content": [
+    {
+      "id": "google-drive-server",
+      "title": "Google Drive Server",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Imagine an assistant that can open your Google Drive, find the right folder, and read every document inside it. That is what a Google Drive MCP server gives an agent."
+        },
+        {
+          "type": "paragraph",
+          "text": "It turns files and folders into resources, gives the agent tools to search and read them, and handles the login dance with Google behind the scenes."
+        },
+        {
+          "type": "paragraph",
+          "text": "This lesson walks through how such a server is built, how it authenticates safely, and how an agent uses it to summarize a folder of meeting notes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "1. What This Server Actually Wraps",
+          "id": "gd-what-it-wraps"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580566003-340828951.png",
+          "alt": "A user request flows through an agent, an MCP client, and a Google Drive server",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A Google Drive MCP server is a thin layer sitting between an AI agent and the real Google Drive API."
+        },
+        {
+          "type": "paragraph",
+          "text": "The agent never calls Google directly. It talks to the MCP server, and the server talks to Google on its behalf."
+        },
+        {
+          "type": "paragraph",
+          "text": "This separation means the agent does not need to know anything about Google specific authentication or API quirks."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "2. Files and Folders as Resources",
+          "id": "gd-resources"
+        },
+        {
+          "type": "paragraph",
+          "text": "In MCP, a resource is something a client can list and read. Here, every file and folder in Drive becomes one."
+        },
+        {
+          "type": "paragraph",
+          "text": "A folder resource lists the files inside it. A file resource represents one document, spreadsheet, or PDF."
+        },
+        {
+          "type": "paragraph",
+          "text": "This mapping feels natural because Drive already organizes everything as a tree of folders and files."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "text",
+            "content": "gdrive://folder/1A2b3C4d5E-meeting-notes\ngdrive://file/1xYzAbC-standup-2026-07-01.docx\ngdrive://file/1xYzAbD-standup-2026-07-02.docx"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The scheme gdrive keeps these URIs distinct from any other server the client might also be talking to."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "3. Listing Resources",
+          "id": "gd-listing"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a client calls resources/list, the server queries the Drive API and returns a set of resource entries."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": 1,\n  \"result\": {\n    \"resources\": [\n      { \"uri\": \"gdrive://file/1xYzAbC\", \"name\": \"Standup Notes 07-01.docx\", \"mimeType\": \"application/vnd.google-apps.document\" },\n      { \"uri\": \"gdrive://file/1xYzAbD\", \"name\": \"Standup Notes 07-02.docx\", \"mimeType\": \"application/vnd.google-apps.document\" }\n    ]\n  }\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Each entry carries just enough to let the agent decide what to look at next, without fetching the whole document yet."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "4. Tools the Server Exposes",
+          "id": "gd-tools"
+        },
+        {
+          "type": "paragraph",
+          "text": "Resources alone only let a client browse. Tools let the agent take action, like searching or reading content directly."
+        },
+        {
+          "type": "list",
+          "items": [
+            "search_files, finds files matching a name, folder, or date range.",
+            "read_document, fetches the plain text content of a specific file.",
+            "list_folder, returns the files and subfolders inside a given folder."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Tools are the right fit whenever an action needs parameters, like a search query, rather than just a fixed identifier."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "5. The search_files Tool in Action",
+          "id": "gd-search-tool"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580568399-315042132.png",
+          "alt": "A search files call returns matching files from the drive",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "An agent trying to find meeting notes would call search_files with a query and maybe a folder scope."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "await mcpClient.callTool({\n  name: \"search_files\",\n  arguments: {\n    query: \"meeting notes\",\n    folderId: \"1A2b3C4d5E\",\n    mimeType: \"application/vnd.google-apps.document\"\n  }\n});"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The server translates this into a Drive API files.list call with the right query filters, then returns matching file entries."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "6. The read_document Resource in Action",
+          "id": "gd-read-resource"
+        },
+        {
+          "type": "paragraph",
+          "text": "Once the agent has a file id, it reads the actual content through a resources/read call, not a tool call."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "await mcpClient.readResource({\n  uri: \"gdrive://file/1xYzAbC\"\n});\n\n// server response\n{\n  \"contents\": [\n    { \"uri\": \"gdrive://file/1xYzAbC\", \"mimeType\": \"text/plain\", \"text\": \"Standup notes, July 1. Discussed API rate limits...\" }\n  ]\n}"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Behind the scenes the server calls Google Drive files.export to convert a native Google Doc into plain text."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "7. Why OAuth Instead of an API Key",
+          "id": "gd-why-oauth"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580570670-859422190.png",
+          "alt": "OAuth is compared against a plain API key for this server",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Google Drive holds a person's private files, so a simple shared API key would never be safe enough."
+        },
+        {
+          "type": "paragraph",
+          "text": "OAuth lets the server act on behalf of one specific user, with permissions that user explicitly granted, and nothing more."
+        },
+        {
+          "type": "note",
+          "title": "Why it matters",
+          "content": "OAuth means the server can prove it is acting for a particular Google account, and the user can revoke that access at any time from their Google account settings."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "8. Registering the App With Google",
+          "id": "gd-register-app"
+        },
+        {
+          "type": "paragraph",
+          "text": "Before any of this works, the server author registers an application in Google Cloud Console."
+        },
+        {
+          "type": "paragraph",
+          "text": "This produces a client id and client secret, plus a place to configure allowed redirect URLs."
+        },
+        {
+          "type": "paragraph",
+          "text": "Google also asks for a verification step if the app requests sensitive scopes and expects many users."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "9. Scopes: Asking for Exactly What Is Needed",
+          "id": "gd-scopes"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580572653-209907856.png",
+          "alt": "A narrow scope asks for exactly what the server needs rather than everything",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "A scope is a specific permission, like read only access to files, rather than blanket access to the whole account."
+        },
+        {
+          "type": "table",
+          "content": "{\"headers\":[\"Scope\",\"What it allows\"],\"rows\":[[\"drive.readonly\",\"Read all files the user can see, no editing or deleting\"],[\"drive.file\",\"Access only to files the app itself created or the user opened with it\"],[\"drive.metadata.readonly\",\"See file names and structure but not their content\"]]}"
+        },
+        {
+          "type": "paragraph",
+          "text": "A well built server requests the narrowest scope that still gets the job done, usually drive.readonly for a reading assistant."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "10. The Consent Screen",
+          "id": "gd-consent-screen"
+        },
+        {
+          "type": "paragraph",
+          "text": "When a user first connects, Google shows a consent screen listing exactly which scopes the app is requesting."
+        },
+        {
+          "type": "paragraph",
+          "text": "The user can approve or deny this, and Google enforces that no data flows without explicit approval."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "11. The Authorization Code Flow",
+          "id": "gd-auth-code-flow"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580576578-341695994.png",
+          "alt": "A user is redirected to consent and comes back with an authorization code",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "After consent, Google redirects back to the server with a short lived authorization code, not the actual token yet."
+        },
+        {
+          "type": "paragraph",
+          "text": "The server then exchanges that code, along with its client secret, for an access token and a refresh token."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "json",
+            "content": "POST https://oauth2.googleapis.com/token\n{\n  \"code\": \"4/0AY0e-g7...\",\n  \"client_id\": \"123456.apps.googleusercontent.com\",\n  \"client_secret\": \"GOCSPX-abc123\",\n  \"redirect_uri\": \"https://myserver.example.com/oauth/callback\",\n  \"grant_type\": \"authorization_code\"\n}"
+          }
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "12. Storing and Refreshing Tokens",
+          "id": "gd-token-storage"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580578457-935675448.png",
+          "alt": "A stored refresh token is exchanged for a new access token when needed",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Access tokens expire quickly, usually within an hour, so the server keeps the longer lived refresh token safely stored."
+        },
+        {
+          "type": "paragraph",
+          "text": "When an access token expires, the server silently uses the refresh token to get a new one, without bothering the user again."
+        },
+        {
+          "type": "note",
+          "title": "Security note",
+          "content": "Refresh tokens should be encrypted at rest and scoped per user, never shared across accounts or logged in plain text."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "13. Handling Multiple Users",
+          "id": "gd-multi-user"
+        },
+        {
+          "type": "paragraph",
+          "text": "A real deployment serves many people, so the server keeps a separate token record for every connected Google account."
+        },
+        {
+          "type": "paragraph",
+          "text": "Every tool call and resource read is scoped to whichever user's session the agent is currently acting for."
+        },
+        {
+          "type": "paragraph",
+          "text": "Mixing up sessions between users would be a serious privacy failure, so this scoping needs careful testing."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "14. Rate Limits and Pagination",
+          "id": "gd-rate-limits"
+        },
+        {
+          "type": "paragraph",
+          "text": "The Drive API caps how many requests an app can make per minute, so the server should batch and cache where it can."
+        },
+        {
+          "type": "paragraph",
+          "text": "Large folders return results in pages, so the server may need several calls to list_folder to see everything."
+        },
+        {
+          "type": "paragraph",
+          "text": "A well built server hides this pagination from the agent, quietly looping until it has the full picture."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "15. Practical Use Case: Summarizing Meeting Notes",
+          "id": "gd-use-case"
+        },
+        {
+          "type": "image",
+          "url": "https://algorithmxlr8-assets-images.s3.ap-south-1.amazonaws.com/hld-content-images/1784580580331-455641365.png",
+          "alt": "Meeting notes are read from drive and summarized by the agent",
+          "caption": "",
+          "size": "small"
+        },
+        {
+          "type": "paragraph",
+          "text": "Suppose a user asks an agent to summarize this week's standup notes sitting in a shared Drive folder."
+        },
+        {
+          "type": "list",
+          "items": [
+            "The agent calls search_files with the folder id and a date filter for this week.",
+            "For each matching file, the agent reads its content through resources/read.",
+            "The agent combines the text from all notes into one summary for the user."
+          ],
+          "ordered": true
+        },
+        {
+          "type": "paragraph",
+          "text": "None of this requires the agent to understand Drive's internal API, the server handles every Google specific detail."
+        },
+        {
+          "type": "paragraph",
+          "text": "The same pattern works for expense reports, design docs, or any folder full of related documents."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "16. Keeping Content Fresh",
+          "id": "gd-freshness"
+        },
+        {
+          "type": "paragraph",
+          "text": "Meeting notes get edited after the fact, so a summarizing agent should check a file's modified time before trusting a cached copy."
+        },
+        {
+          "type": "paragraph",
+          "text": "Re-reading a resource is cheap compared to giving a user a summary built from stale, outdated notes."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "17. Error Handling Worth Building In",
+          "id": "gd-error-handling"
+        },
+        {
+          "type": "paragraph",
+          "text": "Tokens can expire, files can get deleted, and permissions can change while an agent is mid task."
+        },
+        {
+          "type": "paragraph",
+          "text": "A good server returns a clear error the agent can react to, rather than a raw Google API stack trace."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Worked Example",
+          "id": "gd-worked-example"
+        },
+        {
+          "type": "paragraph",
+          "text": "Here is the full sequence for the meeting notes summary, from the agent's point of view."
+        },
+        {
+          "type": "code",
+          "code": {
+            "language": "javascript",
+            "content": "const files = await mcpClient.callTool({\n  name: \"search_files\",\n  arguments: { query: \"standup\", folderId: \"1A2b3C4d5E\", modifiedAfter: \"2026-07-01\" }\n});\n\nlet combinedText = \"\";\nfor (const file of files.result.matches) {\n  const doc = await mcpClient.readResource({ uri: file.uri });\n  combinedText += doc.contents[0].text + \"\\n\\n\";\n}\n\n// combinedText now goes to the model with a summarize instruction"
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "The agent then passes combinedText to its own reasoning step, asking for a short summary of the week's standups."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Common Mistakes",
+          "id": "gd-common-mistakes"
+        },
+        {
+          "type": "list",
+          "items": [
+            "Requesting the broad drive scope when drive.readonly or drive.file would have been enough.",
+            "Storing refresh tokens in plain text instead of encrypting them at rest.",
+            "Forgetting to handle pagination, so large folders silently show only the first page.",
+            "Not scoping tool calls per user, letting one user accidentally see another user's files.",
+            "Treating a Google Doc like a plain file, instead of exporting it to text before reading.",
+            "Skipping token refresh logic and forcing the user to log in again every hour."
+          ],
+          "ordered": false
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Practice",
+          "id": "gd-practice"
+        },
+        {
+          "type": "paragraph",
+          "text": "Design the resource list for a Google Drive server exposing a single shared team folder."
+        },
+        {
+          "type": "paragraph",
+          "text": "Decide what scope you would request, and write the search_files call an agent would use to find last month's expense reports."
+        },
+        {
+          "type": "divider"
+        },
+        {
+          "type": "heading1",
+          "text": "Key Takeaway",
+          "id": "gd-key-takeaway"
+        },
+        {
+          "type": "paragraph",
+          "text": "A Google Drive MCP server exposes files and folders as resources, offers tools like search_files and read_document, and leans on OAuth to act safely on a user's behalf."
+        },
+        {
+          "type": "paragraph",
+          "text": "With narrow scopes, careful token storage, and per user isolation, an agent can search, read, and summarize real documents without ever touching a raw Google credential."
+        }
+      ]
+    }
+  ]
+}
