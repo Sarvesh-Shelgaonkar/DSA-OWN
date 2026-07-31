@@ -29,10 +29,7 @@ const StructuredCurriculum = ({ collection, query, progress, toggleComplete }) =
       ...(category.modules || []).flatMap((module) => (module.topics || []).map((topic) => topic.slug)),
     ]),
   );
-  const preferredCategory = (collection.hierarchy || []).find((category) => {
-    const topics = [...(category.topics || []), ...(category.modules || []).flatMap((module) => module.topics || [])];
-    return topics.some((topic) => documentMap.has(topic.slug));
-  })?.slug || collection.hierarchy?.[0]?.slug || '';
+  const preferredCategory = collection.hierarchy?.[0]?.slug || '';
   const [activeCategory, setActiveCategory] = useState(preferredCategory);
 
   useEffect(() => {

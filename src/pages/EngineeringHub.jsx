@@ -9,18 +9,39 @@ const TRACKS = {
     title: 'Master Your Software Engineering Interviews',
     description:
       'Master System Design, Ace DSA with confidence, and Build real engineering skills that make companies want to hire you.',
+    overviewTitle: 'Complete software engineering interview preparation',
+    overview:
+      'Follow a connected path through DSA patterns, system design, computer science fundamentals, interview sheets, and behavioral preparation.',
+    stats: ['2,535 documents', '697 DSA-31 problems', '420 CF-18 problems'],
+    pillars: ['DSA Patterns', 'High Level Design', 'Low Level Design', 'OS, DBMS & Networks', 'Behavioral Interviews', 'Revision System'],
+    to: '/engineering/dsa',
+    cta: 'Explore software engineering',
   },
   'AI Engineer': {
     eyebrow: 'Structured AI engineering track',
     title: 'Build Production-Ready AI Engineering Skills',
     description:
       'Learn foundations, prompting, RAG, agents, evaluation and deployment in the order real systems demand.',
+    overviewTitle: 'AI engineering, from software fundamentals to production',
+    overview:
+      'Start with the software development foundation an AI engineer needs, then move through mathematics, machine learning, deep learning, RAG, agents, safety, and deployment.',
+    stats: ['1,628 curriculum topics', '1,194 full notes', '18 categories'],
+    pillars: ['Software Development Fundamentals', 'Statistics & Probability', 'NumPy & Pandas', 'Machine Learning', 'Deep Learning & PyTorch', 'RAG & Vector Search', 'Agents & MCP', 'Deployment & Safety'],
+    to: '/engineering/ai',
+    cta: 'Explore AI engineering',
   },
   DevOps: {
     eyebrow: 'From containers to production',
     title: 'Master Modern DevOps Engineering',
     description:
       'Move from Docker fundamentals to Kubernetes, CI/CD, observability, infrastructure and production reliability.',
+    overviewTitle: 'The complete DevOps and cloud engineering roadmap',
+    overview:
+      'Build operational depth in the right sequence: Linux and scripting, containers, orchestration, infrastructure as code, cloud, delivery, observability, security, and SRE.',
+    stats: ['1,347 curriculum topics', '469 full notes', '11 categories'],
+    pillars: ['Linux', 'Docker', 'Kubernetes', 'Terraform', 'Ansible', 'AWS', 'CI/CD', 'Monitoring & Logging', 'DevSecOps', 'SRE', 'Scripting'],
+    to: '/engineering/devops',
+    cta: 'Explore DevOps engineering',
   },
 };
 
@@ -332,6 +353,7 @@ const EngineeringHub = () => {
                   key={item}
                   type="button"
                   onClick={() => setTrack(item)}
+                  aria-pressed={track === item}
                   className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all duration-200 ${
                     track === item
                       ? 'bg-zinc-100 text-zinc-950 shadow-sm'
@@ -381,6 +403,41 @@ const EngineeringHub = () => {
               <span className="hidden text-[10px] font-medium text-zinc-600 sm:inline">Big-O quick reference</span>
               <Icon name="arrowRight" size={13} className="transition-transform duration-200 group-hover:translate-x-0.5" />
             </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="border-b border-white/[0.06] bg-[#08080a]">
+        <div className="container-page py-8 sm:py-10">
+          <div key={track} className="grid gap-7 rounded-xl border border-white/[0.08] bg-[#0c0c0e] p-5 shadow-[0_18px_55px_rgba(0,0,0,0.24)] sm:p-7 lg:grid-cols-[1fr_1.15fr] lg:items-center">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.17em] text-blue-500">{track} roadmap</p>
+              <h2 className="mt-3 text-2xl font-bold tracking-[-0.03em] text-white sm:text-3xl">{trackContent.overviewTitle}</h2>
+              <p className="mt-3 max-w-2xl text-sm leading-7 text-zinc-500">{trackContent.overview}</p>
+              <div className="mt-5 flex flex-wrap gap-2">
+                {trackContent.stats.map((stat) => (
+                  <span key={stat} className="rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 py-1.5 text-xs font-medium text-zinc-400">
+                    {stat}
+                  </span>
+                ))}
+              </div>
+              <Link to={trackContent.to} className="btn-primary btn-md mt-6">
+                {trackContent.cta} <Icon name="arrowRight" size={15} />
+              </Link>
+            </div>
+            <div className="rounded-xl border border-white/[0.07] bg-black/25 p-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-600">What you&apos;ll learn</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {trackContent.pillars.map((pillar, index) => (
+                  <div key={pillar} className="flex min-h-11 items-center gap-3 rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2.5">
+                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-blue-500/10 font-mono text-[10px] font-bold text-blue-400">
+                      {String(index + 1).padStart(2, '0')}
+                    </span>
+                    <span className="text-xs font-semibold text-zinc-300">{pillar}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </section>
