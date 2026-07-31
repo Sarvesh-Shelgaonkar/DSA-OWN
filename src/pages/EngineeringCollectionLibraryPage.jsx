@@ -22,14 +22,66 @@ const accentClasses = {
 
 const StructuredCurriculum = ({ collection, query, progress, toggleComplete }) => {
   const normalized = query.trim().toLowerCase();
+  const topicSlug = (topic) => topic.slug || topic.id;
+  const categorySlug = (category) => category.slug || category.id;
+  const categoryGroups = (category) => category.modules || category.categories || [];
+  const categoryTopics = (category) => [
+    ...(category.topics || []),
+    ...categoryGroups(category).flatMap((group) => group.topics || []),
+  ];
   const documentMap = new Map(collection.documents.map((document) => [document.slug, document]));
   const outlineSlugs = new Set(
-    (collection.hierarchy || []).flatMap((category) => [
-      ...(category.topics || []).map((topic) => topic.slug),
-      ...(category.modules || []).flatMap((module) => (module.topics || []).map((topic) => topic.slug)),
-    ]),
+    (collection.hierarchy || []).flatMap((category) => categoryTopics(category).map(topicSlug)),
   );
-  const preferredCategory = collection.hierarchy?.[0]?.slug || '';
+  const supplementalDocuments = collection.documents.filter((document) => !outlineSlugs.has(document.slug));
+  const supplementalCategory = supplementalDocuments.length ? {
+    id: 'published-foundations',
+    title: 'Published Fundamentals',
+    description: 'Additional complete notes published in this subject library.',
+    topics: supplementalDocuments,
+    modules: [],
+  } : null;
+  const preferredOrders = {
+    cn: [
+      'networking-fundamentals',
+      'ip-addressing-routing',
+      'transport-layer',
+      'tcp-deep-dive',
+      'dns',
+      'http-https',
+      'modern-web-communication',
+      'networking-for-system-design',
+    ],
+    dbms: [
+      'database-fundamentals',
+      'relational-database-design',
+      'normalization',
+      'sql-fundamentals',
+      'sql-filtering-aggregation',
+      'sql-joins',
+      'advanced-sql',
+      'transactions-concurrency',
+      'indexing',
+      'sql-optimization',
+      'sql-interview-patterns',
+      'database-scaling',
+    ],
+  };
+  const orderedHierarchy = [...(collection.hierarchy || [])].sort((left, right) => {
+    if (collection.id === 'git') {
+      const leftNumber = Number.parseInt(left.title, 10);
+      const rightNumber = Number.parseInt(right.title, 10);
+      return (Number.isNaN(leftNumber) ? 999 : leftNumber) - (Number.isNaN(rightNumber) ? 999 : rightNumber);
+    }
+    const order = preferredOrders[collection.id];
+    if (!order) return 0;
+    return order.indexOf(categorySlug(left)) - order.indexOf(categorySlug(right));
+  });
+  const navigationCategories = [
+    ...(supplementalCategory ? [supplementalCategory] : []),
+    ...orderedHierarchy,
+  ];
+  const preferredCategory = categorySlug(navigationCategories[0] || {});
   const [activeCategory, setActiveCategory] = useState(preferredCategory);
 
   useEffect(() => {
@@ -37,22 +89,23 @@ const StructuredCurriculum = ({ collection, query, progress, toggleComplete }) =
   }, [collection.id, preferredCategory]);
 
   const decorateTopics = (topics = []) =>
-    topics.map((topic) => ({ ...topic, document: documentMap.get(topic.slug) }));
+    topics.map((topic) => ({ ...topic, slug: topicSlug(topic), document: documentMap.get(topicSlug(topic)) }));
   const topicMatches = (topic) =>
     !normalized || `${topic.title} ${topic.document?.description || ''}`.toLowerCase().includes(normalized);
 
-  const fullCategories = (collection.hierarchy || [])
+  const fullCategories = navigationCategories
     .map((category) => ({
       ...category,
-      totalTopics: (category.topics?.length || 0) + (category.modules || []).reduce((sum, module) => sum + (module.topics?.length || 0), 0),
-      availableTotal: [...(category.topics || []), ...(category.modules || []).flatMap((module) => module.topics || [])]
-        .filter((topic) => documentMap.has(topic.slug)).length,
+      slug: categorySlug(category),
+      totalTopics: categoryTopics(category).length,
+      availableTotal: categoryTopics(category).filter((topic) => documentMap.has(topicSlug(topic))).length,
       topics: decorateTopics(category.topics).filter(topicMatches),
-      modules: (category.modules || [])
+      modules: categoryGroups(category)
         .map((module) => ({
           ...module,
+          slug: module.slug || module.id || module.title,
           totalTopics: module.topics?.length || 0,
-          availableTotal: (module.topics || []).filter((topic) => documentMap.has(topic.slug)).length,
+          availableTotal: (module.topics || []).filter((topic) => documentMap.has(topicSlug(topic))).length,
           topics: decorateTopics(module.topics).filter(topicMatches),
         }))
         .filter((module) => module.topics.length),
@@ -63,8 +116,20 @@ const StructuredCurriculum = ({ collection, query, progress, toggleComplete }) =
     ? fullCategories
     : fullCategories.filter((category) => category.slug === activeCategory);
   const isAi = collection.id === 'ai';
-  const accentText = isAi ? 'text-cyan-400' : 'text-emerald-400';
-  const accentBorder = isAi ? 'border-cyan-500/20 bg-cyan-500/[0.07]' : 'border-emerald-500/20 bg-emerald-500/[0.07]';
+  const isDevops = collection.id === 'devops';
+  const accentText = isAi ? 'text-cyan-400' : isDevops ? 'text-emerald-400' : 'text-amber-400';
+  const accentBorder = isAi
+    ? 'border-cyan-500/20 bg-cyan-500/[0.07]'
+    : isDevops
+      ? 'border-emerald-500/20 bg-emerald-500/[0.07]'
+      : 'border-amber-500/20 bg-amber-500/[0.07]';
+  const hoverAccent = isAi
+    ? 'hover:border-cyan-500/40 hover:text-cyan-400'
+    : isDevops
+      ? 'hover:border-emerald-500/40 hover:text-emerald-400'
+      : 'hover:border-amber-500/40 hover:text-amber-400';
+  const groupHoverAccent = isAi ? 'group-hover:text-cyan-400' : isDevops ? 'group-hover:text-emerald-400' : 'group-hover:text-amber-400';
+  const linkHoverAccent = isAi ? 'hover:text-cyan-400' : isDevops ? 'hover:text-emerald-400' : 'hover:text-amber-400';
 
   const topicRow = (topic, index) => {
     const hasDocument = Boolean(topic.document);
@@ -85,7 +150,7 @@ const StructuredCurriculum = ({ collection, query, progress, toggleComplete }) =
             className={`grid h-8 w-8 place-items-center rounded-lg border transition-all duration-200 ${
               complete
                 ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                : `border-white/10 text-zinc-700 ${isAi ? 'hover:border-cyan-500/40 hover:text-cyan-400' : 'hover:border-emerald-500/40 hover:text-emerald-400'}`
+                : `border-white/10 text-zinc-700 ${hoverAccent}`
             }`}
           >
             <Icon name="check" size={15} />
@@ -97,7 +162,7 @@ const StructuredCurriculum = ({ collection, query, progress, toggleComplete }) =
         )}
         {hasDocument ? (
           <Link to={`/engineering/library/${collection.id}/${topic.slug}`} className="min-w-0">
-            <h4 className={`text-sm font-semibold transition-colors ${isAi ? 'group-hover:text-cyan-400' : 'group-hover:text-emerald-400'} ${complete ? 'text-zinc-500' : 'text-zinc-200'}`}>{topic.title}</h4>
+            <h4 className={`text-sm font-semibold transition-colors ${groupHoverAccent} ${complete ? 'text-zinc-500' : 'text-zinc-200'}`}>{topic.title}</h4>
             {topic.document.description && <p className="mt-1 line-clamp-1 text-xs leading-5 text-zinc-600">{topic.document.description}</p>}
           </Link>
         ) : (
@@ -107,7 +172,7 @@ const StructuredCurriculum = ({ collection, query, progress, toggleComplete }) =
           </div>
         )}
         {hasDocument ? (
-          <Link to={`/engineering/library/${collection.id}/${topic.slug}`} className={`inline-flex items-center gap-2 text-xs font-semibold text-zinc-600 transition-colors ${isAi ? 'hover:text-cyan-400' : 'hover:text-emerald-400'}`}>
+          <Link to={`/engineering/library/${collection.id}/${topic.slug}`} className={`inline-flex items-center gap-2 text-xs font-semibold text-zinc-600 transition-colors ${linkHoverAccent}`}>
             Read <Icon name="chevronRight" size={14} />
           </Link>
         ) : (
@@ -131,20 +196,21 @@ const StructuredCurriculum = ({ collection, query, progress, toggleComplete }) =
             </p>
           </div>
           <span className="shrink-0 rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-zinc-500">
-            {collection.hierarchy?.length || 0} categories
+            {navigationCategories.length} categories
           </span>
         </div>
         <div className="mt-5 flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {(collection.hierarchy || []).map((category, index) => {
-            const topics = [...(category.topics || []), ...(category.modules || []).flatMap((module) => module.topics || [])];
-            const available = topics.filter((topic) => documentMap.has(topic.slug)).length;
+          {navigationCategories.map((category, index) => {
+            const topics = categoryTopics(category);
+            const slug = categorySlug(category);
+            const available = topics.filter((topic) => documentMap.has(topicSlug(topic))).length;
             return (
               <button
-                key={category.slug}
+                key={slug}
                 type="button"
-                onClick={() => setActiveCategory(category.slug)}
+                onClick={() => setActiveCategory(slug)}
                 className={`shrink-0 rounded-lg border px-3 py-2 text-left transition-all duration-200 ${
-                  activeCategory === category.slug && !normalized
+                  activeCategory === slug && !normalized
                     ? `${accentBorder} ${accentText}`
                     : 'border-white/[0.07] text-zinc-600 hover:border-white/[0.13] hover:text-zinc-300'
                 }`}
@@ -161,7 +227,7 @@ const StructuredCurriculum = ({ collection, query, progress, toggleComplete }) =
         <section key={category.slug} id={category.slug} className="scroll-mt-36">
           <div className="mb-5 grid gap-3 sm:grid-cols-[auto_1fr_auto] sm:items-start">
             <span className={`grid h-9 w-9 place-items-center rounded-lg border font-mono text-xs font-bold ${accentBorder} ${accentText}`}>
-              {String((collection.hierarchy || []).findIndex((item) => item.slug === category.slug) + 1 || categoryIndex + 1).padStart(2, '0')}
+              {String(navigationCategories.findIndex((item) => categorySlug(item) === category.slug) + 1 || categoryIndex + 1).padStart(2, '0')}
             </span>
             <div>
               <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-600">{category.groupLabel || collection.title}</p>
@@ -213,6 +279,7 @@ const EngineeringCollectionLibraryPage = ({ trackId }) => {
   const [visibleCounts, setVisibleCounts] = useState({});
 
   useEffect(() => {
+    setActiveCollection(trackId === 'interview' ? 'os' : 'all');
     fetch('/engineering/library/index.json')
       .then((response) => response.json())
       .then(async (overview) => {
@@ -259,6 +326,11 @@ const EngineeringCollectionLibraryPage = ({ trackId }) => {
   const completed = allDocuments.filter((document) => progress[`${document.collectionId}:${document.slug}`]).length;
   const completion = allDocuments.length ? Math.round((completed / allDocuments.length) * 100) : 0;
   const accent = accentClasses[trackId] || accentClasses['system-design'];
+  const structuredCollection = ['ai', 'devops'].includes(trackId)
+    ? collections[0]
+    : trackId === 'interview'
+      ? collections.find((collection) => collection.id === activeCollection) || collections[0]
+      : null;
 
   const toggleComplete = (collectionId, slug) => {
     const key = `${collectionId}:${slug}`;
@@ -315,12 +387,12 @@ const EngineeringCollectionLibraryPage = ({ trackId }) => {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder={['ai', 'devops'].includes(trackId) ? 'Search the complete curriculum…' : `Search ${allDocuments.length} documents…`}
+              placeholder={structuredCollection ? 'Search the complete curriculum…' : `Search ${allDocuments.length} documents…`}
               className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-zinc-600"
             />
           </label>
           <div className="flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {[{ id: 'all', title: 'All' }, ...collections].map((item) => (
+            {(trackId === 'interview' ? collections : [{ id: 'all', title: 'All' }, ...collections]).map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -337,9 +409,9 @@ const EngineeringCollectionLibraryPage = ({ trackId }) => {
       </div>
 
       <main className="container-page py-8 sm:py-12">
-        {['ai', 'devops'].includes(trackId) && collections[0] ? (
+        {structuredCollection ? (
           <StructuredCurriculum
-            collection={collections[0]}
+            collection={structuredCollection}
             query={query}
             progress={progress}
             toggleComplete={toggleComplete}
@@ -408,7 +480,7 @@ const EngineeringCollectionLibraryPage = ({ trackId }) => {
             </section>
           ))}
         </div>}
-        {!['ai', 'devops'].includes(trackId) && !filtered.length && (
+        {!structuredCollection && !filtered.length && (
           <div className="rounded-xl border border-dashed border-white/10 py-20 text-center text-sm text-zinc-500">
             No documents found. <button type="button" onClick={() => { setQuery(''); setActiveCollection('all'); }} className="font-semibold text-blue-400">Clear filters</button>
           </div>
