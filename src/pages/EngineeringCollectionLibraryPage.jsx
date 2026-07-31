@@ -20,84 +20,168 @@ const accentClasses = {
   interview: 'border-amber-500/25 bg-amber-500/10 text-amber-400',
 };
 
-const AiCurriculum = ({ collection, query, progress, toggleComplete }) => {
+const StructuredCurriculum = ({ collection, query, progress, toggleComplete }) => {
   const normalized = query.trim().toLowerCase();
   const documentMap = new Map(collection.documents.map((document) => [document.slug, document]));
-  const matchTopics = (topics = []) =>
-    topics
-      .map((topic) => ({ ...topic, document: documentMap.get(topic.slug) }))
-      .filter(({ document, title }) => document && (!normalized || `${title} ${document.description || ''}`.toLowerCase().includes(normalized)));
+  const outlineSlugs = new Set(
+    (collection.hierarchy || []).flatMap((category) => [
+      ...(category.topics || []).map((topic) => topic.slug),
+      ...(category.modules || []).flatMap((module) => (module.topics || []).map((topic) => topic.slug)),
+    ]),
+  );
+  const preferredCategory = (collection.hierarchy || []).find((category) => {
+    const topics = [...(category.topics || []), ...(category.modules || []).flatMap((module) => module.topics || [])];
+    return topics.some((topic) => documentMap.has(topic.slug));
+  })?.slug || collection.hierarchy?.[0]?.slug || '';
+  const [activeCategory, setActiveCategory] = useState(preferredCategory);
 
-  const categories = (collection.hierarchy || [])
+  useEffect(() => {
+    setActiveCategory(preferredCategory);
+  }, [collection.id, preferredCategory]);
+
+  const decorateTopics = (topics = []) =>
+    topics.map((topic) => ({ ...topic, document: documentMap.get(topic.slug) }));
+  const topicMatches = (topic) =>
+    !normalized || `${topic.title} ${topic.document?.description || ''}`.toLowerCase().includes(normalized);
+
+  const fullCategories = (collection.hierarchy || [])
     .map((category) => ({
       ...category,
-      availableTotal: [
-        ...(category.topics || []),
-        ...(category.modules || []).flatMap((module) => module.topics || []),
-      ].filter((topic) => documentMap.has(topic.slug)).length,
-      topics: matchTopics(category.topics),
+      totalTopics: (category.topics?.length || 0) + (category.modules || []).reduce((sum, module) => sum + (module.topics?.length || 0), 0),
+      availableTotal: [...(category.topics || []), ...(category.modules || []).flatMap((module) => module.topics || [])]
+        .filter((topic) => documentMap.has(topic.slug)).length,
+      topics: decorateTopics(category.topics).filter(topicMatches),
       modules: (category.modules || [])
-        .map((module) => ({ ...module, topics: matchTopics(module.topics) }))
+        .map((module) => ({
+          ...module,
+          totalTopics: module.topics?.length || 0,
+          availableTotal: (module.topics || []).filter((topic) => documentMap.has(topic.slug)).length,
+          topics: decorateTopics(module.topics).filter(topicMatches),
+        }))
         .filter((module) => module.topics.length),
     }))
-    .filter((category) => category.topics.length || category.modules.length || (!normalized && category.availableTotal === 0));
+    .filter((category) => category.topics.length || category.modules.length);
+
+  const categories = normalized
+    ? fullCategories
+    : fullCategories.filter((category) => category.slug === activeCategory);
+  const isAi = collection.id === 'ai';
+  const accentText = isAi ? 'text-cyan-400' : 'text-emerald-400';
+  const accentBorder = isAi ? 'border-cyan-500/20 bg-cyan-500/[0.07]' : 'border-emerald-500/20 bg-emerald-500/[0.07]';
 
   const topicRow = (topic, index) => {
+    const hasDocument = Boolean(topic.document);
     const key = `${collection.id}:${topic.slug}`;
     const complete = Boolean(progress[key]);
     return (
       <div
         key={topic.slug}
-        className={`group grid gap-3 p-4 transition-colors duration-200 hover:bg-white/[0.025] sm:grid-cols-[2.5rem_1fr_auto] sm:items-center sm:px-5 ${index ? 'border-t border-white/[0.06]' : ''}`}
+        className={`group grid gap-3 p-4 transition-colors duration-200 sm:grid-cols-[2.5rem_1fr_auto] sm:items-center sm:px-5 ${
+          index ? 'border-t border-white/[0.06]' : ''
+        } ${hasDocument ? 'hover:bg-white/[0.025]' : 'bg-black/10'}`}
       >
-        <button
-          type="button"
-          onClick={() => toggleComplete(collection.id, topic.slug)}
-          aria-label={complete ? `Mark ${topic.title} incomplete` : `Mark ${topic.title} complete`}
-          className={`grid h-8 w-8 place-items-center rounded-lg border transition-all duration-200 ${complete ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-white/10 text-zinc-700 hover:border-cyan-500/40 hover:text-cyan-400'}`}
-        >
-          <Icon name="check" size={15} />
-        </button>
-        <Link to={`/engineering/library/${collection.id}/${topic.slug}`} className="min-w-0">
-          <h4 className={`text-sm font-semibold transition-colors group-hover:text-cyan-400 ${complete ? 'text-zinc-500' : 'text-zinc-200'}`}>{topic.title}</h4>
-          {topic.document.description && <p className="mt-1 line-clamp-1 text-xs leading-5 text-zinc-600">{topic.document.description}</p>}
-        </Link>
-        <Link to={`/engineering/library/${collection.id}/${topic.slug}`} className="inline-flex items-center gap-2 text-xs font-semibold text-zinc-600 transition-colors hover:text-cyan-400">
-          Read <Icon name="chevronRight" size={14} />
-        </Link>
+        {hasDocument ? (
+          <button
+            type="button"
+            onClick={() => toggleComplete(collection.id, topic.slug)}
+            aria-label={complete ? `Mark ${topic.title} incomplete` : `Mark ${topic.title} complete`}
+            className={`grid h-8 w-8 place-items-center rounded-lg border transition-all duration-200 ${
+              complete
+                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                : `border-white/10 text-zinc-700 ${isAi ? 'hover:border-cyan-500/40 hover:text-cyan-400' : 'hover:border-emerald-500/40 hover:text-emerald-400'}`
+            }`}
+          >
+            <Icon name="check" size={15} />
+          </button>
+        ) : (
+          <span className="grid h-8 w-8 place-items-center rounded-lg border border-white/[0.07] text-zinc-800">
+            <Icon name="lock" size={13} />
+          </span>
+        )}
+        {hasDocument ? (
+          <Link to={`/engineering/library/${collection.id}/${topic.slug}`} className="min-w-0">
+            <h4 className={`text-sm font-semibold transition-colors ${isAi ? 'group-hover:text-cyan-400' : 'group-hover:text-emerald-400'} ${complete ? 'text-zinc-500' : 'text-zinc-200'}`}>{topic.title}</h4>
+            {topic.document.description && <p className="mt-1 line-clamp-1 text-xs leading-5 text-zinc-600">{topic.document.description}</p>}
+          </Link>
+        ) : (
+          <div className="min-w-0">
+            <h4 className="text-sm font-medium text-zinc-600">{topic.title}</h4>
+            <p className="mt-1 text-[11px] text-zinc-800">Listed in the source curriculum; full note not published yet.</p>
+          </div>
+        )}
+        {hasDocument ? (
+          <Link to={`/engineering/library/${collection.id}/${topic.slug}`} className={`inline-flex items-center gap-2 text-xs font-semibold text-zinc-600 transition-colors ${isAi ? 'hover:text-cyan-400' : 'hover:text-emerald-400'}`}>
+            Read <Icon name="chevronRight" size={14} />
+          </Link>
+        ) : (
+          <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-zinc-800">Outline</span>
+        )}
       </div>
     );
   };
 
   return (
     <div className="space-y-10">
+      <section className="rounded-xl border border-white/[0.08] bg-[#0c0c0e] p-4 sm:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className={`text-[10px] font-bold uppercase tracking-[0.15em] ${accentText}`}>Complete source curriculum</p>
+            <h2 className="mt-2 text-xl font-bold tracking-tight text-white sm:text-2xl">
+              {outlineSlugs.size.toLocaleString()} topics · {collection.documents.length.toLocaleString()} full notes
+            </h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-500">
+              Every source category, module, and topic is shown. Readable rows have complete notes; outline rows are topics whose body has not been published by the source.
+            </p>
+          </div>
+          <span className="shrink-0 rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-zinc-500">
+            {collection.hierarchy?.length || 0} categories
+          </span>
+        </div>
+        <div className="mt-5 flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {(collection.hierarchy || []).map((category, index) => {
+            const topics = [...(category.topics || []), ...(category.modules || []).flatMap((module) => module.topics || [])];
+            const available = topics.filter((topic) => documentMap.has(topic.slug)).length;
+            return (
+              <button
+                key={category.slug}
+                type="button"
+                onClick={() => setActiveCategory(category.slug)}
+                className={`shrink-0 rounded-lg border px-3 py-2 text-left transition-all duration-200 ${
+                  activeCategory === category.slug && !normalized
+                    ? `${accentBorder} ${accentText}`
+                    : 'border-white/[0.07] text-zinc-600 hover:border-white/[0.13] hover:text-zinc-300'
+                }`}
+              >
+                <span className="block text-[10px] font-bold uppercase tracking-[0.1em]">{String(index + 1).padStart(2, '0')} · {category.title}</span>
+                <span className="mt-0.5 block text-[10px] opacity-70">{available}/{topics.length} notes</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
       {categories.map((category, categoryIndex) => (
         <section key={category.slug} id={category.slug} className="scroll-mt-36">
           <div className="mb-5 grid gap-3 sm:grid-cols-[auto_1fr_auto] sm:items-start">
-            <span className="grid h-9 w-9 place-items-center rounded-lg border border-cyan-500/20 bg-cyan-500/[0.07] font-mono text-xs font-bold text-cyan-400">
-              {String(categoryIndex + 1).padStart(2, '0')}
+            <span className={`grid h-9 w-9 place-items-center rounded-lg border font-mono text-xs font-bold ${accentBorder} ${accentText}`}>
+              {String((collection.hierarchy || []).findIndex((item) => item.slug === category.slug) + 1 || categoryIndex + 1).padStart(2, '0')}
             </span>
             <div>
-              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-600">{category.groupLabel || 'AI Engineering'}</p>
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-600">{category.groupLabel || collection.title}</p>
               <h2 className="mt-1 text-xl font-bold tracking-tight text-white sm:text-2xl">{category.title}</h2>
               {category.description && <p className="mt-1.5 max-w-3xl text-sm leading-6 text-zinc-500">{category.description}</p>}
             </div>
-            <span className="text-xs text-zinc-600">{category.availableTotal} published notes</span>
+            <span className="text-xs text-zinc-600">{category.availableTotal}/{category.totalTopics} full notes</span>
           </div>
 
           <div className="space-y-4">
-            {!category.topics.length && !category.modules.length && (
-              <div className="rounded-xl border border-dashed border-white/[0.1] bg-white/[0.02] px-5 py-6">
-                <p className="text-sm font-semibold text-zinc-300">Prerequisite roadmap</p>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-600">
-                  This step is a prerequisite checklist. Its detailed programming and tooling material is covered in the Development curriculum; the AI note library starts with Statistics &amp; Probability.
-                </p>
-              </div>
-            )}
             {category.topics.length > 0 && (
               <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#0c0c0e]">
                 <div className="border-b border-white/[0.07] bg-white/[0.02] px-5 py-3">
-                  <h3 className="text-xs font-bold uppercase tracking-[0.12em] text-zinc-500">Core topics</h3>
+                  <div className="flex items-center justify-between gap-4">
+                    <h3 className="text-xs font-bold uppercase tracking-[0.12em] text-zinc-500">Core topics</h3>
+                    <span className="text-[10px] text-zinc-700">{category.topics.filter((topic) => topic.document).length}/{category.topics.length} notes</span>
+                  </div>
                 </div>
                 {category.topics.map(topicRow)}
               </div>
@@ -106,7 +190,7 @@ const AiCurriculum = ({ collection, query, progress, toggleComplete }) => {
               <div key={module.slug} className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#0c0c0e]">
                 <div className="flex items-center justify-between gap-4 border-b border-white/[0.07] bg-white/[0.02] px-5 py-3">
                   <h3 className="text-sm font-semibold text-zinc-300">{module.title}</h3>
-                  <span className="text-[10px] font-semibold text-zinc-700">{module.topics.length} notes</span>
+                  <span className="text-[10px] font-semibold text-zinc-700">{module.availableTotal}/{module.totalTopics} notes</span>
                 </div>
                 {module.topics.map(topicRow)}
               </div>
@@ -116,7 +200,7 @@ const AiCurriculum = ({ collection, query, progress, toggleComplete }) => {
       ))}
       {!categories.length && (
         <div className="rounded-xl border border-dashed border-white/10 py-20 text-center text-sm text-zinc-500">
-          No AI notes match this search.
+          No curriculum topics match this search.
         </div>
       )}
     </div>
@@ -234,7 +318,7 @@ const EngineeringCollectionLibraryPage = ({ trackId }) => {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder={`Search ${allDocuments.length} documents…`}
+              placeholder={['ai', 'devops'].includes(trackId) ? 'Search the complete curriculum…' : `Search ${allDocuments.length} documents…`}
               className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-zinc-600"
             />
           </label>
@@ -256,8 +340,8 @@ const EngineeringCollectionLibraryPage = ({ trackId }) => {
       </div>
 
       <main className="container-page py-8 sm:py-12">
-        {trackId === 'ai' && collections[0] ? (
-          <AiCurriculum
+        {['ai', 'devops'].includes(trackId) && collections[0] ? (
+          <StructuredCurriculum
             collection={collections[0]}
             query={query}
             progress={progress}
@@ -327,7 +411,7 @@ const EngineeringCollectionLibraryPage = ({ trackId }) => {
             </section>
           ))}
         </div>}
-        {trackId !== 'ai' && !filtered.length && (
+        {!['ai', 'devops'].includes(trackId) && !filtered.length && (
           <div className="rounded-xl border border-dashed border-white/10 py-20 text-center text-sm text-zinc-500">
             No documents found. <button type="button" onClick={() => { setQuery(''); setActiveCollection('all'); }} className="font-semibold text-blue-400">Clear filters</button>
           </div>
