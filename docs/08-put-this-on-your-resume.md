@@ -12,12 +12,13 @@
 
 ## 1. The 3-line summary (memorize this first)
 
-> **MyDSA** is a full-stack (MERN) DSA learning platform. The React front end works offline using
-> the browser's localStorage; signing in (email/password or Google) issues a **JWT stored in an
-> httpOnly cookie**, and a **merge-based sync engine** keeps a user's progress consistent across
-> devices via a Node/Express + MongoDB backend.
+> **MyDSA** is a full-stack (MERN) DSA + engineering interview platform. Learning content is
+> **login-gated** (React `RequireAuth` + Express JWT). Signing in (email/password or Google)
+> issues a **JWT in an httpOnly cookie** (Bearer fallback), and a **merge-based sync engine**
+> keeps progress consistent across devices via Node/Express + MongoDB. Frontend and API deploy
+> as separate Render services.
 
-If you can say those 3 lines and then answer "why?" for each phrase, you're 80% ready.
+If you can say those lines and then answer "why?" for each phrase, you're 80% ready.
 
 ---
 
@@ -26,16 +27,18 @@ If you can say those 3 lines and then answer "why?" for each phrase, you're 80% 
 Pick 3–5 that match the role. Numbers are illustrative — adjust to the truth.
 
 ### Full-stack (recommended default)
-- Built **MyDSA**, a full-stack **MERN** DSA-learning platform (React, Node/Express, MongoDB) with
-  an **offline-first** UX and **cross-device progress sync**.
-- Implemented secure authentication using **JWT stored in httpOnly, SameSite, Secure cookies**, with
-  **bcrypt** password hashing and **Google Sign-In (OAuth)** including account linking.
+- Built **MyDSA**, a full-stack **MERN** interview-prep platform (React, Node/Express, MongoDB)
+  with **auth-gated** learning content and **cross-device progress sync**.
+- Implemented secure authentication using **JWT in httpOnly, SameSite, Secure cookies**, **bcrypt**
+  hashing, **Google Sign-In (OAuth)** with account linking, plus a React **`RequireAuth`** route guard.
 - Designed a **stateless REST API** with per-user authorization, **rate limiting**, and credentialed
   **CORS**, enabling horizontal scaling without sticky sessions.
 - Engineered an **idempotent merge-sync engine** (debounced writes + optimistic UI) that reconciles
   localStorage with MongoDB so **no user progress is ever lost**.
+- Deployed a **split architecture on Render** (Static Site + Web Service), including SPA rewrites,
+  build-time `VITE_*` vs runtime secrets, and Google OAuth origin configuration.
 - Optimized performance with **route-based code splitting (React.lazy)**, lazy loading, and CDN-cached
-  static assets, improving initial load and Core Web Vitals.
+  static assets.
 
 ### Frontend-focused
 - Developed a responsive **React SPA** with light/dark theming via CSS-variable design tokens,

@@ -1,7 +1,8 @@
 import React, { Suspense, lazy, useEffect } from 'react';
-import { BrowserRouter as Router, Navigate, Routes, Route, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Navigate, Routes, Route, Outlet, useLocation } from 'react-router-dom';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
+import RequireAuth from './components/RequireAuth';
 import { useCloudSync } from './hooks/useCloudSync';
 
 // Core pages (kept in the main chunk for instant navigation)
@@ -76,6 +77,12 @@ const ScrollToTop = () => {
   return null;
 };
 
+const ProtectedLayout = () => (
+  <RequireAuth>
+    <Outlet />
+  </RequireAuth>
+);
+
 const App = () => {
   useCloudSync();
   return (
@@ -85,60 +92,61 @@ const App = () => {
       <main id="main" className="min-h-screen">
         <Suspense fallback={<PageLoader />}>
           <Routes>
+            {/* Public */}
             <Route path="/" element={<HomePage />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/problems" element={<ProblemsPage />} />
-            <Route path="/roadmap" element={<Roadmap />} />
-            <Route path="/engineering" element={<EngineeringHub />} />
-            <Route path="/engineering/sheets" element={<EngineeringSheetPage />} />
-            <Route path="/engineering/sheets/dsa/:docSlug" element={<EngineeringSheetDocumentPage />} />
-            <Route path="/engineering/revision" element={<EngineeringRevisionPage />} />
-            <Route path="/engineering/dsa" element={<EngineeringDsaLibraryPage />} />
-            <Route path="/engineering/dsa/docs/:docSlug" element={<EngineeringRecoveredDsaPage />} />
-            <Route path="/engineering/dsa/how-to-solve-dsa-problems" element={<Navigate to="/engineering/dsa/docs/how-to-solve-dsa-problems" replace />} />
-            <Route path="/engineering/system-design" element={<EngineeringCollectionLibraryPage trackId="system-design" />} />
-            <Route path="/engineering/ai" element={<EngineeringCollectionLibraryPage trackId="ai" />} />
-            <Route path="/engineering/devops" element={<EngineeringCollectionLibraryPage trackId="devops" />} />
-            <Route path="/engineering/interview" element={<EngineeringCollectionLibraryPage trackId="interview" />} />
-            <Route path="/engineering/library/:collectionId/:docSlug" element={<EngineeringCollectionDocumentPage />} />
-            <Route path="/engineering/learn/:trackId/:lessonSlug" element={<EngineeringLessonPage />} />
-            <Route path="/engineering/:trackId" element={<EngineeringCoursePage />} />
-            <Route path="/roadmap/:stageId" element={<RoadmapStage />} />
-            <Route path="/topics" element={<Topics />} />
-            <Route path="/profile" element={<Profile />} />
-            <Route path="/contests" element={<Contests />} />
-            <Route path="/leaderboard" element={<Leaderboard />} />
-            <Route path="/puzzles" element={<Puzzles />} />
-            <Route path="/patterns" element={<Patterns />} />
-            <Route path="/sheets" element={<Sheets />} />
-            <Route path="/companies" element={<Companies />} />
-            <Route path="/companies/:slug" element={<CompanyDetail />} />
-            <Route path="/resources" element={<Resources />} />
-            <Route path="/library" element={<Library />} />
-            <Route path="/revision" element={<Revision />} />
-            <Route path="/interview" element={<InterviewHub />} />
-            <Route path="/interview/:bankId" element={<InterviewBankPage />} />
-            <Route path="/system-design" element={<SystemDesign />} />
-            <Route path="/dsa-notes" element={<TopicNotes />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
 
-            {/* Notes hub + DSA resources use the app theme (light/dark aware) */}
-            <Route path="/notes" element={<Notes />} />
-            <Route path="/dsa-pdf-notes" element={<DsaPdfNotes />} />
-
-            {/* Legacy content pages */}
-            <Route path="/cpp-stl-notes" element={<LegacyDark><CppStlNotes /></LegacyDark>} />
-            <Route path="/sql-notes" element={<LegacyDark><SqlNotes /></LegacyDark>} />
-            <Route path="/system-design-notes" element={<LegacyDark><SystemDesignNotes /></LegacyDark>} />
-            <Route path="/core-subjects-notes" element={<LegacyDark><CoreSubjectsNotes /></LegacyDark>} />
-            <Route path="/webdev-notes" element={<LegacyDark><WebdevNotes /></LegacyDark>} />
-            <Route path="/code-editor" element={<LegacyDark><CodeEditorPage /></LegacyDark>} />
-            <Route path="/system-design-masterclass" element={<LegacyDark><SystemDesignMasterclass /></LegacyDark>} />
-            <Route path="/ai-engineering-notes" element={<LegacyDark><AiEngineeringNotes /></LegacyDark>} />
-            <Route path="/backend-concepts-notes" element={<LegacyDark><BackendConceptsNotes /></LegacyDark>} />
-            <Route path="/java-notes" element={<JavaNotes />} />
-            <Route path="/other-concepts-notes" element={<LegacyDark><OtherConceptsNotes /></LegacyDark>} />
+            {/* Everything else requires sign-in */}
+            <Route element={<ProtectedLayout />}>
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/problems" element={<ProblemsPage />} />
+              <Route path="/roadmap" element={<Roadmap />} />
+              <Route path="/engineering" element={<EngineeringHub />} />
+              <Route path="/engineering/sheets" element={<EngineeringSheetPage />} />
+              <Route path="/engineering/sheets/dsa/:docSlug" element={<EngineeringSheetDocumentPage />} />
+              <Route path="/engineering/revision" element={<EngineeringRevisionPage />} />
+              <Route path="/engineering/dsa" element={<EngineeringDsaLibraryPage />} />
+              <Route path="/engineering/dsa/docs/:docSlug" element={<EngineeringRecoveredDsaPage />} />
+              <Route path="/engineering/dsa/how-to-solve-dsa-problems" element={<Navigate to="/engineering/dsa/docs/how-to-solve-dsa-problems" replace />} />
+              <Route path="/engineering/system-design" element={<EngineeringCollectionLibraryPage trackId="system-design" />} />
+              <Route path="/engineering/ai" element={<EngineeringCollectionLibraryPage trackId="ai" />} />
+              <Route path="/engineering/devops" element={<EngineeringCollectionLibraryPage trackId="devops" />} />
+              <Route path="/engineering/interview" element={<EngineeringCollectionLibraryPage trackId="interview" />} />
+              <Route path="/engineering/library/:collectionId/:docSlug" element={<EngineeringCollectionDocumentPage />} />
+              <Route path="/engineering/learn/:trackId/:lessonSlug" element={<EngineeringLessonPage />} />
+              <Route path="/engineering/:trackId" element={<EngineeringCoursePage />} />
+              <Route path="/roadmap/:stageId" element={<RoadmapStage />} />
+              <Route path="/topics" element={<Topics />} />
+              <Route path="/profile" element={<Profile />} />
+              <Route path="/contests" element={<Contests />} />
+              <Route path="/leaderboard" element={<Leaderboard />} />
+              <Route path="/puzzles" element={<Puzzles />} />
+              <Route path="/patterns" element={<Patterns />} />
+              <Route path="/sheets" element={<Sheets />} />
+              <Route path="/companies" element={<Companies />} />
+              <Route path="/companies/:slug" element={<CompanyDetail />} />
+              <Route path="/resources" element={<Resources />} />
+              <Route path="/library" element={<Library />} />
+              <Route path="/revision" element={<Revision />} />
+              <Route path="/interview" element={<InterviewHub />} />
+              <Route path="/interview/:bankId" element={<InterviewBankPage />} />
+              <Route path="/system-design" element={<SystemDesign />} />
+              <Route path="/dsa-notes" element={<TopicNotes />} />
+              <Route path="/notes" element={<Notes />} />
+              <Route path="/dsa-pdf-notes" element={<DsaPdfNotes />} />
+              <Route path="/cpp-stl-notes" element={<LegacyDark><CppStlNotes /></LegacyDark>} />
+              <Route path="/sql-notes" element={<LegacyDark><SqlNotes /></LegacyDark>} />
+              <Route path="/system-design-notes" element={<LegacyDark><SystemDesignNotes /></LegacyDark>} />
+              <Route path="/core-subjects-notes" element={<LegacyDark><CoreSubjectsNotes /></LegacyDark>} />
+              <Route path="/webdev-notes" element={<LegacyDark><WebdevNotes /></LegacyDark>} />
+              <Route path="/code-editor" element={<LegacyDark><CodeEditorPage /></LegacyDark>} />
+              <Route path="/system-design-masterclass" element={<LegacyDark><SystemDesignMasterclass /></LegacyDark>} />
+              <Route path="/ai-engineering-notes" element={<LegacyDark><AiEngineeringNotes /></LegacyDark>} />
+              <Route path="/backend-concepts-notes" element={<LegacyDark><BackendConceptsNotes /></LegacyDark>} />
+              <Route path="/java-notes" element={<JavaNotes />} />
+              <Route path="/other-concepts-notes" element={<LegacyDark><OtherConceptsNotes /></LegacyDark>} />
+            </Route>
           </Routes>
         </Suspense>
       </main>

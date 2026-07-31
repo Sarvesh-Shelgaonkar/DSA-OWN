@@ -8,19 +8,20 @@
 ## A. Project & Architecture
 
 **Q: Describe your project in 30 seconds.**
-> MyDSA is a MERN single-page app for learning DSA — roadmap, curated problems, patterns, puzzles,
-> an AI resume/interview coach, and system-design notes. It's offline-first with localStorage, adds
-> accounts via JWT-in-httpOnly-cookie (email/password + Google), and syncs progress across devices
-> with a merge engine so nothing is ever lost.
+> MyDSA is a MERN single-page app for DSA and engineering interview prep — roadmap, curated
+> problems, an Engineering hub (system design, AI, DevOps), patterns, puzzles, and an AI
+> resume/interview coach. Content is **login-gated**. Auth is JWT in an httpOnly cookie (plus
+> Bearer fallback) with email/password and Google Sign-In. Progress syncs across devices with a
+> merge engine so nothing is lost. Frontend and API deploy separately on Render.
 
 **Q: Why a SPA and not server-rendered pages?**
-> The app is highly interactive (editors, filters, dashboards) and works offline; a client-rendered
-> SPA fits that. The trade-off is SEO/first paint, which we address with meta tags, a sitemap, and
-> code-splitting.
+> The app is highly interactive (editors, filters, dashboards) and keeps progress locally after
+> login; a client-rendered SPA fits that. The trade-off is SEO/first paint and the need for SPA
+> rewrites on the static host so deep links like `/login` don’t 404.
 
 **Q: Why decouple frontend and backend?**
 > The front end is a static bundle on a CDN (cheap, fast, cacheable); the API is a stateless service
-> that scales independently. They can be deployed, scaled, and reasoned about separately.
+> that scales independently. On Render that’s one Static Site + one Web Service with different env vars.
 
 **Q: How do you keep the app fast?**
 > Route-based code splitting (`React.lazy`), lazy PDF parsing, optimistic UI, debounced sync,
@@ -32,7 +33,7 @@
 
 **Q: Authentication vs authorization?**
 > Authentication = *who you are* (verify the JWT). Authorization = *what you can do* (every DB query
-> is scoped to the verified `userId`).
+> is scoped to the verified `userId`). Frontend `RequireAuth` is UX; backend `requireAuth` is security.
 
 **Q: Why JWT over server sessions?**
 > Stateless — any API instance verifies the token with a shared secret, so we scale horizontally
@@ -56,6 +57,10 @@
 
 **Q: How do you avoid user enumeration?**
 > Login returns the same "invalid email or password" for both wrong email and wrong password.
+
+**Q: Why gate content behind login on the frontend too?**
+> Product choice: learning material requires an account. `RequireAuth` redirects guests to `/login`
+> with `state.from`. The API still verifies JWT — UI gating is UX, not the security boundary.
 
 ---
 
@@ -162,10 +167,34 @@
 
 ---
 
-## H. "Tell me about a hard problem you solved"
+## I. Deployment & Env (high-signal)
+
+**Q: Where do environment variables live?**
+> Locally in gitignored `.env` files; in production on Render’s Environment panel. Only
+> `.env.example` is committed. Vite `VITE_*` are build-time; Express env is runtime.
+
+**Q: Why two Render services?**
+> Static Site serves the React `dist/`; Web Service runs Express with Root Directory `server`.
+> Different build/start commands and different secrets (don’t put Mongo URI on the static site).
+
+**Q: Why did `/login` 404 on refresh?**
+> SPA deep link — static host looked for a real `/login` file. Fix: rewrite `/*` → `/index.html`.
+
+**Q: What is `origin_mismatch`?**
+> Google OAuth rejected the page origin because it wasn’t in Authorized JavaScript origins.
+> Add every exact origin you use (localhost + production URL).
+
+**Q: API build failed with Missing script "build"?**
+> Web Service Build Command must be `npm install` only — the API has no Vite build step.
+
+---
+
+## J. "Tell me about a hard problem you solved"
 
 Pick any from [07-problems-and-decisions.md](./07-problems-and-decisions.md) — e.g. the
-**cross-device merge** (avoiding data loss) or the **cookie SameSite/CORS** puzzle across dev vs
-prod. Structure the answer as **Situation → Problem → Options → Decision → Result**.
+**cross-device merge**, **cookie SameSite/CORS**, **SPA rewrite 404**, or **session lost on reload**.
+Structure the answer as **Situation → Problem → Options → Decision → Result**.
+
+Also rehearse [09-deployment-and-env.md](./09-deployment-and-env.md) before infra questions.
 
 Continue to **[07-problems-and-decisions.md »](./07-problems-and-decisions.md)**

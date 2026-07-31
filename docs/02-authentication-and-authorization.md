@@ -149,6 +149,32 @@ own document** — there's no way to pass someone else's id and read their data.
 
 ---
 
+## 5b. Frontend route protection (`RequireAuth`)
+
+Backend auth alone is not enough for UX — without a client guard, guests could open `/engineering`
+and see a broken or empty shell. MyDSA wraps every learning route in `RequireAuth`:
+
+```js
+// Public: /, /login, /signup
+// Protected: everything else (problems, engineering, notes, …)
+if (status === 'loading') return <Spinner />;
+if (!isAuthed) return <Navigate to="/login" state={{ from: location }} replace />;
+return children;
+```
+
+After login, `AuthForm` reads `location.state.from` and sends the user back to the page they wanted.
+
+**Why both client + server checks? (interview)**
+> "The React guard is for **UX** (no content flash, clear login redirect). The Express
+> `requireAuth` middleware is for **security** — anyone can call `/api/data` with curl, so the
+> API must never trust the UI alone."
+
+**Session restore on reload:** `GET /api/auth/me` runs on app boot. Cookie and/or Bearer token
+prove the session. Network blips with a stored token keep a cached user so a cold API doesn’t
+look like a logout (see [doc 07](./07-problems-and-decisions.md)).
+
+---
+
 ## 6. Other protections in place
 
 | Threat | Mitigation | Where |
@@ -187,5 +213,10 @@ own document** — there's no way to pass someone else's id and read their data.
 > Google signs an ID token with its private key. Our server verifies it against Google's public
 > keys and checks the audience equals our Client ID. Trust flows from Google's signature, not from
 > the browser.
+
+**Q: Why lock content behind login instead of anonymous localStorage-only?**
+> Product decision: the Engineering library and curated material should require an account so
+> progress is attributable and syncable. Anonymous browsing is limited to the marketing home page;
+> learning routes use `RequireAuth`, and the API still enforces JWT on data endpoints.
 
 Continue to **[03-cookies-and-sessions.md »](./03-cookies-and-sessions.md)**

@@ -8,17 +8,19 @@
 
 MyDSA has **three moving parts**:
 
-1. **The browser (React SPA)** — everything you see. It can run *fully offline* using the browser's `localStorage`.
-2. **The API (Node + Express)** — a small REST server that handles login and saving your data.
-3. **The database (MongoDB)** — where a signed-in user's data lives so it survives across devices.
+1. **The browser (React SPA)** — everything you see. Progress still uses `localStorage` for
+   instant UX once you are signed in; unsigned users only see marketing + auth pages.
+2. **The API (Node + Express)** — REST server for login, Google verify, and saving user data.
+3. **The database (MongoDB)** — durable store so progress survives across devices.
 
-**In simple words:** the website works on its own; the server is only needed when you want an
-**account** and **sync across devices**.
+**In simple words:** the site is a learning platform behind a login. The homepage is public;
+problems, engineering tracks, and notes require an account. The server is the source of truth
+for identity and synced progress.
 
 ```mermaid
 flowchart LR
     U[User's Browser<br/>React SPA] -->|static files| CDN[Static Host / CDN]
-    U -->|/api requests<br/>with cookie| API[Express API]
+    U -->|/api requests<br/>cookie or Bearer| API[Express API]
     API --> DB[(MongoDB)]
     API -->|resume text| GEM[Google Gemini API]
     U -->|Google ID token| GIS[Google Identity Services]
@@ -36,37 +38,42 @@ flowchart LR
 
 ## 2. Why this architecture? (interview answer)
 
-> "I chose a **decoupled SPA + REST API**. The front end is a static bundle that can be served
-> from any CDN, so it's cheap and fast globally. The API is stateless — it keeps no session in
-> memory — which means I can run multiple copies behind a load balancer without sticky sessions.
-> State lives in two tiers: **localStorage** for instant, offline-first UX, and **MongoDB** as the
-> durable source of truth for logged-in users."
+> "I chose a **decoupled SPA + REST API**. The front end is a static bundle on a CDN; the API is
+> stateless (JWT) so it scales without sticky sessions. Content is **auth-gated** on both the
+> client (`RequireAuth`) and the server (`requireAuth`). Progress uses a two-tier store:
+> **localStorage** for instant UX after login, and **MongoDB** as the durable sync target."
 
 **Key properties:**
-- **Offline-first** — core features never depend on the network.
+- **Auth-gated learning** — public marketing/auth pages; everything else requires a session.
 - **Stateless API** — horizontally scalable (no server memory of sessions).
-- **Progressive enhancement** — accounts add sync on top of a fully working anonymous app.
+- **Offline-tolerant progress** — once signed in, local writes stay fast; sync catches up.
 
 ---
 
 ## 3. Request lifecycle (what happens on a click)
 
-### 3a. Loading a page (e.g. `/problems`)
+### 3a. Loading a protected page (e.g. `/problems`)
 
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant H as Static Host
+    participant API as Express API
     B->>H: GET /problems
-    H-->>B: index.html + JS bundle (SPA fallback)
-    B->>B: React Router renders <ProblemsPage/>
-    B->>B: hooks read localStorage (solved, bookmarks…)
-    Note over B: No server call needed for anonymous users
+    H-->>B: index.html (SPA rewrite) + JS bundle
+    B->>B: React Router matches route inside RequireAuth
+    alt not signed in
+        B->>B: Navigate to /login (state.from = /problems)
+    else signed in
+        B->>API: GET /api/auth/me (cookie / Bearer)
+        API-->>B: user
+        B->>B: render ProblemsPage + read localStorage
+    end
 ```
 
-Because it's an SPA, the server returns the **same `index.html`** for any route; React Router then
-renders the correct page on the client. That's why the sitemap lists real URLs but they all resolve
-to one HTML file.
+Because it's an SPA, the host must **rewrite** unknown paths to `index.html` (see
+[doc 09](./09-deployment-and-env.md)). React Router then renders the page; `RequireAuth` decides
+whether to show it or send the user to login.
 
 ### 3b. A logged-in action (e.g. mark a problem solved)
 

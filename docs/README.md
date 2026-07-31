@@ -16,9 +16,13 @@ every part of it into **interview-ready knowledge**. Each concept is explained t
 - **In simple words** — so you understand the idea.
 - **Interview level** — so you can answer follow-ups confidently.
 
-MyDSA is a **full-stack MERN** platform for learning Data Structures & Algorithms:
-a structured roadmap, curated interview problems, patterns, puzzles, an AI interview
-coach, system-design notes, and cross-device progress sync with authentication.
+MyDSA is a **full-stack MERN** platform for learning Data Structures & Algorithms and
+broader engineering interviews: a structured roadmap, curated problems, an **Engineering
+hub** (DSA library, system design, AI, DevOps), patterns, puzzles, an AI interview coach,
+and **auth-gated** content with cross-device progress sync (email/password + Google).
+
+**Access model:** `/`, `/login`, and `/signup` are public. Every learning route is behind
+a React `RequireAuth` guard; the API still enforces JWT via `requireAuth` middleware.
 
 ---
 
@@ -35,6 +39,7 @@ coach, system-design notes, and cross-device progress sync with authentication.
 | 6 | [06-interview-qa.md](./06-interview-qa.md) | Rapid-fire interview Q&A across every topic |
 | 7 | [07-problems-and-decisions.md](./07-problems-and-decisions.md) | Real problems we hit and the decisions we made |
 | 8 | [08-put-this-on-your-resume.md](./08-put-this-on-your-resume.md) | **New here?** Ready-to-paste resume bullets, keywords, and how to explain it all |
+| 9 | [09-deployment-and-env.md](./09-deployment-and-env.md) | Render (Static + API), env vars, SPA rewrites, Google origins, cold starts |
 
 > The diagrams use **Mermaid**, which renders automatically on GitHub and most Markdown viewers.
 
@@ -60,9 +65,10 @@ coach, system-design notes, and cross-device progress sync with authentication.
 | AI | **Google Gemini API** | Resume analysis for the AI interview coach |
 
 **One-line pitch for an interviewer:**
-> "MyDSA is a MERN single-page app. The React front end works fully offline via localStorage;
-> when you sign in (email/password or Google), a stateless JWT stored in an httpOnly cookie
-> authenticates you, and a merge-based sync engine keeps your progress consistent across devices."
+> "MyDSA is a MERN single-page app. Learning content is **login-gated** on the client and the
+> API. After sign-in (email/password or Google), a JWT in an httpOnly cookie (plus Bearer
+> fallback) authenticates you; localStorage + a merge-based sync engine keep progress consistent
+> across devices. Frontend and API deploy separately on Render with credentialed CORS."
 
 ---
 
@@ -72,7 +78,7 @@ coach, system-design notes, and cross-device progress sync with authentication.
 DSA-OWN/
 ├── src/                      # React front end
 │   ├── pages/                # Route pages (Dashboard, Problems, System Design, …)
-│   ├── components/           # Reusable UI (Navbar, Footer, cards, …)
+│   ├── components/           # Reusable UI (Navbar, Footer, RequireAuth, …)
 │   │   └── ui/               # Design-system primitives (Icon, NotesBlock, …)
 │   ├── context/              # AuthContext, ThemeProvider, TimerProvider
 │   ├── hooks/                # useCloudSync, useDsaStats, useBookmarks, …
@@ -106,5 +112,8 @@ DSA-OWN/
 | **Middleware** | Code that runs between the request and your route handler |
 | **Idempotent** | Doing it twice has the same effect as doing it once |
 | **Debounce** | Wait until activity stops before running an expensive action |
+| **SPA rewrite** | Static host serves `index.html` for all paths so React Router can handle deep links |
+| **RequireAuth** | React route guard that redirects guests to `/login` |
+| **Cold start** | Free-tier server sleeps; first request after idle is slow while it wakes |
 
 Continue to **[01-architecture.md »](./01-architecture.md)**

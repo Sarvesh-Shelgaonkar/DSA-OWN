@@ -26,8 +26,8 @@ const HOW_IT_WORKS = [
 
 const BENEFITS = [
   { icon: 'target', title: 'Interview-focused', body: 'Every problem is chosen for real coding-interview relevance — no filler.' },
-  { icon: 'bolt', title: 'Fast & lightweight', body: 'A snappy, no-signup experience that loads instantly and works offline-first.' },
-  { icon: 'lock', title: 'Private by design', body: 'Your progress lives in your browser. No account, no tracking, no data selling.' },
+  { icon: 'bolt', title: 'Fast & focused', body: 'Sign in once, then jump straight into problems, engineering tracks, and revision.' },
+  { icon: 'lock', title: 'Private by design', body: 'Your progress syncs to your account. No tracking, no data selling.' },
   { icon: 'layers', title: 'Structured learning', body: 'A clear path with lessons, problems and estimated time for each topic.' },
   { icon: 'book', title: 'Rich resources', body: 'Notes on DSA, C++ STL, SQL, system design, core CS subjects and more.' },
   { icon: 'sparkles', title: 'Free forever', body: 'Open-source and completely free. Learn without paywalls or limits.' },
@@ -42,7 +42,7 @@ const TESTIMONIALS = [
   },
   {
     quote:
-      'I love that there is no sign-up. I open it, filter by topic, and get straight to solving. The progress tracking is spot on.',
+      'Signing in once unlocked everything — problems, engineering tracks, and progress that follows me across devices.',
     name: 'Self-taught developer',
     role: 'Switching to SWE',
   },
@@ -57,11 +57,11 @@ const TESTIMONIALS = [
 const FAQS = [
   {
     q: 'Is MyDSA free to use?',
-    a: 'Yes — MyDSA is completely free and open-source. There are no accounts, paywalls or premium tiers.',
+    a: 'Yes — MyDSA is completely free and open-source. There are no paywalls or premium tiers.',
   },
   {
     q: 'Do I need to create an account?',
-    a: 'No. Your progress, streaks and solved problems are stored locally in your browser using localStorage, so your data stays private to you.',
+    a: 'Yes. Sign up (email or Google) to unlock problems, engineering content, notes, and progress sync across devices.',
   },
   {
     q: 'Where do the problems come from?',
@@ -69,7 +69,7 @@ const FAQS = [
   },
   {
     q: 'Will my progress sync across devices?',
-    a: 'Progress is stored per-browser today. Cross-device sync would require an account and a backend, which is on the roadmap but intentionally not enabled to keep things private and fast.',
+    a: 'Yes. Once you are signed in, your solved problems, bookmarks, and revision data sync to your account so you can continue on any device.',
   },
   {
     q: 'Can I use it to prepare for a specific company?',
@@ -132,16 +132,16 @@ const HomePage = () => {
                 <span className="text-gradient">actually sticks</span>.
               </h1>
               <p className="mt-6 max-w-xl text-base leading-7 text-fg-muted sm:text-lg">
-                MyDSA turns scattered practice into a clear path. Follow a proven roadmap,
-                solve {TOTAL_PROBLEMS} curated problems, and watch your progress grow — free,
-                private and distraction-free.
+                MyDSA turns scattered practice into a clear path. Sign in to unlock the roadmap,
+                {TOTAL_PROBLEMS} curated problems, engineering tracks, and progress that syncs
+                across devices.
               </p>
               <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
-                <Link to="/roadmap" className="btn-primary btn-lg">
-                  Start learning <Icon name="arrowRight" size={18} />
+                <Link to="/signup" className="btn-primary btn-lg">
+                  Get started free <Icon name="arrowRight" size={18} />
                 </Link>
-                <Link to="/problems" className="btn-secondary btn-lg">
-                  Browse problems
+                <Link to="/login" className="btn-secondary btn-lg">
+                  Log in
                 </Link>
               </div>
               <dl className="mt-10 grid max-w-xl grid-cols-2 border-t border-border/70 pt-6 sm:grid-cols-4 sm:divide-x sm:divide-border/70">
@@ -372,11 +372,11 @@ const HomePage = () => {
               Start the roadmap today and build a streak you'll be proud of by interview season.
             </p>
             <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
-              <Link to="/roadmap" className="btn btn-lg bg-white text-primary hover:bg-white/90">
-                Start the roadmap <Icon name="arrowRight" size={18} />
+              <Link to="/signup" className="btn btn-lg bg-white text-primary hover:bg-white/90">
+                Create free account <Icon name="arrowRight" size={18} />
               </Link>
-              <Link to="/dashboard" className="btn btn-lg border border-white/40 text-white hover:bg-white/10">
-                View my dashboard
+              <Link to="/login" className="btn btn-lg border border-white/40 text-white hover:bg-white/10">
+                Log in
               </Link>
             </div>
           </div>

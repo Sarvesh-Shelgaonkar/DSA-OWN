@@ -113,13 +113,56 @@
 
 ---
 
+## 10. Session looked "lost" on every reload
+
+- **Situation:** After login, a full page reload showed the user as logged out.
+- **Problem:** Boot calls `GET /api/auth/me`. If the API was down (or cold-starting), the client
+  treated *any* failure as guest and wiped the UI session.
+- **Decision:** Retry when a Bearer token exists; only treat **401** as true logout; cache the last
+  known user in localStorage so a network blip doesn’t look like sign-out. Also keep JWT in
+  localStorage as a Bearer fallback when cross-site cookies are flaky.
+- **Result:** Reload stays signed in as long as the token is valid and the API comes back.
+
+---
+
+## 11. `/login` 404 on the deployed Static Site
+
+- **Situation:** Home worked; typing `/login` in the address bar returned Not Found.
+- **Problem:** Render Static Site had no SPA fallback — it looked for a physical `/login` file.
+- **Decision:** Add Redirects/Rewrites `/*` → `/index.html` (Rewrite) and `public/_redirects`.
+- **Result:** Deep links and refresh work for every React Router path.
+
+---
+
+## 12. Wrong env vars on the Static Site
+
+- **Situation:** `MONGODB_URI` / `JWT_SECRET` were added to the frontend Render service.
+- **Problem:** A static site never runs Express — those secrets do nothing there (and shouldn’t be
+  exposed near the browser build). The API was missing entirely at first.
+- **Decision:** Split deploy: Static Site only `VITE_*`; Web Service (`server/`) gets Mongo/JWT/
+  `CLIENT_ORIGIN` / `GOOGLE_CLIENT_ID`. Documented in [doc 09](./09-deployment-and-env.md).
+- **Result:** Clear separation of build-time vs runtime config; login and sync work in production.
+
+---
+
+## 13. Auth-gating all learning content
+
+- **Situation:** Problems, Engineering tracks, and notes were visible without an account.
+- **Problem:** Product goal was an account-based platform with syncable progress.
+- **Decision:** Public routes = `/`, `/login`, `/signup`. Everything else wrapped in `RequireAuth`;
+  API remains JWT-protected. Homepage CTAs point to signup/login.
+- **Result:** Guests see marketing only; signed-in users unlock the full library.
+
+---
+
 ## Lessons worth stating in an interview
 
-1. **Offline-first is a feature, not an afterthought** — it shaped the whole storage design.
+1. **UI auth ≠ API auth** — gate routes for UX; always verify JWT on the server.
 2. **Never lose user data** — when in doubt, merge, and make the merge idempotent.
-3. **Environment parity is subtle** — cookies/CORS behave differently across dev and prod; test both.
+3. **Environment parity is subtle** — cookies/CORS/SPA rewrites behave differently in prod; test both.
 4. **Isolate third parties** — always have a graceful fallback for external dependencies.
 5. **Security by default** — httpOnly cookies, hashing, per-user scoping, secrets in env, rate limits.
+6. **Put the right secrets on the right service** — `VITE_*` on static; DB/JWT on the API only.
 
 ---
 
