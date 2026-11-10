@@ -42,6 +42,7 @@ MyDSA turns scattered interview prep into one signed-in workspace:
 - JWT session (`httpOnly` cookie + Bearer fallback)
 - Progress, bookmarks, revision — **localStorage + MongoDB merge sync**
 - Engineering tracks (DSA / HLD-LLD / AI / DevOps)
+- Logical puzzles with direct article references, collapsible statements, review filters, and shareable links
 - Filters, dashboard stats, streaks, code playground
 - Rate-limited API, credentialed CORS, SPA rewrite for deep links
 
@@ -192,3 +193,7 @@ See [`LICENSE`](./LICENSE).
 ---
 
 **Made by Sarvesh Shelgaonkar** — read the docs, then defend every line in an interview.
+
+## Puzzle link maintenance
+
+Run `npm run check:puzzle-links` to check article coverage and HTTP availability for every puzzle reference. Article URLs live in `src/data/puzzleSources.js`; shared puzzle links use `/puzzles?puzzle=p1` and open the selected statement after sign-in. Search, category, and review filters are preserved in the URL.
