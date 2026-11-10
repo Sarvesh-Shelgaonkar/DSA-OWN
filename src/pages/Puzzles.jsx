@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import Icon from '../components/ui/Icon';
 import { SectionHeading, EmptyState, ProgressBar } from '../components/ui/index.jsx';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { puzzles, puzzleCategories, puzzleDocUrl } from '../data/puzzles';
+import { getPuzzleReference, puzzleIndexUrl } from '../data/puzzleSources';
 
 const CATEGORY_ICON = {
   'Measuring & Weighing': 'gauge',
@@ -151,36 +153,50 @@ const PuzzleBlocks = ({ blocks }) => {
   return <div className="max-w-3xl">{out}</div>;
 };
 
-const gfgLink = (title) =>
-  `https://www.geeksforgeeks.org/?s=${encodeURIComponent(`${title} puzzle`)}`;
-
-const PuzzleCard = ({ puzzle, reviewed, onToggleReviewed }) => {
+const PuzzleCard = ({ puzzle, reviewed, onToggleReviewed, expanded }) => {
   const [open, setOpen] = useState(false);
+  const [showProblem, setShowProblem] = useState(expanded);
+  const [copyStatus, setCopyStatus] = useState('');
+  const reference = getPuzzleReference(puzzle);
+  const copyLink = async () => {
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.hash = '';
+    url.searchParams.set('puzzle', puzzle.id);
+    try {
+      await navigator.clipboard.writeText(url.href);
+      setCopyStatus('Link copied');
+    } catch {
+      setCopyStatus('Could not copy. Use the puzzle title link.');
+    }
+  };
   const problem = toBlocks(puzzle.problem);
   const solution = toBlocks(puzzle.solution);
   return (
-    <div className="card p-6 sm:p-7">
+    <article id={puzzle.id} aria-labelledby={`${puzzle.id}-title`} className="card scroll-mt-24 p-6 sm:p-7">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <span className="badge bg-surface-2 text-fg-muted">
             <Icon name={CATEGORY_ICON[puzzle.category] || 'sparkles'} size={13} />
             {puzzle.category}
           </span>
-          <h3 className="mt-2 text-lg font-bold tracking-tight text-fg">{puzzle.title}</h3>
+          <h3 id={`${puzzle.id}-title`} className="mt-2 text-lg font-bold tracking-tight text-fg">
+            <Link to={`?puzzle=${puzzle.id}`} className="hover:text-primary">{puzzle.title}</Link>
+          </h3>
           <a
-            href={gfgLink(puzzle.title)}
+            href={reference.url}
             target="_blank"
             rel="noopener noreferrer"
             className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-primary transition-colors hover:underline"
           >
-            <Icon name="external" size={12} /> Refer on GeeksforGeeks
+            <Icon name="external" size={12} /> {reference.label}
           </a>
         </div>
         <button
           type="button"
           onClick={() => onToggleReviewed(puzzle.id)}
           aria-pressed={reviewed}
-          aria-label={reviewed ? 'Mark as not reviewed' : 'Mark as reviewed'}
+          aria-label={`${reviewed ? 'Mark as not reviewed' : 'Mark as reviewed'}: ${puzzle.title}`}
           title={reviewed ? 'Reviewed' : 'Mark as reviewed'}
           className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg border transition-colors ${
             reviewed
@@ -192,18 +208,36 @@ const PuzzleCard = ({ puzzle, reviewed, onToggleReviewed }) => {
         </button>
       </div>
 
-      {problem.length > 0 && (
-        <div className="mt-4 border-t border-border pt-4">
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={() => { setShowProblem((shown) => !shown); setOpen(false); }}
+          aria-expanded={showProblem}
+          aria-controls={`${puzzle.id}-problem`}
+          className="btn-secondary btn-sm"
+        >
+          <Icon name={showProblem ? 'chevronDown' : 'chevronRight'} size={16} />
+          {showProblem ? 'Hide puzzle' : 'Read puzzle'}
+        </button>
+        <button type="button" onClick={copyLink} className="text-xs font-medium text-primary hover:underline">
+          Copy puzzle link
+        </button>
+        <span role="status" className="text-xs text-fg-muted">{copyStatus}</span>
+      </div>
+
+      {showProblem && problem.length > 0 && (
+        <div id={`${puzzle.id}-problem`} className="mt-4 border-t border-border pt-4">
           <PuzzleBlocks blocks={problem} />
         </div>
       )}
 
-      {solution.length > 0 && (
+      {showProblem && solution.length > 0 && (
         <div className="mt-5">
           <button
             type="button"
             onClick={() => setOpen((o) => !o)}
             aria-expanded={open}
+            aria-controls={`${puzzle.id}-solution`}
             className={`inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-semibold transition-colors ${
               open
                 ? 'border-primary/40 bg-primary/10 text-primary'
@@ -214,19 +248,33 @@ const PuzzleCard = ({ puzzle, reviewed, onToggleReviewed }) => {
             {open ? 'Hide approach & solution' : 'Reveal approach & solution'}
           </button>
           {open && (
-            <div className="mt-4 rounded-xl border border-border bg-surface-2/60 p-5 sm:p-6">
+            <div id={`${puzzle.id}-solution`} className="mt-4 rounded-xl border border-border bg-surface-2/60 p-5 sm:p-6">
               <PuzzleBlocks blocks={solution} />
             </div>
           )}
         </div>
       )}
-    </div>
+    </article>
   );
 };
 
 const Puzzles = () => {
-  const [query, setQuery] = useState('');
-  const [category, setCategory] = useState('All');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = searchParams.get('q') || '';
+  const category = searchParams.get('category') || 'All';
+  const status = searchParams.get('status') || 'all';
+  const selectedId = searchParams.get('puzzle');
+  const updateFilter = (key, value) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.delete('puzzle');
+      const isDefault = (key === 'category' && value === 'All') || (key === 'status' && value === 'all');
+      if (value && !isDefault) next.set(key, value);
+      else next.delete(key);
+      return next;
+    }, { replace: true });
+  };
+  const resetFilters = () => setSearchParams({});
   const [reviewedMap, setReviewedMap] = useLocalStorage('mydsa-puzzles-reviewed', {});
 
   const toggleReviewed = (id) =>
@@ -240,11 +288,14 @@ const Puzzles = () => {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return puzzles.filter((p) => {
+      if (selectedId && p.id !== selectedId) return false;
+      if (status === 'reviewed' && !reviewedMap?.[p.id]) return false;
+      if (status === 'unreviewed' && reviewedMap?.[p.id]) return false;
       if (category !== 'All' && p.category !== category) return false;
       if (q && !`${p.title} ${blockText(p.problem)} ${blockText(p.solution)}`.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [query, category]);
+  }, [query, category, status, reviewedMap, selectedId]);
 
   const grouped = useMemo(() => {
     const map = {};
@@ -254,7 +305,7 @@ const Puzzles = () => {
     return puzzleCategories.filter((c) => map[c]).map((c) => ({ category: c, items: map[c] }));
   }, [filtered]);
 
-  const reviewedCount = Object.keys(reviewedMap).length;
+  const reviewedCount = puzzles.filter((p) => reviewedMap?.[p.id]).length;
   const percent = puzzles.length ? Math.round((reviewedCount / puzzles.length) * 100) : 0;
 
   return (
@@ -265,16 +316,21 @@ const Puzzles = () => {
           title="Logical Puzzles"
           description={`${puzzles.length} classic interview puzzles, organised into ${puzzleCategories.length} categories — with diagrams, tables and an interviewer-ready approach for each.`}
         />
-        {puzzleDocUrl && (
-          <a
-            href={puzzleDocUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn-secondary btn-sm shrink-0"
-          >
-            <Icon name="external" size={16} /> Source doc
+        <div className="flex flex-wrap gap-2">
+          <a href={puzzleIndexUrl} target="_blank" rel="noopener noreferrer" className="btn-secondary btn-sm">
+            <Icon name="external" size={16} /> Puzzle collection
           </a>
-        )}
+          {puzzleDocUrl && (
+            <a
+              href={puzzleDocUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-secondary btn-sm shrink-0"
+            >
+              <Icon name="external" size={16} /> Original Google Doc
+            </a>
+          )}
+        </div>
       </div>
 
       {/* Progress */}
@@ -293,7 +349,7 @@ const Puzzles = () => {
             <input
               type="search"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => updateFilter('q', e.target.value)}
               placeholder="Search puzzles…"
               aria-label="Search puzzles"
               className="input pl-10"
@@ -306,7 +362,8 @@ const Puzzles = () => {
       <div className="mb-8 flex flex-wrap gap-2">
         <button
           type="button"
-          onClick={() => setCategory('All')}
+          onClick={() => updateFilter('category', 'All')}
+          aria-pressed={category === 'All'}
           className={`chip ${category === 'All' ? 'chip-active' : ''}`}
         >
           All
@@ -315,7 +372,8 @@ const Puzzles = () => {
           <button
             key={c}
             type="button"
-            onClick={() => setCategory(c)}
+            onClick={() => updateFilter('category', c)}
+            aria-pressed={category === c}
             className={`chip ${category === c ? 'chip-active' : ''}`}
           >
             <Icon name={CATEGORY_ICON[c] || 'sparkles'} size={14} />
@@ -324,13 +382,32 @@ const Puzzles = () => {
         ))}
       </div>
 
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <p role="status" className="text-sm text-fg-muted">
+          Showing {filtered.length} of {puzzles.length} puzzles · {puzzles.length - reviewedCount} left to review
+        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-2 text-sm text-fg-muted">
+            Review status
+            <select value={status} onChange={(e) => updateFilter('status', e.target.value)} className="input w-auto">
+              <option value="all">All puzzles</option>
+              <option value="unreviewed">Not reviewed</option>
+              <option value="reviewed">Reviewed</option>
+            </select>
+          </label>
+          {(query || category !== 'All' || status !== 'all' || selectedId) && (
+            <button type="button" onClick={resetFilters} className="btn-secondary btn-sm">Show all puzzles</button>
+          )}
+        </div>
+      </div>
+
       {/* Puzzle sections */}
       {grouped.length === 0 ? (
         <EmptyState
           icon="search"
           title="No puzzles found"
           description="Try a different search term or category."
-          action={<button onClick={() => { setQuery(''); setCategory('All'); }} className="btn-primary btn-sm">Reset</button>}
+          action={<button onClick={resetFilters} className="btn-primary btn-sm">Reset</button>}
         />
       ) : (
         <div className="space-y-10">
@@ -346,9 +423,10 @@ const Puzzles = () => {
               <div className="space-y-5">
                 {items.map((p) => (
                   <PuzzleCard
-                    key={p.id}
+                    key={`${p.id}-${selectedId || "list"}`}
                     puzzle={p}
-                    reviewed={Boolean(reviewedMap[p.id])}
+                    expanded={selectedId === p.id}
+                    reviewed={Boolean(reviewedMap?.[p.id])}
                     onToggleReviewed={toggleReviewed}
                   />
                 ))}
